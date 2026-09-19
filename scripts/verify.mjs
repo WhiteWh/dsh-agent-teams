@@ -94,7 +94,7 @@ import {
 } from '../lib/client/locales.js'
 import { openAgentTeamMember } from '../lib/client/session-navigation.js'
 import { steerCaptainReport } from '../lib/tools.js'
-import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt } from '../lib/profiles.js'
+import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt, resolveProfileSharedInScope, resolveProfileTaskPlanning } from '../lib/profiles.js'
 import { memberPersona, memberWelcome } from '../lib/members.js'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, assignmentPrompt } from '../lib/scheduler.js'
 import {
@@ -367,6 +367,43 @@ check(
       && activityPanelSource.includes("if (status === 'superseded') return 'superseded'")
       && activityPanelCss.includes("[data-state='superseded']")
       && activityModelSource.includes('export function settledTask'),
+  )
+}
+// WP4/S10: an honest undeclared path becomes a captain decision, and the shared
+// profile scope keeps sibling lanes out of a false overlap.
+{
+  const acceptBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_accept_paths'"),
+    toolsSource.indexOf("name: 'agent_teams_amend_task'"),
+  )
+  check(
+    'accept_paths is captain-only, additive, and completes a held lane',
+    acceptBlock.includes('acceptTaskPaths(fresh, task, args.paths, CAPTAIN_KEY, args.reason, args.force === true)')
+      && acceptBlock.includes("if (task.status === 'awaiting_scope_review')")
+      && acceptBlock.includes('agent-teams/task-amended')
+      && TEAM_TOOL_NAMES.includes('agent_teams_accept_paths')
+      && !MEMBER_TOOL_NAMES.includes('agent_teams_accept_paths'),
+    `team tools: ${String(TEAM_TOOL_NAMES.length)}`,
+  )
+  check(
+    'an undeclared completion holds the task instead of failing it',
+    toolsSource.includes("gate.scopeReview === undefined ? args.status : 'awaiting_scope_review'")
+      && gatesSource.includes("requiredStatus: 'awaiting_scope_review' as TaskStatus")
+      && gatesSource.includes('scopeReview: undeclared')
+      && gatesSource.includes('is awaiting a scope decision')
+      && isTeamTask({ id: 't1', subject: 'x', status: 'awaiting_scope_review', dependencies: [], createdAt: 0, updatedAt: 0 })
+      && localesSource.includes("'task.status.awaitingScopeReview'")
+      && activityPanelSource.includes("awaiting_scope_review: 'task.status.awaitingScopeReview'"),
+  )
+  const sharedProfile = resolveProfileSharedInScope({ taskPlanning: { mode: 'captain', sharedInScope: ['docs/CHANGELOG.md', 'tools/'] } })
+  check(
+    'the profile can declare a shared scope that sibling lanes may both touch',
+    JSON.stringify(sharedProfile) === JSON.stringify(['docs/CHANGELOG.md', 'tools/'])
+      && resolveProfileSharedInScope({ taskPlanning: 'captain' }) === undefined
+      && resolveProfileTaskPlanning({ taskPlanning: { mode: 'captain', sharedInScope: ['docs/'] } }) === 'captain'
+      && gatesSource.includes('function subtractScope(')
+      && toolsSource.includes('...shared === undefined ? {} : { sharedInScope: shared }'),
+    JSON.stringify(sharedProfile ?? null),
   )
 }
 check(

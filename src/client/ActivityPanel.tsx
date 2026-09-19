@@ -160,6 +160,7 @@ const TASK_STATUS_LABEL: Record<string, AgentTeamsLocaleKey> = {
   pending: 'task.status.pending',
   claimed: 'task.status.claimed',
   in_progress: 'task.status.inProgress',
+  awaiting_scope_review: 'task.status.awaitingScopeReview',
   completed: 'task.status.completed',
   failed: 'task.status.failed',
   cancelled: 'task.status.cancelled',

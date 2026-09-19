@@ -512,6 +512,48 @@ Creation rules:
 }
 ```
 
+**Undeclared paths become a decision, not a failure (v0.1.22, WP4).** A worker
+reports what it really changed. When an `implementation`/`repair` completion lists a
+path outside its declared `inScope`, the completion gate does **not** fail the lane and
+does not accept the completion either: it refuses the `completed` transition with
+`requiredStatus: 'awaiting_scope_review'` and reports **every** undeclared path at once,
+and `update_task` moves the task into that intermediate status with the evidence
+(`changedPaths`, `acceptanceResults`, `commandsRun`, `output`) already stored.
+
+`awaiting_scope_review` is not terminal. It blocks descendants exactly like
+`in_progress`, is never claimable, and blocks Delivery with
+`<id> is awaiting a scope decision (accept_paths, or reassign/supersede it)`. The captain
+then either
+
+- **accepts the paths** — `agent_teams_accept_paths({ task_id, paths, reason, force? })`
+  adds them to `inScope` **additively** (`amend_task` replaces whole lists, which is the
+  wrong shape for "also allow these files"), records a revision, and completes the task in
+  the same call as soon as the widened scope covers everything the worker reported;
+- **reassigns** the task (`reassign_task` → `pending`), or **replaces** it
+  (`supersede_task`).
+
+`accept_paths` also works on a **completed** task (post-hoc acceptance) as long as no
+`review`/`requirements` verdict has passed judgment on it; after that the contract is
+frozen and `force: true` with the same mandatory `reason` is required.
+
+A path that is listed in `inScope` **and** matches `outOfScope` stays a hard failure: that
+is a contradictory contract, not a scope decision, and the rejection says so.
+
+**Shared scope (`taskPlanning.sharedInScope`).** A profile may declare paths that every
+`implementation`/`repair` task of the team inherits:
+
+```yaml
+taskPlanning:
+  mode: captain
+  sharedInScope: ['docs/CHANGELOG.md', 'tools/', 'TROUBLESHOOTING.md']
+```
+
+The string form (`taskPlanning: captain`) keeps working. Shared paths are merged into the
+task's `inScope` at creation and are **excluded from the overlap comparison**, so two
+sibling lanes may both touch the generated docs without being reported as a scope
+conflict; the same key in a nested `taskPlanning` object is validated like every other
+profile scope, and an unknown key inside it is reported with the fix.
+
 Completion rules:
 
 1. The existing state machine is unchanged: `claimed` cannot go directly to `completed`.

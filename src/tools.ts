@@ -56,6 +56,7 @@ import {
   taskHasWaivers,
   taskKindOf,
   applySupersession,
+  acceptTaskPaths,
   waiversConfirmed,
 } from './state.ts'
 import type { ContractAmendmentInput } from './state.ts'
@@ -1267,6 +1268,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const input = normalizeBlankOptionalTaskFields(args)
       const created = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        // Paths every implementation/repair lane of this team inherits from the
+        // creating profile (WP4/S10): added to `inScope`, excluded from the
+        // overlap comparison so siblings may both touch generated docs.
+        const shared = fresh.profile?.sharedInScope
+        const kindOfInput = (input.kind as TaskKind | undefined) ?? 'work'
+        const inScope = shared === undefined || (kindOfInput !== 'implementation' && kindOfInput !== 'repair')
+          ? input.inScope
+          : [...new Set([...(input.inScope ?? []), ...shared])]
         const gate = validateCreateTask(fresh, {
           subject: input.subject,
           description: input.description,
@@ -1275,7 +1284,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           kind: input.kind as TaskKind | undefined,
           round: input.round,
           objective: input.objective,
-          inScope: input.inScope,
+          inScope,
           outOfScope: input.outOfScope,
           acceptance: input.acceptance,
           verify: input.verify,
@@ -1291,6 +1300,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // task is about to take so the mirror overlap direction (an existing
           // open task already fenced behind this id) can be evaluated.
           nextTaskId: `t${fresh.taskSeq + 1}`,
+          ...shared === undefined ? {} : { sharedInScope: shared },
         })
         if (!gate.ok) throw new Error(gate.error ?? 'create_task rejected by quality gates')
         if (fresh.halted === true) {
@@ -1332,7 +1342,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           kind,
           ...args.round === undefined ? {} : { round: args.round },
           ...objective === undefined ? {} : { objective },
-          ...input.inScope === undefined ? {} : { inScope: input.inScope },
+          ...inScope === undefined ? {} : { inScope },
           ...input.outOfScope === undefined ? {} : { outOfScope: input.outOfScope },
           ...acceptance === undefined ? {} : { acceptance },
           ...input.verify === undefined ? {} : { verify: input.verify },
@@ -1926,11 +1936,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           acceptanceResults,
           commandsRun,
         }, fresh.reviewPolicy?.allowWaivers !== false)
-        if (!gate.ok) throw new Error(gate.error ?? 'update_task rejected by quality gates')
+        if (!gate.ok && gate.scopeReview === undefined) throw new Error(gate.error ?? 'update_task rejected by quality gates')
         if (args.status !== undefined) {
-          const transition = transitionError(task.status, args.status)
+          // WP4/S10: an honest report that touched a path outside inScope does
+          // not fail the lane — the task is held in `awaiting_scope_review` until
+          // the captain accepts the paths or reassigns/supersedes it.
+          const requested = gate.scopeReview === undefined ? args.status : 'awaiting_scope_review'
+          const transition = transitionError(task.status, requested)
           if (transition !== undefined) throw new Error(transition)
-          task.status = args.status
+          task.status = requested
         }
         if (args.output !== undefined) task.output = args.output
         if (args.verdict !== undefined) task.verdict = args.verdict as ReviewVerdict
@@ -1986,6 +2000,93 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       })
       await scheduler.kickTeam(workspace, team.id, team.captainSessionId === caller.id ? caller : undefined)
       return updated
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_accept_paths',
+    description: 'Captain-only post-hoc scope acceptance: ADD the given workspace-relative paths to a task\'s inScope instead of replacing the list (use amend_task to replace). A worker that honestly reported a changed path outside its declared inScope leaves the task in `awaiting_scope_review`; accepting the paths completes the lane with the work it actually did. Works on a completed task too, as long as no review/requirements verdict has passed judgment on it — pass force=true with the same mandatory reason to widen the scope after that freeze. Every acceptance is appended to the task\'s revisions ledger.',
+    parameters: {
+      task_id: { type: 'string', required: true, description: 'Task whose inScope is widened.' },
+      paths: { type: 'array', items: { type: 'string' }, required: true, description: 'Workspace-relative paths to add to inScope (additive, not a replacement).' },
+      reason: { type: 'string', required: true, description: 'Why these paths belong to the lane; recorded in the revisions ledger.' },
+      force: { type: 'boolean', description: 'Widen the scope even though a review/requirements verdict already passed judgment on this task. Requires the same non-empty reason.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          task_id: { type: 'string', required: true },
+          status: { type: 'string', required: true },
+          accepted_paths: { type: 'string', required: true },
+          in_scope: { type: 'string', required: true },
+          revision_count: { type: 'number', required: true },
+          remaining: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Task ${value.task_id} accepted paths ${value.accepted_paths}; status ${value.status}, ${value.revision_count} revision(s) on record.`
+          + ` inScope: ${value.in_scope}.`
+          + (value.remaining === '' ? '' : ` Still outside the contract: ${value.remaining}.`),
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(workspace, config, captain)
+      const accepted = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        const task = requireTask(fresh, args.task_id)
+        const result = acceptTaskPaths(fresh, task, args.paths, CAPTAIN_KEY, args.reason, args.force === true)
+        if (!result.ok || result.task === undefined) {
+          throw new Error(result.error ?? 'accept_paths rejected by quality gates')
+        }
+        Object.assign(task, result.task)
+        task.updatedAt = Date.now()
+        // A task held for this decision completes as soon as the widened scope
+        // covers everything the worker reported: the evidence is already on the
+        // task, so the completion gate is re-evaluated instead of re-submitted.
+        let remaining: string[] = []
+        if (task.status === 'awaiting_scope_review') {
+          const gate = evaluateQualityCompletion(task, { status: 'completed' }, fresh.reviewPolicy?.allowWaivers !== false)
+          if (gate.ok) {
+            const transition = transitionError(task.status, 'completed')
+            if (transition !== undefined) throw new Error(transition)
+            task.status = 'completed'
+          } else if (gate.scopeReview !== undefined) {
+            remaining = [...gate.scopeReview]
+          } else {
+            throw new Error(gate.error ?? 'the accepted scope still cannot complete the task')
+          }
+        }
+        await writeTeam(stateRoot, fresh)
+        return {
+          taskId: task.id,
+          status: task.status,
+          accepted: args.paths,
+          inScope: task.inScope ?? [],
+          revisionCount: task.revisions?.length ?? 0,
+          remaining,
+        }
+      })
+      appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, captain.session), 'agent-teams/task-amended', {
+        teamId: team.id,
+        taskId: accepted.taskId,
+        fields: ['inScope'],
+        reason: args.reason,
+      })
+      await scheduler.kickTeam(workspace, team.id, captain)
+      return {
+        task_id: accepted.taskId,
+        status: accepted.status,
+        accepted_paths: accepted.accepted.join(', '),
+        in_scope: JSON.stringify(accepted.inScope),
+        revision_count: accepted.revisionCount,
+        remaining: accepted.remaining.join(', '),
+      }
     },
   }))
 
@@ -2508,6 +2609,7 @@ async function initializeProfileTeam(input: {
       ...profile.executionPrompt === undefined ? {} : { executionPrompt: profile.executionPrompt },
       ...profile.fallback === undefined ? {} : { fallback: profile.fallback },
       taskPlanning: profile.taskPlanning,
+      ...profile.sharedInScope === undefined ? {} : { sharedInScope: profile.sharedInScope },
       ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },
     },
     ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },

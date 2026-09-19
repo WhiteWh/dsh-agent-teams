@@ -10,6 +10,7 @@
  */
 
 import { CAPTAIN_KEY, sanitizeKey } from './state.ts'
+import { normalizeWorkspacePath } from './quality-gates.ts'
 
 /** Hard cap on named profiles so the usage prompt cannot grow without bound. */
 export const MAX_TEAM_PROFILES = 16
@@ -23,6 +24,7 @@ const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'c
 const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
+const TASK_PLANNING_KEYS = ['mode', 'sharedInScope'] as const
 
 /**
  * Where each nested key set lives inside a profile body. Used for two things:
@@ -40,6 +42,7 @@ const PROFILE_KEY_SCOPE: ProfileKeyScope = { keys: PROFILE_KEYS }
 const MEMBER_KEY_SCOPE: ProfileKeyScope = { keys: MEMBER_KEYS }
 const TASK_KEY_SCOPE: ProfileKeyScope = { keys: TASK_KEYS }
 const REVIEW_POLICY_SCOPE: ProfileKeyScope = { keys: REVIEW_POLICY_KEYS, label: 'reviewPolicy' }
+const TASK_PLANNING_SCOPE: ProfileKeyScope = { keys: TASK_PLANNING_KEYS, label: 'taskPlanning' }
 const FALLBACK_SCOPE: ProfileKeyScope = { keys: FALLBACK_KEYS, label: 'fallback' }
 
 /** A non-empty array, or an empty one when the key is absent. */
@@ -82,9 +85,10 @@ function assertProfileKeys(
     value,
     scope.keys,
     path,
-    scope === PROFILE_KEY_SCOPE ? [REVIEW_POLICY_SCOPE, MEMBER_KEY_SCOPE, TASK_KEY_SCOPE] : [],
-  )
-}
+    scope === PROFILE_KEY_SCOPE
+      ? [REVIEW_POLICY_SCOPE, MEMBER_KEY_SCOPE, TASK_KEY_SCOPE, TASK_PLANNING_SCOPE]
+      : [],
+  )}
 
 /** One member row in a named team-profile template (unresolved). */
 export interface TeamModelFallbackConfig {
@@ -157,6 +161,8 @@ export interface NormalizedTeamProfile {
   executionPrompt?: string
   fallback?: TeamModelFallbackConfig
   taskPlanning: 'captain' | 'seed'
+  /** Paths every implementation/repair task of this profile inherits (WP4/S10). */
+  sharedInScope?: string[]
   members: NormalizedProfileMember[]
   tasks: NormalizedProfileTask[]
   reviewPolicy?: import('./types.ts').ReviewPolicy
@@ -388,7 +394,37 @@ export function findProfilesInConfig(raw: unknown): Record<string, TeamProfileCo
 
 /** Public lookup used by activation text and status rendering. */
 export function resolveProfileTaskPlanning(config: TeamProfileConfig | undefined): 'captain' | 'seed' {
-  return config?.taskPlanning === 'captain' ? 'captain' : 'seed'
+  return normalizePlanningShape(config?.taskPlanning).mode
+}
+
+/**
+ * The two accepted shapes of `taskPlanning`: the original string
+ * (`"captain"`/`"seed"`) and the object form that carries the shared scope
+ * (`{ mode, sharedInScope }`).
+ */
+function normalizePlanningShape(value: unknown): { mode: 'captain' | 'seed'; sharedInScope?: string[] } {
+  if (value === 'captain') return { mode: 'captain' }
+  if (value === 'seed') return { mode: 'seed' }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>
+    const mode = record['mode'] === 'captain' ? 'captain' : 'seed'
+    const shared = record['sharedInScope']
+    if (Array.isArray(shared) && shared.length > 0) {
+      return { mode, sharedInScope: shared.filter((item): item is string => typeof item === 'string') }
+    }
+    return { mode }
+  }
+  return { mode: 'seed' }
+}
+
+/**
+ * Paths every implementation/repair task inherits, from the creating profile's
+ * `taskPlanning.sharedInScope` (WP4/S10). They are added to the task's `inScope`
+ * and excluded from the overlap comparison, so two sibling lanes can both touch
+ * generated documentation without being treated as a scope conflict.
+ */
+export function resolveProfileSharedInScope(config: TeamProfileConfig | undefined): string[] | undefined {
+  return normalizePlanningShape(config?.taskPlanning).sharedInScope
 }
 
 function countLabel(count: number, noun: string): string {
@@ -460,7 +496,7 @@ function normalizeListedProfile(
   const protocol = optionalNonEmptyString(raw['protocol'], `${path}.protocol`)
   const executionPrompt = optionalNonEmptyString(raw['executionPrompt'], `${path}.executionPrompt`)
   const fallback = normalizeFallback(raw['fallback'], `${path}.fallback`)
-  const taskPlanning = normalizeTaskPlanning(raw['taskPlanning'], `${path}.taskPlanning`)
+  const planning = normalizeTaskPlanning(raw['taskPlanning'], `${path}.taskPlanning`)
   const reviewPolicy = normalizeReviewPolicy(raw['reviewPolicy'], `${path}.reviewPolicy`)
   const membersRaw = raw['members']
   if (!Array.isArray(membersRaw) || membersRaw.length === 0) {
@@ -497,7 +533,8 @@ function normalizeListedProfile(
       protocol,
       executionPrompt,
       fallback,
-      taskPlanning,
+      taskPlanning: planning.mode,
+      ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
       reviewPolicy,
       members,
       tasks: [],
@@ -549,17 +586,44 @@ function normalizeListedProfile(
     protocol,
     executionPrompt,
     fallback,
-    taskPlanning,
+    taskPlanning: planning.mode,
+    ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
     reviewPolicy,
     members,
-    tasks: taskPlanning === 'captain' ? [] : tasks,
+    tasks: planning.mode === 'captain' ? [] : tasks,
   })
 }
 
-function normalizeTaskPlanning(value: unknown, path: string): 'captain' | 'seed' {
-  if (value === undefined) return 'seed'
-  if (value === 'captain' || value === 'seed') return value
-  throw new Error(`${path} must be "captain" or "seed"`)
+function normalizeTaskPlanning(
+  value: unknown,
+  path: string,
+): { mode: 'captain' | 'seed'; sharedInScope?: string[] } {
+  if (value === undefined) return { mode: 'seed' }
+  if (value === 'captain' || value === 'seed') return { mode: value }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${path} must be "captain", "seed", or an object with mode/sharedInScope`)
+  }
+  const raw = asRecord(value, path)
+  assertProfileKeys(raw, TASK_PLANNING_SCOPE, path)
+  const mode = raw['mode']
+  if (mode !== undefined && mode !== 'captain' && mode !== 'seed') {
+    throw new Error(`${path}.mode must be "captain" or "seed"`)
+  }
+  const shared = raw['sharedInScope']
+  if (shared === undefined) return { mode: mode === 'captain' ? 'captain' : 'seed' }
+  if (!Array.isArray(shared) || shared.length === 0) {
+    throw new Error(`${path}.sharedInScope must be a non-empty array of workspace-relative paths`)
+  }
+  const paths = shared.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new Error(`${path}.sharedInScope[${index}] must be a non-empty string`)
+    }
+    if (normalizeWorkspacePath(item) === undefined) {
+      throw new Error(`${path}.sharedInScope[${index}] "${item}" is not a workspace-relative path`)
+    }
+    return item
+  })
+  return { mode: mode === 'captain' ? 'captain' : 'seed', sharedInScope: paths }
 }
 
 function normalizeReviewPolicy(value: unknown, path: string): import('./types.ts').ReviewPolicy | undefined {

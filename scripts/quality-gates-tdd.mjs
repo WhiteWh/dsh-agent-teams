@@ -97,6 +97,7 @@ function loadStateApi() {
     applySupersession: state.applySupersession,
     unsatisfiedDependencies: state.unsatisfiedDependencies,
     transitionError: state.transitionError,
+    acceptTaskPaths: state.acceptTaskPaths,
   }
 }
 
@@ -1255,19 +1256,23 @@ console.log('quality-gates TDD — I. one task-status transition table')
 {
   const stateModule = require('../lib/state.js')
   const gatesModule = require('../lib/quality-gates.js')
-  const statuses = ['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled', 'superseded']
+  const statuses = ['pending', 'claimed', 'in_progress', 'awaiting_scope_review', 'completed', 'failed', 'cancelled', 'superseded']
   // The normative matrix. `state.ts` is the single owner of the table; every
   // other module must read the same object instead of keeping a copy, or a new
   // status would have to be added twice and the two copies would drift.
   const expected = {
     pending: ['claimed', 'cancelled', 'superseded'],
     claimed: ['in_progress', 'failed', 'cancelled', 'superseded'],
-    in_progress: ['completed', 'failed', 'cancelled', 'superseded'],
-    completed: [],
     // WP2/S08 legalized the retry: `reassign_task` already moved a failed task
     // back to `pending` through `invalidateTaskAttempt`, bypassing this table, so
     // the table disagreed with the behaviour the tools actually have.
     // WP3/S09 adds `superseded` for every non-completed status.
+    // WP4/S10 adds `awaiting_scope_review`: the worker reported a path outside its
+    // declared inScope, and the captain either accepts the paths (`completed`),
+    // retries the lane (`pending`), or replaces it.
+    in_progress: ['awaiting_scope_review', 'completed', 'failed', 'cancelled', 'superseded'],
+    awaiting_scope_review: ['completed', 'pending', 'failed', 'cancelled', 'superseded'],
+    completed: [],
     failed: ['pending', 'superseded'],
     cancelled: ['superseded'],
     superseded: [],
@@ -1956,6 +1961,135 @@ console.log('quality-gates TDD — N. superseded lanes (WP3)')
       && cyclic.tasks[0].status === 'failed'
       && cyclic.tasks[1].dependencies.join(',') === 'c1',
     JSON.stringify({ ok: refused?.ok, error: refused?.error }),
+  )
+}
+
+console.log('quality-gates TDD — O. post-hoc scope acceptance (WP4)')
+
+{
+  // Feedback §4: a worker that changed a file outside its declared inScope had to
+  // either lie about changedPaths or fail the lane. The honest report now lands
+  // the task in `awaiting_scope_review`, and the captain either accepts the paths
+  // (additively) or reassigns/supersedes.
+  const contract = {
+    kind: 'implementation',
+    objective: 'Ship the lane',
+    inScope: ['src/a.ts'],
+    acceptance: ['lane works'],
+    verify: ['pnpm test'],
+  }
+  const lane = (partial) => ({
+    id: 't1',
+    subject: 'lane',
+    status: 'in_progress',
+    dependencies: [],
+    createdAt: now(),
+    updatedAt: now(),
+    attempt: 1,
+    attemptId: 'attempt-1',
+    assignee: 'implementer',
+    ...contract,
+    ...partial,
+  })
+  const shared = ['docs/CHANGELOG.md', 'tools/']
+  const openFirst = team({
+    tasks: [lane({ id: 't1', status: 'pending', attempt: 0, attemptId: undefined, inScope: ['src/a.ts', 'docs/CHANGELOG.md', 'tools/'] })],
+    taskSeq: 1,
+  })
+  const candidate = {
+    subject: 'second lane',
+    ...contract,
+    inScope: ['src/b.ts', 'docs/CHANGELOG.md', 'tools/'],
+    nextTaskId: 't2',
+    sharedInScope: shared,
+  }
+  const overlapVerdict = api.validateCreateTask?.(openFirst, candidate)
+  check(
+    'tdd.scope.shared-paths-not-in-overlap',
+    overlapVerdict?.ok === true,
+    String(overlapVerdict?.error ?? ''),
+  )
+  const withoutShared = api.validateCreateTask?.(openFirst, {
+    ...candidate,
+    inScope: ['src/b.ts', 'docs/CHANGELOG.md'],
+    sharedInScope: undefined,
+  })
+  check(
+    'tdd.scope.shared-paths-still-guard-own-paths',
+    withoutShared?.ok === false && /overlaps/.test(String(withoutShared?.error ?? '')),
+    String(withoutShared?.error ?? ''),
+  )
+  const gateTeam = team({ tasks: [lane({})], taskSeq: 1 })
+  const undeclared = api.evaluateQualityCompletion?.(gateTeam.tasks[0], {
+    status: 'completed',
+    changedPaths: ['src/a.ts', 'src/surprise.ts', 'src/extra.ts'],
+    acceptanceResults: contract.acceptance.map((criterion) => ({ criterion, status: 'passed' })),
+    commandsRun: contract.verify.map((command) => ({ command, status: 'passed' })),
+  })
+  check(
+    'tdd.scope.undeclared-goes-to-scope-review',
+    undeclared?.ok === false
+      && undeclared?.requiredStatus === 'awaiting_scope_review'
+      && JSON.stringify(undeclared?.scopeReview) === JSON.stringify(['src/surprise.ts', 'src/extra.ts'])
+      && /accept_paths/.test(String(undeclared?.error ?? ''))
+      && api.transitionError?.('in_progress', 'awaiting_scope_review') === undefined
+      && api.transitionError?.('awaiting_scope_review', 'completed') === undefined,
+    JSON.stringify({ ok: undeclared?.ok, requiredStatus: undeclared?.requiredStatus, scopeReview: undeclared?.scopeReview }),
+  )
+  const waiting = { ...gateTeam.tasks[0], status: 'awaiting_scope_review' }
+  const blockedDelivery = api.canDeclareDelivery?.(team({
+    tasks: [waiting, lane({ id: 'r1', kind: 'review', status: 'completed', verdict: 'pass', reviewedTaskId: 't1', objective: 'review', acceptance: ['no high findings'], inScope: undefined, verify: undefined })],
+    taskSeq: 2,
+  }))
+  check(
+    'tdd.scope.awaiting-review-blocks-delivery',
+    blockedDelivery?.ok === false
+      && (blockedDelivery.blockers ?? []).some((blocker) => blocker.includes('scope decision')),
+    JSON.stringify(blockedDelivery?.blockers),
+  )
+  const accepted = api.acceptTaskPaths?.(
+    team({ tasks: [waiting], taskSeq: 1 }),
+    waiting,
+    ['src/surprise.ts', 'src/extra.ts'],
+    'captain',
+    'the lane legitimately owns those files',
+  )
+  check(
+    'tdd.scope.accept-paths-additive',
+    accepted?.ok === true
+      && accepted.task.inScope.includes('src/a.ts')
+      && accepted.task.inScope.includes('src/surprise.ts')
+      && accepted.task.inScope.length === waiting.inScope.length + 2
+      && (accepted.task.revisions ?? []).length === 1
+      && accepted.task.revisions[0].fields.join(',') === 'inScope',
+    JSON.stringify(accepted?.task?.inScope),
+  )
+  const completedNow = { ...accepted.task, status: 'awaiting_scope_review' }
+  const regate = api.evaluateQualityCompletion?.(completedNow, {
+    status: 'completed',
+    changedPaths: ['src/a.ts', 'src/surprise.ts', 'src/extra.ts'],
+    acceptanceResults: contract.acceptance.map((criterion) => ({ criterion, status: 'passed' })),
+    commandsRun: contract.verify.map((command) => ({ command, status: 'passed' })),
+  })
+  check(
+    'tdd.scope.accept-completes-task',
+    regate?.ok === true,
+    String(regate?.error ?? ''),
+  )
+  const reviewed = team({
+    tasks: [
+      { ...waiting },
+      lane({ id: 'r1', kind: 'review', status: 'completed', verdict: 'pass', reviewedTaskId: 't1', objective: 'review', acceptance: ['no high findings'], inScope: undefined, verify: undefined }),
+    ],
+    taskSeq: 2,
+  })
+  const frozenAccept = api.acceptTaskPaths?.(reviewed, reviewed.tasks[0], ['src/other.ts'], 'captain', 'late')
+  check(
+    'tdd.scope.accept-after-review-needs-force',
+    frozenAccept?.ok === false
+      && /frozen/.test(String(frozenAccept?.error ?? ''))
+      && api.acceptTaskPaths?.(reviewed, reviewed.tasks[0], ['src/other.ts'], 'captain', 'the review judged the old scope', true)?.ok === true,
+    String(frozenAccept?.error ?? ''),
   )
 }
 

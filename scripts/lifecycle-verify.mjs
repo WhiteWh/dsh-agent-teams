@@ -873,21 +873,23 @@ try {
   await call('agent_teams_update_task', {
     task_id: amendNarrow.task_id, status: 'in_progress', attempt_id: amendNarrowClaim.attempt_id,
   }, amendFixer)
-  let amendUndeclaredRejected = false
-  try {
-    await call('agent_teams_update_task', {
-      task_id: amendNarrow.task_id,
-      status: 'completed',
-      attempt_id: amendNarrowClaim.attempt_id,
-      output: 'scanner and tests shipped',
-      changedPaths: ['src/scanner.ts', 'src/scanner.test.ts'],
-      acceptanceResults: [{ criterion: 'scanner handles empty input', status: 'passed' }],
-      commandsRun: [{ command: 'pnpm test', status: 'passed' }],
-    }, amendFixer)
-  } catch (error) {
-    amendUndeclaredRejected = /scanner\.test\.ts is undeclared/.test(String(error))
-  }
-  check('a path outside the declared inScope is refused, not silently accepted', amendUndeclaredRejected)
+  await call('agent_teams_update_task', {
+    task_id: amendNarrow.task_id,
+    status: 'completed',
+    attempt_id: amendNarrowClaim.attempt_id,
+    output: 'scanner and tests shipped',
+    changedPaths: ['src/scanner.ts', 'src/scanner.test.ts'],
+    acceptanceResults: [{ criterion: 'scanner handles empty input', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  }, amendFixer)
+  // Since WP4/S10 the honest report is not refused: the task is held for a scope
+  // decision with the evidence intact (the S09 scenario above covers the captain
+  // accepting the paths). The S08 lane deliberately fails instead, to exercise
+  // amend-then-retry.
+  const amendHeld = await amendTask(amendNarrow.task_id)
+  check('a path outside the declared inScope is held for a scope decision, not silently accepted',
+    amendHeld?.status === 'awaiting_scope_review'
+      && (amendHeld.changedPaths ?? []).includes('src/scanner.test.ts'))
   await call('agent_teams_update_task', {
     task_id: amendNarrow.task_id,
     status: 'failed',
@@ -1022,6 +1024,59 @@ try {
   check('completing the replacement unblocks the redirected dependent',
     dependentAfterReplacement?.status === 'pending'
       && (await supersedeTeam())?.tasks.some(task => task.id === dependent.task_id && task.dependencies.includes(replaced.superseded_by)))
+  await call('agent_teams_delete', {})
+
+  // ── WP4/S10: an honest undeclared path becomes a captain decision ──
+  // Before this, a worker that touched a file outside its declared inScope had to
+  // either lie about changedPaths or fail the lane. Now the report is accepted as
+  // evidence, the task is held in `awaiting_scope_review`, and the captain accepts
+  // the paths (completing the lane) or reassigns/supersedes it.
+  await call('agent_teams_create', { name: 'Scope Review', description: 'hold an undeclared path' })
+  await call('agent_teams_add_member', { name: 'scout', role: 'implementer' })
+  const scopeState = () => readTeam(stateRoot, 'scope-review')
+  const scopeTask = async id => (await scopeState())?.tasks.find(candidate => candidate.id === id)
+  const scoutTask = await call('agent_teams_create_task', {
+    subject: 'ship the reader',
+    assignee: 'scout',
+    kind: 'implementation',
+    objective: 'Ship the reader',
+    inScope: ['src/reader.ts'],
+    acceptance: ['reader parses a line'],
+    verify: ['pnpm test'],
+  })
+  const scout = liveAgents.get((await scopeState()).members.find(m => m.name === 'scout').id)
+  const scoutClaim = await call('agent_teams_claim_task', { task_id: scoutTask.task_id }, scout)
+  await call('agent_teams_update_task', { task_id: scoutTask.task_id, status: 'in_progress', attempt_id: scoutClaim.attempt_id }, scout)
+  await call('agent_teams_update_task', {
+    task_id: scoutTask.task_id,
+    status: 'completed',
+    attempt_id: scoutClaim.attempt_id,
+    output: 'reader shipped; it needed one shared helper',
+    changedPaths: ['src/reader.ts', 'src/shared/lines.ts'],
+    acceptanceResults: [{ criterion: 'reader parses a line', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  }, scout)
+  const held = await scopeTask(scoutTask.task_id)
+  check('an undeclared path holds the task for a scope decision instead of failing it',
+    held?.status === 'awaiting_scope_review'
+      && (held.changedPaths ?? []).includes('src/shared/lines.ts')
+      && (held.acceptanceResults ?? []).length === 1)
+  const accepted = await call('agent_teams_accept_paths', {
+    task_id: scoutTask.task_id,
+    paths: ['src/shared/lines.ts'],
+    reason: 'the shared helper belongs to this lane',
+  })
+  const afterAccept = await scopeTask(scoutTask.task_id)
+  check('accepting the paths completes the lane with the work it actually did',
+    afterAccept?.status === 'completed'
+      && accepted.accepted_paths.includes('src/shared/lines.ts')
+      && (afterAccept.inScope ?? []).includes('src/shared/lines.ts')
+      && (afterAccept.revisions ?? []).length === 1
+      && accepted.revision_count === 1)
+  const delivery = await call('agent_teams_status', {})
+  check('the accepted lane no longer blocks the team record',
+    (await scopeState())?.tasks.every(task => task.status === 'completed')
+      && typeof delivery.team_name === 'string')
   await call('agent_teams_delete', {})
 
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })

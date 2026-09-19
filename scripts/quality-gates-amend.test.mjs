@@ -80,7 +80,11 @@ test('amended contract is the one the completion gate evaluates', () => {
   const task = team.tasks[0]
   const blocked = evaluateQualityCompletion(task, completedResults(task))
   assert.equal(blocked.ok, false)
-  assert.match(blocked.error, /src\/amend-e2e\.txt is undeclared/)
+  // Since WP4/S10 an undeclared path is a scope decision, not a failure: the gate
+  // reports every undeclared path, marks the completion for `awaiting_scope_review`
+  // and names the tool that resolves it.
+  assert.match(blocked.error, /undeclared paths: src\/amend-e2e\.txt/)
+  assert.deepEqual(blocked.scopeReview, ['src/amend-e2e.txt'])
   const { ok, task: amended } = amendTaskContract(team, task, { inScope: ['docs/', 'src/'] }, 'captain', 'scope was wrong')
   assert.equal(ok, true)
   const gate = evaluateQualityCompletion(amended, completedResults(amended))

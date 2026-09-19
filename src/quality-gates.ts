@@ -82,6 +82,12 @@ export interface CreateTaskInput {
    * without it the mirror overlap direction cannot be checked.
    */
   nextTaskId?: string
+  /**
+   * Paths every write task of this team inherits from the profile
+   * (`taskPlanning.sharedInScope`, WP4/S10). They are excluded from the overlap
+   * comparison: two sibling lanes are expected to touch shared generated docs.
+   */
+  sharedInScope?: string[]
 }
 
 export interface ValidateCreateTaskResult {
@@ -106,6 +112,12 @@ export interface QualityCompletionResult {
   ok: boolean
   error?: string
   requiredStatus?: TaskStatus
+  /**
+   * Paths the worker reported but did not declare (WP4/S10). The caller holds the
+   * task in `awaiting_scope_review` instead of failing it: the captain either
+   * accepts the paths with `agent_teams_accept_paths`, or reassigns/supersedes.
+   */
+  scopeReview?: readonly string[]
 }
 
 export interface PlannedFollowUpTask {
@@ -436,6 +448,11 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
   }
 
   if (WRITE_KINDS.includes(kind) && nonemptyStringList(input.inScope)) {
+    // Paths every implementation/repair task of this team inherits (WP4/S10) are
+    // not a conflict: two sibling lanes are expected to touch the shared
+    // generated docs, so they never take part in the overlap comparison.
+    const shared = input.sharedInScope ?? []
+    const ownScope = shared.length === 0 ? input.inScope : subtractScope(input.inScope, shared)
     for (const other of team.tasks) {
       if (!WRITE_KINDS.includes(taskKindOf(other))) continue
       if (!OPEN_STATUSES.includes(other.status)) continue
@@ -448,7 +465,8 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
       // serialization: nothing orders the candidate after `other` there, so that
       // conflict is still reported.
       if (serializedAgainst(team.tasks, other, dependencies, input.nextTaskId)) continue
-      const overlap = inScopeOverlap(input.inScope, other.inScope)
+      const otherScope = shared.length === 0 ? (other.inScope ?? []) : subtractScope(other.inScope ?? [], shared)
+      const overlap = inScopeOverlap(ownScope, otherScope)
       if (overlap.length > 0) {
         return {
           ok: false,
@@ -690,6 +708,7 @@ export function evaluateQualityCompletion(
       if (changed === undefined) {
         return { ok: false, error: `${kind} completion requires changedPaths` }
       }
+      const undeclared: string[] = []
       for (const path of changed) {
         const classification = classifyChangedPath(path, task.inScope ?? [], task.outOfScope ?? [])
         // outOfScope deliberately wins over inScope, so a path present in both
@@ -704,7 +723,22 @@ export function evaluateQualityCompletion(
           }
         }
         if (classification !== 'in_scope') {
-          return { ok: false, error: `${kind} cannot complete: ${path} is ${classification}` }
+          // A path the member honestly reported but did not declare is not a
+          // failure: it is a decision for the captain (WP4/S10). The gate refuses
+          // the `completed` transition and asks the caller to hold the task in
+          // `awaiting_scope_review`, where `accept_paths` can widen the contract
+          // or the captain can reassign/supersede. Reporting every undeclared path
+          // at once is what stops the "under-declare changedPaths" habit.
+          undeclared.push(path)
+        }
+      }
+      if (undeclared.length > 0) {
+        return {
+          ok: false,
+          error: `${kind} cannot complete with undeclared paths: ${undeclared.join(', ')}`
+            + ' — the captain accepts them with agent_teams_accept_paths, or reassigns/supersedes the task',
+          requiredStatus: 'awaiting_scope_review' as TaskStatus,
+          scopeReview: undeclared,
         }
       }
     }
@@ -714,6 +748,111 @@ export function evaluateQualityCompletion(
 
 function unresolvedFindings(task: TeamTask): ReviewFinding[] {
   return (task.findings ?? []).filter((finding) => finding.resolved !== true)
+}
+
+/** Result of {@link acceptTaskPaths}. */
+export interface AcceptPathsResult {
+  ok: boolean
+  error?: string
+  task?: TeamTask
+  revision?: TaskRevision
+}
+
+/**
+ * Post-hoc scope acceptance (WP4/S10): add paths to a task's `inScope` instead of
+ * replacing the list.
+ *
+ * The worker reports what it really changed; when a path is outside the declared
+ * scope the gate holds the task in `awaiting_scope_review` and the captain either
+ * accepts the paths here — the lane then completes with the work it actually did
+ * — or reassigns/supersedes it. Acceptance is additive on purpose: `amend_task`
+ * replaces whole lists, which is the wrong shape for "also allow these files".
+ *
+ * A `completed` task may still accept paths (that is the point of "post-hoc"), as
+ * long as no review has passed judgment on it; `force` overrides that freeze
+ * exactly like a contract amendment, and the acceptance is recorded in the same
+ * revisions ledger.
+ * @param team - the team record, read for the freeze check.
+ * @param task - the task whose scope is widened.
+ * @param paths - workspace-relative paths to add.
+ * @param by - author identity (`captain`).
+ * @param reason - why the paths belong to the lane.
+ * @param force - allow widening after a passing review verdict.
+ * @returns the updated task plus the recorded revision.
+ */
+export function acceptTaskPaths(
+  team: TeamState,
+  task: TeamTask,
+  paths: readonly string[],
+  by: string,
+  reason: string,
+  force = false,
+): AcceptPathsResult {
+  if (!nonemptyString(by)) return { ok: false, error: 'accept_paths requires a non-empty author identity' }
+  if (!nonemptyString(reason)) return { ok: false, error: 'accept_paths requires a non-empty reason' }
+  if (!nonemptyStringList(paths)) {
+    return { ok: false, error: 'accept_paths requires a non-empty list of paths' }
+  }
+  if (task.status === 'cancelled' || task.status === 'superseded') {
+    return { ok: false, error: `task ${task.id} is ${task.status}; a dead task has no scope to widen` }
+  }
+  for (const entry of paths) {
+    if (normalizeWorkspacePath(entry) === undefined) {
+      return {
+        ok: false,
+        error: `accepted path "${entry}" is not a workspace-relative path (absolute paths and ".." can never match scope patterns)`,
+      }
+    }
+  }
+  const passedJudgment = team.tasks.some((item) => (
+    (taskKindOf(item) === 'review' || taskKindOf(item) === 'requirements')
+    && item.reviewedTaskId === task.id
+    && item.verdict === 'pass'
+  ))
+  if (passedJudgment && !force) {
+    return {
+      ok: false,
+      error: `task ${task.id} already passed review; its contract is frozen`
+        + ' (pass force=true with the same reason to widen the scope anyway)',
+    }
+  }
+  const previous = task.inScope ?? []
+  const widened = [...previous]
+  for (const entry of paths) {
+    if (!widened.includes(entry)) widened.push(entry)
+  }
+  if (widened.length === previous.length) {
+    return { ok: false, error: `every accepted path is already in ${task.id} inScope` }
+  }
+  const revision: TaskRevision = {
+    at: Date.now(),
+    by,
+    reason,
+    fields: ['inScope'],
+    previous: { inScope: previous },
+  }
+  return {
+    ok: true,
+    revision,
+    task: {
+      ...task,
+      inScope: widened,
+      revisions: [...(task.revisions ?? []), revision],
+      updatedAt: Date.now(),
+    } as TeamTask,
+  }
+}
+
+/**
+ * Drop the patterns that every write task of the team shares, so the overlap
+ * comparison only sees the paths a task claims for itself.
+ * @param scope - the task's declared inScope patterns.
+ * @param shared - patterns inherited from `taskPlanning.sharedInScope`.
+ * @returns the patterns that are not part of the shared set.
+ */
+function subtractScope(scope: readonly string[], shared: readonly string[]): string[] {
+  const sharedSet = new Set(shared.map((pattern) => pattern.trim()))
+  return scope.filter((pattern) => !sharedSet.has(pattern.trim()))
 }
 
 function findingKey(ids: readonly string[]): string {
@@ -1113,7 +1252,12 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
   if (team.escalated === true) blockers.push('team requires escalation resolution')
   if (team.tasks.length === 0) blockers.push('team has no completed work')
   for (const item of team.tasks.filter(item => !isQualityKind(taskKindOf(item)))) {
-    if (item.status !== 'completed' && !DEAD_TASK_STATUSES.includes(item.status)) blockers.push(`${item.id} (${taskKindOf(item)}) is not completed`)
+    if (item.status === 'completed' || DEAD_TASK_STATUSES.includes(item.status)) continue
+    if (item.status === 'awaiting_scope_review') {
+      blockers.push(`${item.id} is awaiting a scope decision (accept_paths, or reassign/supersede it)`)
+      continue
+    }
+    blockers.push(`${item.id} (${taskKindOf(item)}) is not completed`)
   }
   if (team.tasks.length > 0 && team.tasks.every(item => DEAD_TASK_STATUSES.includes(item.status))) blockers.push('all work was cancelled')
   const quality = team.tasks.filter((item) => isQualityKind(taskKindOf(item)))
@@ -1147,6 +1291,10 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
       continue
     }
     if (DEAD_TASK_STATUSES.includes(item.status)) continue
+    if (item.status === 'awaiting_scope_review') {
+      blockers.push(`${item.id} is awaiting a scope decision (accept_paths, or reassign/supersede it)`)
+      continue
+    }
     blockers.push(`${item.id} (${kind}) is not completed`)
   }
 

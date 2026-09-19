@@ -76,7 +76,7 @@ the pre-step count, and FAIL must stay 0.
 | F4 | artwork cache revision (hotfix release 0.1.22) | done | | verify 219 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; mutation-tested route check; plan releases below shift by one |
 | S08 | WP2 amend_task extensions + retry from failed | done | | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
 | S09 | WP3 superseded + atomic dependency redirect | done | | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
-| S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | todo | | needs S03 |
+| S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
 | S11 | WP6.3 known-delta registry | todo | | needs S03 |
 | S12 | WP6.4 requiredReviewers enforced | todo | | |
 | S13 | docs + release 0.1.23 | todo | | 0.1.22 was taken by the F4 hotfix |
@@ -172,6 +172,65 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S10 — WP4: honest scope reports, `accept_paths`, `sharedInScope` (done)
+
+Planned test labels (WP4 of the plan): `tdd.scope.shared-paths-not-in-overlap`,
+`tdd.scope.accept-paths-additive`, `tdd.scope.undeclared-goes-to-scope-review`,
+`tdd.scope.accept-completes-task`, plus `docs/quality-gates.md` §6.2.
+
+- **State (`src/types.ts`, `src/state.ts`):** new intermediate status
+  `awaiting_scope_review`, reachable from `in_progress` and leaving to `completed`
+  (accepted), `pending` (retry), `failed`/`cancelled`/`superseded`. It is not
+  terminal, never claimable, and blocks descendants exactly like `in_progress`
+  (`taskVisualState` maps it to `running`, the reader accepts it).
+- **Gate (`src/quality-gates.ts`):** an `implementation`/`repair` completion that
+  lists a path outside `inScope` no longer fails. The gate refuses the `completed`
+  transition with `requiredStatus: 'awaiting_scope_review'`, reports **every**
+  undeclared path at once (`scopeReview`), and names `accept_paths` in the error.
+  A path that is in `inScope` *and* matches `outOfScope` stays a hard failure — that
+  is a contradictory contract, not a scope decision. Delivery blocks a held task
+  with `<id> is awaiting a scope decision (accept_paths, or reassign/supersede it)`.
+- **New rule:** `acceptTaskPaths(team, task, paths, by, reason, force)` — additive
+  `inScope` widening, a `revisions` entry, and the same post-review freeze/`force`
+  semantics as `amendTaskContract`. It also works on a `completed` task (post-hoc
+  acceptance), which is the point of the feature.
+- **New tool:** captain-only `agent_teams_accept_paths({ task_id, paths, reason,
+  force? })`. It applies the rule and, when the task was held, re-evaluates the
+  completion gate with the evidence already stored: the lane completes in the same
+  call when the widened scope covers what the worker reported, otherwise the result
+  names what is still outside. `update_task` consumes `gate.scopeReview` and stores
+  `awaiting_scope_review`. Tools are now 16.
+- **Profiles (`src/profiles.ts`, `src/types.ts`):** `taskPlanning` accepts the
+  original string or `{ mode, sharedInScope }`; the new `TASK_PLANNING_KEYS` scope
+  validates the nested keys and feeds the near-miss hint. `resolveProfileSharedInScope`
+  exposes the paths, the team snapshot freezes them, `create_task` merges them into
+  every implementation/repair `inScope`, and `validateCreateTask` subtracts them
+  (`subtractScope`) from both sides of the overlap comparison — sibling lanes may
+  both touch the generated docs without a false conflict.
+- **UI:** `task.status.awaitingScopeReview` in both locales and the panel's status
+  label map; the visual state stays `running` because the work exists and only the
+  decision is missing.
+- **RED first:** the new tdd group failed on 4 of 8 labels (`shared-paths…`,
+  `undeclared-goes-to-scope-review`, `accept-paths-additive`, `accept-completes-task`),
+  the transition matrix lost a status, and the S08 lifecycle check still expected the
+  old refusal.
+- **GREEN:** `quality-gates-tdd` 121 PASS / 0 FAIL; `verify.mjs` 235 PASS / 0 FAIL
+  (three new checks: the captain-only additive tool that completes a held lane; the
+  hold-instead-of-fail wiring end to end; the profile shared scope and its overlap
+  exclusion); lifecycle `all lifecycle checks passed` with three new checks
+  (undeclared path holds the task with its evidence; accepting completes it; the
+  accepted lane no longer blocks the team record).
+- **Honest test adaptation:** the S08 lifecycle check asserted the old hard refusal
+  (`/scanner\.test\.ts is undeclared/`). It now asserts the new contract — the task
+  is held in `awaiting_scope_review` with the path recorded — and that same lane
+  still fails explicitly and is then amended and retried, so the S08 scenario keeps
+  testing what it was written for.
+- **Test-authoring traps hit (not product bugs):** my first WP4 group spread the
+  contract object *after* the per-case overrides, so every case silently used the
+  shared `implContract()` scope; and `{ ...candidate, inScope: [...] }` kept the
+  candidate's `sharedInScope`, so the "still guards own paths" case could never
+  overlap. Both fixed by explicit literals in the suite.
 
 ### S09 — WP3: `superseded` and the atomic redirect (done)
 

@@ -1,0 +1,50 @@
+WP4: honest scope reports, accept_paths, sharedInScope (S10)
+
+Feedback section 4: a worker that changed a file outside its declared inScope had
+to either lie about changedPaths or fail the lane.
+
+State (src/types.ts, src/state.ts): new intermediate status
+`awaiting_scope_review`, reachable from in_progress and leaving to completed
+(accepted), pending (retry), failed/cancelled/superseded. Not terminal, never
+claimable, blocks descendants like in_progress; taskVisualState maps it to running
+and the durable reader accepts it.
+
+Gate (src/quality-gates.ts): an implementation/repair completion that lists a path
+outside inScope no longer fails. It refuses the completed transition with
+requiredStatus awaiting_scope_review, reports every undeclared path at once
+(scopeReview) and names accept_paths in the error. A path that is in inScope and
+matches outOfScope stays a hard failure - that is a contradictory contract, not a
+scope decision. Delivery blocks a held task with an explicit blocker.
+
+New rule acceptTaskPaths(team, task, paths, by, reason, force): additive inScope
+widening, a revisions entry, and the same post-review freeze/force semantics as
+amendTaskContract. It works on a completed task too (post-hoc acceptance).
+
+New tool: captain-only agent_teams_accept_paths. It applies the rule and, for a
+held task, re-evaluates the completion gate with the evidence already stored, so
+the lane completes in the same call when the widened scope covers the report;
+otherwise the result names what is still outside. update_task consumes
+gate.scopeReview and stores the hold. Tools are now 16.
+
+Profiles (src/profiles.ts, src/types.ts): taskPlanning accepts the original string
+or { mode, sharedInScope }; TASK_PLANNING_KEYS validates the nested keys and feeds
+the near-miss hint. resolveProfileSharedInScope exposes the paths, the team
+snapshot freezes them, create_task merges them into every implementation/repair
+inScope, and validateCreateTask subtracts them from both sides of the overlap
+comparison, so sibling lanes may both touch the generated docs.
+
+UI: task.status.awaitingScopeReview in both locales and the panel status map.
+
+Tests first: the tdd group failed on 4 of its 8 new labels and the transition
+matrix lost a status. Green now: quality-gates-tdd 122 PASS/0 FAIL, verify.mjs 235
+PASS/0 FAIL (three new checks), lifecycle all checks passed with three new checks,
+all 21 suites exit 0.
+
+Two honest expectation updates, no weakened assertions: the S08 lifecycle check
+asserted the old hard refusal and now asserts the hold with the path recorded
+(that lane still fails explicitly and is amended+retried), and the amend suite's
+gate-message assertion follows the new wording while additionally asserting the
+scopeReview payload.
+
+Docs: docs/quality-gates.md section 6.2 (accept_paths, awaiting_scope_review,
+sharedInScope), usage tool table, README capability row, 15 -> 16 tool counts.

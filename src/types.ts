@@ -13,6 +13,8 @@ export type TaskStatus =
   | 'pending'
   | 'claimed'
   | 'in_progress'
+  /** Work is finished but a path outside inScope needs the captain's decision. */
+  | 'awaiting_scope_review'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -307,6 +309,12 @@ export interface TeamProfileSnapshot {
   fallback?: TeamModelFallback
   /** Frozen planning mode: captain plans the graph; seed keeps template tasks. */
   taskPlanning?: 'captain' | 'seed'
+  /**
+   * Paths every implementation/repair task of this team inherits from the
+   * creating profile's `taskPlanning.sharedInScope` (WP4/S10). They are added to
+   * the task's `inScope` and excluded from the overlap comparison.
+   */
+  sharedInScope?: string[]
   /** Frozen review-loop policy from the creating profile. */
   reviewPolicy?: ReviewPolicy
 }

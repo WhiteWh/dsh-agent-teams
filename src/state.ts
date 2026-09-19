@@ -22,6 +22,7 @@ import { hasValidQualityTaskFields, isReviewPolicy, normalizeBlankOptionalTaskFi
 
 export {
   acceptanceCriterionText,
+  acceptTaskPaths,
   amendTaskContract,
   buildCoverageMatrix,
   canDeclareDelivery,
@@ -185,7 +186,11 @@ export function unsatisfiedDependencies(tasks: TeamTask[], dependencies: string[
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   pending: ['claimed', 'cancelled', 'superseded'],
   claimed: ['in_progress', 'failed', 'cancelled', 'superseded'],
-  in_progress: ['completed', 'failed', 'cancelled', 'superseded'],
+  // `awaiting_scope_review` is entered when a worker reports completion together
+  // with a path outside its declared inScope (WP4/S10); the captain then either
+  // accepts the paths (`completed`), retries the lane (`pending`), or replaces it.
+  in_progress: ['awaiting_scope_review', 'completed', 'failed', 'cancelled', 'superseded'],
+  awaiting_scope_review: ['completed', 'pending', 'failed', 'cancelled', 'superseded'],
   completed: [],
   failed: ['pending', 'superseded'],
   cancelled: ['superseded'],
@@ -942,6 +947,7 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && (value['status'] === 'pending'
       || value['status'] === 'claimed'
       || value['status'] === 'in_progress'
+      || value['status'] === 'awaiting_scope_review'
       || value['status'] === 'completed'
       || value['status'] === 'failed'
       || value['status'] === 'cancelled'
@@ -1146,9 +1152,10 @@ export async function listArchivedTeamIds(stateRoot: string): Promise<string[]> 
 export type VisualTaskState = 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled' | 'superseded'
 
 /**
- * The visual state of one task: `running` while in_progress, `completed`
- * when done, `failed`/`cancelled`/`superseded` when terminal without success,
- * `blocked` while any dependency is unfinished, else `open`.
+ * The visual state of one task: `running` while in_progress or held for a scope
+ * decision, `completed` when done, `failed`/`cancelled`/`superseded` when
+ * terminal without success, `blocked` while any dependency is unfinished, else
+ * `open`.
  */
 export function taskVisualState(
   status: string,
@@ -1159,7 +1166,10 @@ export function taskVisualState(
   if (status === 'failed') return 'failed'
   if (status === 'cancelled') return 'cancelled'
   if (status === 'superseded') return 'superseded'
-  if (status === 'in_progress') return 'running'
+  // A task held for a scope decision is still in flight: the work exists, the
+  // captain has to rule on the paths. It is not claimable and it blocks its
+  // descendants exactly like in_progress.
+  if (status === 'in_progress' || status === 'awaiting_scope_review') return 'running'
   const byId = new Map(tasks.map((task) => [task.id, task]))
   const openDependency = dependencies.some((dependencyId) => {
     const dependency = byId.get(dependencyId)
