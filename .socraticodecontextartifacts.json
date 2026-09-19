@@ -1,0 +1,69 @@
+{
+  "artifacts": [
+    {
+      "name": "plugin-overview",
+      "path": "./README.md",
+      "description": "What AgentTeams is and what surfaces it adds: the captain/member/task model, the 14 team tools, the staged plan ('Approve & Run') flow, quality gates, the /agent-teams command and its gesture boundary, the memberProvider/memberModel/memberMaxDepth/maxMembers config keys, and the named multi-role profiles in cordis.patch.yml. Also the install matrix and the recommended host pairing. Start here for 'what should this do' before reading src/."
+    },
+    {
+      "name": "usage-and-limits",
+      "path": "./docs/usage.md",
+      "description": "The long-form usage reference behind the README: how the plugin hangs off DSH capability seams (ctx.tools, ctx.subagents.startContinuable()), the tool-by-tool reference, the persisted state model, Web UI behavior (including the revisioned artwork URLs), every configuration key, and the known limits. Consult before changing tool semantics or claiming a limit does not exist. (English)"
+    },
+    {
+      "name": "quality-gates-spec",
+      "path": "./docs/quality-gates.md",
+      "description": "The single executable specification for the quality-gate subsystem: task contracts (objective, acceptance, verify, inScope/outOfScope), acceptance waivers (`waived`, `no_regression`, `waiverConfirmation`), the requirements -> implementation -> verification -> review -> integration DAG, machine-decidable review verdicts, the automatic repair + re-review loop and its round limit, forced TDD, and the completion-time scope audit. Consult before touching src/quality-gates.ts or reasoning about why a review blocked a task. (English)"
+    },
+    {
+      "name": "fixed-protocol-and-tools",
+      "path": "./docs/progressive-loading.md",
+      "description": "Why the captain's system prompt and the 14 team tools stay fixed from the first request instead of loading progressively: which tools each session identity (ordinary, captain, cold-recovered captain, member) receives, what stays in the fixed prompt, and what must survive compaction. Consult before adding, renaming, or conditionally exposing a team tool, or before proposing a loading/activation tool."
+    },
+    {
+      "name": "verification-guide",
+      "path": "./docs/verification-guide.md",
+      "description": "How to prove a change to this plugin actually works, in four layers: offline typecheck+build+smoke, composition via `dsh --profile <scratch> --dump-config`, real end-to-end on an isolated headless profile with a real LLM, then GUI. Includes the rule that verification never touches the running instance and the traps paid for at each layer. Consult before claiming a fix is verified. (English)"
+    },
+    {
+      "name": "plugin-development-guide",
+      "path": "./docs/developing-dsh-plugins.md",
+      "description": "The distilled how-to for building a DSH bundle plugin, written from this plugin's own history: package skeleton, host-side surface, client-side (browser) surface, the tsdown client bundle protocol, cordis.patch.yml composition, build and install, and the failure modes hit along the way. Consult before adding a new host tool, a new client panel, or a new bundle patch entry. (English)"
+    },
+    {
+      "name": "maintenance-and-release",
+      "path": "./docs/maintenance-workflow.md",
+      "description": "The maintainer workflow: how community lifecycle skills are used against this repository, how issues and exact versions are recorded, how contributions are reviewed, implemented and verified, how the already-accepted artifact is published without rebuilding it, and how the activity-panel artwork is changed (pack revision + `pnpm art:revision`). Points at compatibility.json as the single source of truth for supported hosts. Consult before changing a version array, a release note, a supported-host claim, or an icon. (English)"
+    },
+    {
+      "name": "contributing",
+      "path": "./CONTRIBUTING.md",
+      "description": "What a good contribution to this repository looks like: the exact environment facts a bug report must carry (plugin version, real Harness package version, OS, Node version, profile, Desktop-vs-CLI), the single-source rule for supported hosts in compatibility.json, and the requirement to keep unrelated UI, installation, scheduler and host-migration changes in separate pull requests."
+    },
+    {
+      "name": "package-manifest",
+      "path": "./package.json",
+      "description": "The authoritative build and verification contract: every pnpm script (build, typecheck, verify and its per-area sub-gates), the dual program layout (tsconfig.json + tsconfig.client.json, tsdown), the pinned peer/dev dependency versions of the DSH host packages and the supported version ranges, the Node engine range, and the dsh.client.inject list of client modules the panel binds to. Consult before running a check or changing a host dependency."
+    },
+    {
+      "name": "host-composition",
+      "path": "./cordis.patch.yml",
+      "description": "The bundle patch that mounts this plugin into a dsh profile's composition: the agent-teams plugin id, its config defaults (stateDir, memberProvider, memberModel, memberMaxDepth, maxMembers, slashCommand), and the named multi-role `profiles` block including each profile's protocol, members and seeded tasks. Consult before changing plugin config shape, profile schema, or anything the host must compose."
+    },
+    {
+      "name": "host-compatibility-matrix",
+      "path": "./compatibility.json",
+      "description": "The machine-readable supported-host matrix: the recommended host version, the preview npm tag, and every supported Harness version with its track (recommended / legacy / preview). Validated by scripts/compatibility.mjs. Consult before claiming a host version is supported or adding a second version list anywhere else."
+    },
+    {
+      "name": "latest-release-notes",
+      "path": "./release-notes/v0.1.22.md",
+      "description": "What shipped in the version this checkout is on: v0.1.22 is a packaging fix that puts a content revision in every activity-panel artwork URL, so a redrawn pack reaches an open browser instead of sitting behind a day-long cache (the whale pack survived the move to the amber pack that way). For the substantive protocol changes it points back to release-notes/v0.1.21.md - acceptance waivers (`waived`, `no_regression`, `waiverConfirmation`), transitive scope serialization, the completed-work-only Delivery audit, and the panel's Phases/Agents/Queues views. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
+    },
+    {
+      "name": "dsh-plugin-development-skill",
+      "path": "./skills/dsh-plugin-development/SKILL.md",
+      "description": "The vendored Agent Skill for DSH plugin development, maintained by this project (not part of the upstream hash lock): the host/client split, tool registration, system-prompt sections, client bundle and slot APIs, and the historical API examples with their applicability notes. Consult when writing host- or client-side plugin code, and treat its version examples as guidance rather than current policy."
+    }
+  ]
+}
