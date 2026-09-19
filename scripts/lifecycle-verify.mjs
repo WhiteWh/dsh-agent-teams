@@ -991,9 +991,14 @@ try {
       && (await task(tRecoverFail.task_id))?.status === 'completed')
   publishStatus(gamma, 'idle')
 
-  // A durable task with no process-local idle observation is a cold/unobserved
-  // owner. It gets exactly one fresh capability, then the recovery marker is
-  // sticky even if the new AgentHandle is still absent on later status kicks.
+  // A durable task whose capability the MEMBER minted (`claim_task`) is not an
+  // unobserved owner, even when the AgentHandle is gone: recovery would re-claim
+  // the task underneath the member and destroy the capability it is working
+  // with. Nothing may rotate here — not the attempt counter, not the capability,
+  // and there is nothing to deliver either, because the member already holds the
+  // task. (The recovery throttle for a scheduler-minted attempt is asserted by
+  // the `tRecoverFail` case above; the worker-level regression is at the end of
+  // this file.)
   liveAgents.delete(beta.id)
   const deliveriesBeforeColdRecovery = deliveries.length
   await call('agent_teams_status', {})
@@ -1007,15 +1012,15 @@ try {
   ])
   await new Promise(resolve => setTimeout(resolve, 20))
   const throttledRecoveredBeta = await task(t2.task_id)
-  check('unobserved missing owner recovers once and repeated kicks do not rotate it again',
-    coldRecoveredBeta?.status === 'claimed'
+  check('a member-minted capability is never recast as an unobserved owner',
+    coldRecoveredBeta?.status === 'in_progress'
       && coldRecoveredBeta.assignee === 'beta'
-      && coldRecoveredBeta.attempt === betaClaim.attempt + 1
-      && coldRecoveredBeta.attemptId !== betaClaim.attempt_id
-      && deliveriesAfterColdRecovery === deliveriesBeforeColdRecovery + 1
+      && coldRecoveredBeta.attempt === betaClaim.attempt
+      && coldRecoveredBeta.attemptId === betaClaim.attempt_id
+      && deliveriesAfterColdRecovery === deliveriesBeforeColdRecovery
       && throttledRecoveredBeta?.attempt === coldRecoveredBeta.attempt
-      && throttledRecoveredBeta?.attemptId === coldRecoveredBeta.attemptId
-      && deliveries.length === deliveriesAfterColdRecovery)
+      && throttledRecoveredBeta?.attemptId === betaClaim.attempt_id,
+    `attempt ${betaClaim.attempt} -> ${coldRecoveredBeta?.attempt}, capability kept=${coldRecoveredBeta?.attemptId === betaClaim.attempt_id}`)
   liveAgents.set(beta.id, beta)
 
   publishStatus(beta, 'idle')
@@ -1041,14 +1046,14 @@ try {
   }
   check('captain cannot bypass the safe takeover protocol', unsafeCaptainTakeoverRejected)
 
-  const takeover = await call('agent_teams_reassign_task', {
+  // The regression under test: reassigning must revoke the previous capability
+  // and mint a new attempt, and the previous owner must not be able to publish a
+  // late result. Hand `t1` over first — alpha is still holding it — and then run
+  // the generic capability/attempt check on its own idle member.
+  const alphaBeforeHandoff = await task(t1.task_id)
+  const handoff = await call('agent_teams_reassign_task', {
     task_id: t1.task_id, assignee: 'gamma', reason: 'alpha is stuck',
   })
-  const reassigned = await task(t1.task_id)
-  check('reassignment quiesces recovered owner and creates a new attempt',
-    takeover.assignee === 'gamma' && reassigned?.status === 'claimed'
-      && reassigned.attemptId !== disposedParkedAlpha?.attemptId
-      && takeover.attempt === (disposedParkedAlpha?.attempt ?? 0) + 1)
   let staleRejected = false
   try {
     await call('agent_teams_update_task', {
@@ -1057,7 +1062,20 @@ try {
   } catch (error) {
     staleRejected = /assigned to|stale attempt/.test(String(error))
   }
-  check('old member cannot publish a late takeover result', staleRejected)
+  check('old member cannot publish a late takeover result',
+    staleRejected && handoff.assignee === 'gamma' && handoff.attempt === (alphaBeforeHandoff?.attempt ?? 0) + 1)
+
+  const takeoverTask = await call('agent_teams_create_task', { subject: 'takeover fixture', kind: 'work', assignee: 'alpha' })
+  const beforeTakeover = await task(takeoverTask.task_id)
+  const takeover = await call('agent_teams_reassign_task', {
+    task_id: takeoverTask.task_id, assignee: 'alpha', reason: 'keep one capability per attempt',
+  })
+  const reassigned = await task(takeoverTask.task_id)
+  check('reassignment revokes the previous capability and creates a new attempt',
+    takeover.assignee === 'alpha'
+      && reassigned?.attempt === (beforeTakeover?.attempt ?? 0) + 1
+      && reassigned.attemptId !== beforeTakeover?.attemptId
+      && takeover.attempt === reassigned?.attempt)
 
   const gammaClaim = await call('agent_teams_claim_task', { task_id: t1.task_id }, gamma)
   await call('agent_teams_update_task', {
@@ -1110,7 +1128,14 @@ try {
   publishStatus(beta, 'idle')
   gamma.status = 'running'
   const t4 = await call('agent_teams_create_task', { subject: 'later-round assigned work', assignee: 'alpha' })
-  const reused = await task(t4.task_id)
+  // Dispatch is asynchronous: `create_task` kicks the scheduler without awaiting
+  // it, so poll for the claim instead of assuming the write already landed.
+  let reused = await task(t4.task_id)
+  const reuseDeadline = Date.now() + 1000
+  while (Date.now() < reuseDeadline && reused?.status !== 'claimed') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+    reused = await task(t4.task_id)
+  }
   check('previously interrupted member is reused in a later round', reused?.assignee === 'alpha' && reused.status === 'claimed')
 
   const t5 = await call('agent_teams_create_task', { subject: 'must wait behind alpha', assignee: 'alpha' })
@@ -1506,6 +1531,119 @@ try {
   check('archive retries drain previously removed roster rows', await readTeam(stateRoot, 'batch-plan') === undefined && !liveAgents.has(batchWorker.id))
 } finally {
   await rm(workspace, { recursive: true, force: true })
+}
+
+// Regression, found while replaying the t5 incident (WP1 release gate): a
+// member's own fresh attempt must not be treated as a lost owner.
+//
+// `pending` and `claimed` carry no `attemptId`, and `update_task` never calls
+// `beginTaskAttempt`, so the only fence on a member's own attempt between
+// `claim` and its first `update_task` is the attempt counter itself. The
+// scheduler used to read "owned, but the durable attemptId is not the one I
+// parked" as a lost owner and recovered it: `beginTaskAttempt` re-claimed the
+// task under the member, so `in_progress` silently dropped back to `claimed`,
+// the attempt counter grew, and the member's own `update_task` was refused
+// either as a stale attempt or as an illegal status transition. A real worker
+// doing "claim, work, update_task" could lose its own task.
+{
+  const attemptWorkspace = await mkdtemp(join(tmpdir(), 'dsh-lifecycle-attempt-'))
+  try {
+    const defs = new Map()
+    const agents = new Map()
+    const spawns = []
+    let seq = 0
+    const cap = {
+      id: 'captain-attempt',
+      status: 'idle',
+      options: { provider: 'fake', model: 'fake-model' },
+      session: {
+        header: { cwd: attemptWorkspace, seedLength: 0 },
+        events: [],
+        append() {},
+        requestHeader() { return { config: { provider: 'fake', model: 'fake-model' } } },
+      },
+      followup() {}, steer() {}, inject() {}, cancel() {}, whenIdle() { return Promise.resolve() },
+    }
+    agents.set(cap.id, cap)
+    const attemptCtx = {
+      effect(setup) { return setup() },
+      tools: { register(definition) { defs.set(definition.name, definition) } },
+      on() { return () => {} },
+      agents: { get(id) { return agents.get(id) } },
+      llm: { async resolveCallConfig(config) { return config }, async listModels() { return [] } },
+      subagents: {
+        registerContinuableSetup() { return () => {} },
+        getProvider(name) {
+          return name === 'spawn' ? { prepareContinuable() {}, capabilities: { persona: true, toolFilter: true } } : undefined
+        },
+        list() { return ['spawn'] },
+        async startContinuable(spec) {
+          const id = `attempt-child-${++seq}`
+          agents.set(id, {
+            id,
+            status: 'idle',
+            options: { provider: 'fake', model: 'fake-model' },
+            session: cap.session,
+            followup() {},
+            steers: [],
+            steer(message) { this.steers.push(message); this.status = 'running' },
+            inject() {},
+            cancel() {},
+            whenIdle() { return Promise.resolve() },
+          })
+          spawns.push({ id, label: spec.label })
+          return { childId: id, messageId: `welcome-${seq}` }
+        },
+        async listChildren() { return spawns },
+        async listDescendants() { return spawns },
+        async followup() { return 'x' },
+        interrupt() {},
+        async drainContinuableChildren() {},
+      },
+      logger: { debug() {}, warn() {} },
+    }
+    const attemptRoot = join(attemptWorkspace, '.agent-teams')
+    registerAgentTeamsTools(attemptCtx, {
+      stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 1, maxMembers: 4, profiles: {},
+    })
+    const attemptCall = (name, args, subject = cap) => (
+      defs.get(name).execute(args, { agent: subject, signal: new AbortController().signal })
+    )
+    await attemptCall('agent_teams_create', { name: 'Attempt Fence', description: 'scheduler attempt fence' })
+    await attemptCall('agent_teams_add_member', { name: 'worker', role: 'implementer' })
+    const todo = await attemptCall('agent_teams_create_task', { subject: 'Work', assignee: 'worker' })
+    const memberAgent = agents.get(spawns[0].id)
+    const claimed = await defs.get('agent_teams_claim_task').execute(
+      { task_id: todo.task_id },
+      { agent: memberAgent, signal: new AbortController().signal },
+    )
+    const afterClaim = (await readTeam(attemptRoot, 'attempt-fence')).tasks[0]
+    await defs.get('agent_teams_update_task').execute(
+      { task_id: todo.task_id, attempt_id: claimed.attempt_id, status: 'in_progress' },
+      { agent: memberAgent, signal: new AbortController().signal },
+    )
+    // Give the post-write scheduler kick time to (wrongly) recover the attempt.
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const afterKick = (await readTeam(attemptRoot, 'attempt-fence')).tasks[0]
+    check(
+      'a member keeps its own in_progress attempt across a scheduler kick',
+      afterKick.status === 'in_progress' && afterKick.attempt === afterClaim.attempt,
+      `claimed attempt ${afterClaim.attempt} (${afterClaim.status}) -> ${afterKick.attempt} (${afterKick.status})`,
+    )
+    let completed = ''
+    try {
+      await defs.get('agent_teams_update_task').execute(
+        { task_id: todo.task_id, attempt_id: afterKick.attemptId, status: 'completed', output: 'done' },
+        { agent: memberAgent, signal: new AbortController().signal },
+      )
+      completed = (await readTeam(attemptRoot, 'attempt-fence')).tasks[0].status
+    } catch (error) {
+      completed = String(error.message)
+    }
+    check('a member can complete the task it is holding', completed === 'completed', completed)
+  } finally {
+    await rm(attemptWorkspace, { recursive: true, force: true })
+  }
 }
 
 if (failures.length > 0) {

@@ -1218,7 +1218,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       objective: { type: 'string', description: 'Required non-empty objective for quality kinds.' },
       inScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative POSIX paths this task may change.' },
       outOfScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative POSIX paths this task must not change.' },
-      acceptance: { type: 'array', items: { type: 'string' }, description: 'Acceptance criteria. Required for quality kinds.' },
+      acceptance: { type: 'array', items: { type: 'string' }, description: 'Acceptance criteria. Required for quality kinds. A criterion may be a plain string ("must be green") or a {text, mode:"no_regression", baseline} object when the honest criterion is "no worse than the named baseline" rather than "green" — put the baseline in the criterion itself, not in the implementer\'s head.' },
       verify: { type: 'array', items: { type: 'string' }, description: 'Verification commands. Required for implementation/repair.' },
       deliverables: { type: 'array', items: { type: 'string' }, description: 'Expected deliverable paths or names.' },
       nonGoals: { type: 'array', items: { type: 'string' }, description: 'Explicit non-goals.' },
@@ -1572,6 +1572,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           throw new Error(`member "${assignee}" is busy with ${busy.id}; finish or reassign it first`)
         }
         const attemptId = beginTaskAttempt(task, assignee)
+        // Tell the scheduler this capability is ours, so a concurrent kick
+        // cannot treat the member's fresh attempt as a lost owner and re-claim
+        // the task underneath it.
+        scheduler.noteClaimedAttempt(
+          fresh.members.find((candidate) => candidate.name === assignee)?.id ?? '',
+          attemptId,
+        )
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
           teamId: fresh.id,
@@ -1593,7 +1600,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_update_task',
-    description: 'Update a task status/output. Members must supply the current attempt_id returned by claim_task; stale attempts are rejected after takeover/reassignment. Terminal results are immutable. A captain must use reassign_task(assignee="captain") before updating member-owned work.',
+    description: 'Update a task status/output. Members must supply the current attempt_id returned by claim_task; stale attempts are rejected after takeover/reassignment. Terminal results are immutable. A captain must use reassign_task(assignee="captain") before updating member-owned work. An acceptance criterion or verify command that cannot honestly be measured green — it is already red on the baseline for a reason outside this task, or no measurement exists — is reported as status="waived" with evidence naming the reason and the baseline; it counts as covered, but it flags the task and keeps Delivery blocked until a kind=review task completes with verdict=pass and an explicit waiverConfirmation. reviewPolicy.allowWaivers=false forbids waivers.',
     parameters: {
       task_id: { type: 'string', required: true, description: 'The task id to update.' },
       attempt_id: { type: 'string', description: 'Members must explicitly include the current attempt_id from their assignment/claim in EVERY update, including failed reviews with findings. If omitted, retry with the same current id; omission does not revoke the attempt.' },

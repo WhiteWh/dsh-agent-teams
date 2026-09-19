@@ -52,6 +52,13 @@ export interface TeamScheduler {
   kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>
   /** Try to flush fallback mail or give one member one ready task. */
   kickMember(workspace: string, teamId: string, memberName: string, captain?: Agent): Promise<void>
+  /**
+   * Record a capability the plugin minted for a member outside a dispatch
+   * (`claim_task`). The scheduler must never treat one of these as a lost owner
+   * and re-claim the task underneath the member; see the note on the recovery
+   * marker in {@link installTeamScheduler}.
+   */
+  noteClaimedAttempt(memberId: string, attemptId: string): void
 }
 
 /** One completed recursive dependency shown to the assignee. */
@@ -266,6 +273,40 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   // graph kicks must keep it parked. A cold process starts with an empty map,
   // so durable open attempts are still recovered after restart.
   const parkedAttempts = new Map<string, string>()
+  /**
+   * Members that may have an attempt adopted on their next dispatch.
+   *
+   * A member's own capability is one the scheduler never minted: `update_task`
+   * creates no new attempt, so an `in_progress` task carries an `attemptId` this
+   * process has never seen. That makes "unfamiliar capability" ambiguous between
+   * a live worker and an attempt stranded by a previous process, which is why
+   * the scheduler refuses to recover while the member is mid-turn
+   * ({@link isMemberAvailable}) and allows exactly one adoption per idle edge
+   * here. The member's own `claim`/`in_progress` window therefore keeps its
+   * attempt: without this, recovery re-claimed the task under the member
+   * (`claimed`/`in_progress` dropped back to `claimed`, the attempt counter
+   * grew, and the member's next `update_task` was refused as stale or as an
+   * illegal `claimed → completed` transition).
+   *
+   * A member that is durably `idle` at first sight (a cold start, or work
+   * queued while it was idle) is reclaimable immediately, which preserves
+   * crash recovery; a member that starts out `working` must reach an idle edge
+   * first, because its durable attempt belongs to a turn that is still running.
+   */
+  const nextDispatchReclaims = new Set<string>()
+  /**
+   * Capabilities this process minted outside a dispatch.
+   *
+   * A member's own `claim_task` creates an `attemptId` the scheduler never
+   * handed out, so by capability alone it is indistinguishable from an attempt
+   * stranded by a previous process — and recovering it would re-claim the task
+   * under the member (`claimed`/`in_progress` drops back to `claimed`, the
+   * counter grows, and the member's next `update_task` is refused as stale or as
+   * an illegal `claimed → completed` transition). {@link noteClaimedAttempt}
+   * closes that gap: a capability the plugin minted for a member is known here,
+   * so it is never treated as a lost owner.
+   */
+  const knownAttempts = new Set<string>()
 
   const memberQueueKey = (stateRoot: string, teamId: string, memberName: string): string => (
     `${stateRoot}\u0000${teamId}\u0000${memberName}`
@@ -287,6 +328,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   }
 
   const runtime: TeamScheduler = {
+    noteClaimedAttempt() {},
     async kickTeam(workspace, teamId, suppliedCaptain) {
       const stateRoot = stateRootOf(workspace, config)
       const team = await readTeam(stateRoot, teamId)
@@ -350,12 +392,27 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           // so registry absence is not evidence that the owner was lost. Keep
           // the marker sticky across later kicks; only a durable attempt that
           // this process has not observed is eligible for one cold recovery.
+          //
+          // A member's *own* capability is one this process never minted:
+          // `update_task` starts no new attempt, so the whole window between the
+          // member's `claim` and its first `update_task` carries an `attemptId`
+          // the scheduler has never seen. Recovering that would re-claim the task
+          // under the member (`claimed`/`in_progress` drops back to `claimed`,
+          // the counter grows, and the member's next `update_task` is refused as
+          // stale or as an illegal `claimed → completed` transition). So an
+          // attempt-less task — one whose capability the scheduler itself
+          // minted, or none at all — is the only recovery target.
           const parkedAttemptId = parkedAttempts.get(currentMember.id)
+          const lackedCapability = owned !== undefined && owned.attemptId === undefined
           const recoverOwned = owned !== undefined
-            && (owned.attemptId === undefined || owned.attemptId !== parkedAttemptId)
-          const task = recoverOwned ? owned : owned === undefined
-            ? nextReadyTask(fresh.tasks, currentMember.name)
-            : undefined
+            && (lackedCapability || !knownAttempts.has(owned.attemptId as string))
+            && owned.attemptId !== parkedAttemptId
+          // Fresh ready work wins over re-claiming an attempt the member already
+          // holds. An open owned task used to shadow the queue entirely, so a
+          // member whose previous attempt was left open could never pick up the
+          // next task; recovery is the fallback, not the first choice.
+          const ready = nextReadyTask(fresh.tasks, currentMember.name)
+          const task = ready ?? (recoverOwned ? owned : undefined)
           if (task === undefined) {
             if (currentMember.status !== 'idle') {
               currentMember.status = 'idle'
@@ -374,6 +431,8 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           // genuinely lost first delivery can be recovered once.
           if (recoverOwned) parkedAttempts.set(currentMember.id, attemptId)
           else parkedAttempts.delete(currentMember.id)
+          nextDispatchReclaims.delete(currentMember.id)
+          knownAttempts.add(attemptId)
           currentMember.status = 'working'
           await writeTeam(stateRoot, fresh)
           const profileSeedId = taskProfileSeedId(task)
@@ -442,6 +501,9 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             task.assignee = ticket.previousAssignee
             task.attemptId = undefined
             parkedAttempts.delete(ticket.memberId)
+            // A delivery that never reached the member is the same lost-delivery
+            // boundary as an idle edge: the adopted attempt may be reclaimed.
+            nextDispatchReclaims.add(ticket.memberId)
           }
           task.handoffId = undefined
           task.reassigning = false
@@ -502,8 +564,13 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         const owned = ownedOpenTask(fresh.tasks, current.name)
         if (owned?.attemptId === undefined) parkedAttempts.delete(agent.id)
         else parkedAttempts.set(agent.id, owned.attemptId)
+        // The turn ended while this member still owns an open task: that is the
+        // lost-delivery window, so its attempt may be adopted once. A delivery
+        // failure counts as the same boundary.
+        if (owned !== undefined) nextDispatchReclaims.add(agent.id)
       } else {
         parkedAttempts.delete(agent.id)
+        nextDispatchReclaims.delete(agent.id)
       }
       if (current.status === next) return
       current.status = next
@@ -518,5 +585,10 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     })
   })
 
-  return runtime
+  return {
+    ...runtime,
+    noteClaimedAttempt(memberId, attemptId) {
+      if (memberId !== '' && attemptId !== '') knownAttempts.add(attemptId)
+    },
+  }
 }
