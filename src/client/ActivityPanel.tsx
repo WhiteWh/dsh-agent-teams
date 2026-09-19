@@ -228,6 +228,35 @@ function WorkGlyph({ active }: { readonly active: boolean }) {
   )
 }
 
+/**
+ * The work plaque of a member node (owner request, 2026-09-20).
+ *
+ * The compact six-dot mark read as decoration: it said "something is running"
+ * without being part of the node it described. The plaque is the node's own
+ * height and three dots wide, and its dots run a top-to-bottom wave while the
+ * member works, so the state is visible from the shape of the row itself.
+ * The text label next to it stays the accessible answer.
+ */
+function WorkBar({ active }: { readonly active: boolean }) {
+  const rows = [0, 1, 2, 3, 4]
+  const columns = [0, 1, 2]
+  return (
+    <span className={css.workBar} data-active={active} data-work-bar={active} aria-hidden>
+      {rows.map((row) => (
+        <span key={`row-${String(row)}`} className={css.workBarRow}>
+          {columns.map((column) => (
+            <span
+              key={`dot-${String(row)}-${String(column)}`}
+              className={css.workBarDot}
+              style={{ animationDelay: `${String(row * 0.12)}s` }}
+            />
+          ))}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 /** Collapsed badge: an always-visible corner pill while any team exists. */
 function CollapsedBadge({ count, busy, onClick, t }: {
   readonly count: number
@@ -1438,7 +1467,6 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                         </span>
                       )}
                       <span className={css.memberState} data-activity={member.activity}>
-                        <WorkGlyph active={member.activity === 'working'} />
                         {discarded
                           ? t('member.state.notCreated')
                           : stopped
@@ -1459,6 +1487,9 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                       : memberStatusText(member, team.tasks, t)}</span>
                   </span>
                   <span className={css.memberCount}>{member.done}/{member.total}</span>
+                  {/* The plaque is the node's own height: the row's work state is
+                      read from the shape, not from an icon inside the text. */}
+                  <WorkBar active={!discarded && !stopped && member.activity === 'working'} />
                   {/* The assignment line is a row of this button rather than a
                       sibling of it: that is what lets the portrait span the whole
                       block instead of leaving half a column empty (owner report).

@@ -1650,6 +1650,36 @@ check(
     `row=${String(rowOpen)} assignment=${String(assignmentAt)} close=${String(rowClose)}`,
   )
 }
+// Owner request (2026-09-20): work in the members tree is shown by a
+// full-node-height animated plaque — three dots wide — instead of the compact
+// six-dot mark, which read as a decoration rather than as a state of the node.
+{
+  const rowOpen = activityPanelSource.indexOf('className={css.memberRow}')
+  const rowClose = activityPanelSource.indexOf('</button>', rowOpen)
+  const barAt = activityPanelSource.indexOf('<WorkBar active=', rowOpen)
+  const glyphInRow = activityPanelSource.indexOf('css.workGlyph', rowOpen)
+  check(
+    'the members tree shows work as a full-height animated plaque',
+    activityPanelSource.includes('function WorkBar')
+      && activityPanelSource.includes('data-work-bar={active}')
+      && barAt > rowOpen && barAt < rowClose
+      && (glyphInRow === -1 || glyphInRow > rowClose)
+      && activityPanelCss.includes('.workBar')
+      && activityPanelCss.includes('.workBarDot')
+      && activityPanelCss.includes('grid-area: 1 / 4 / span 2 / auto')
+      && activityPanelCss.includes('@keyframes agentTeamsBar')
+      && /grid-template-columns: auto minmax\(0, 1fr\) auto auto;/u.test(activityPanelCss),
+    `row=${String(rowOpen)} bar=${String(barAt)} glyph=${String(glyphInRow)} close=${String(rowClose)}`,
+  )
+  check(
+    'the plaque keeps its dots round and its wave readable',
+    /\.workBarDot \{[^}]*border-radius: 50%/u.test(activityPanelCss)
+      && /\.workBarDot \{[^}]*width: 3px/u.test(activityPanelCss)
+      && /\.workBar\[data-active='true'\] \.workBarDot \{/u.test(activityPanelCss)
+      && activityPanelSource.includes('animationDelay: `${String(row * 0.12)}s`'),
+  )
+}
+
 // The phase titles and the board are one coordinate system, so they must share
 // one scroller. Two scrollers let the header row drift away from its own columns
 // — the defect the owner hit — and the header cells have to sit at the very same
