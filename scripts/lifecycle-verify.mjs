@@ -848,6 +848,92 @@ try {
       && nextReview.assignee !== 'builder')
   await call('agent_teams_delete', {})
 
+  // ── WP2/S08: a wrong contract is fixed in place, and a failed lane retries ──
+  // The captain undercounts inScope, the member's honest completion is refused as
+  // an undeclared path, and the lane fails. Before S08 that was a dead end:
+  // `amend_task` rejected terminal tasks, so the only way out was cancel and
+  // recreate. Now the captain amends the failed contract, retries the same task
+  // and the member completes it without a new task id.
+  await call('agent_teams_create', { name: 'Contract Fix', description: 'amend a failed lane' })
+  await call('agent_teams_add_member', { name: 'fixer', role: 'implementer' })
+  // The shared `task()` reader is bound to the `lifecycle` team, so this scenario
+  // reads its own team.
+  const amendTask = async id => (await readTeam(stateRoot, 'contract-fix'))?.tasks.find(candidate => candidate.id === id)
+  const amendNarrow = await call('agent_teams_create_task', {
+    subject: 'implement scanner',
+    assignee: 'fixer',
+    kind: 'implementation',
+    objective: 'Ship the scanner and its tests',
+    inScope: ['src/scanner.ts'],
+    acceptance: ['scanner handles empty input'],
+    verify: ['pnpm test'],
+  })
+  const amendFixer = liveAgents.get((await readTeam(stateRoot, 'contract-fix')).members.find(m => m.name === 'fixer').id)
+  const amendNarrowClaim = await call('agent_teams_claim_task', { task_id: amendNarrow.task_id }, amendFixer)
+  await call('agent_teams_update_task', {
+    task_id: amendNarrow.task_id, status: 'in_progress', attempt_id: amendNarrowClaim.attempt_id,
+  }, amendFixer)
+  let amendUndeclaredRejected = false
+  try {
+    await call('agent_teams_update_task', {
+      task_id: amendNarrow.task_id,
+      status: 'completed',
+      attempt_id: amendNarrowClaim.attempt_id,
+      output: 'scanner and tests shipped',
+      changedPaths: ['src/scanner.ts', 'src/scanner.test.ts'],
+      acceptanceResults: [{ criterion: 'scanner handles empty input', status: 'passed' }],
+      commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+    }, amendFixer)
+  } catch (error) {
+    amendUndeclaredRejected = /scanner\.test\.ts is undeclared/.test(String(error))
+  }
+  check('a path outside the declared inScope is refused, not silently accepted', amendUndeclaredRejected)
+  await call('agent_teams_update_task', {
+    task_id: amendNarrow.task_id,
+    status: 'failed',
+    attempt_id: amendNarrowClaim.attempt_id,
+    output: 'the declared inScope forbids the test file the objective names',
+    commandsRun: [{ command: 'pnpm test', status: 'failed', exitCode: 1 }],
+  }, amendFixer)
+  check('the lane is failed and terminal for the member', (await amendTask(amendNarrow.task_id))?.status === 'failed')
+  const amendResult = await call('agent_teams_amend_task', {
+    task_id: amendNarrow.task_id,
+    reason: 'the objective names src/scanner.test.ts but inScope forbade it',
+    inScope: ['src/scanner.ts', 'src/scanner.test.ts'],
+  })
+  check('a failed contract is amendable and the revision is recorded',
+    typeof amendResult.revision_count === 'number' && amendResult.revision_count >= 1
+      && (await amendTask(amendNarrow.task_id))?.inScope?.includes('src/scanner.test.ts') === true)
+  await call('agent_teams_reassign_task', { task_id: amendNarrow.task_id, assignee: 'fixer', reason: 'retry against the amended contract' })
+  const amendRetried = await amendTask(amendNarrow.task_id)
+  // The reassign tool returns after it has already kicked the member, so the
+  // task may be back in the pool or dispatched again; what matters is that it is
+  // the same task, in the same lane, with the amendment still on it.
+  check('the retry keeps the same task in the same lane instead of recreating it',
+    amendRetried?.id === amendNarrow.task_id
+      && amendRetried.status !== 'failed'
+      && (amendRetried.revisions ?? []).length >= 1
+      && (amendRetried.attempt ?? 0) >= 1)
+  const amendRetryClaim = await call('agent_teams_claim_task', { task_id: amendNarrow.task_id }, amendFixer)
+  await call('agent_teams_update_task', {
+    task_id: amendNarrow.task_id, status: 'in_progress', attempt_id: amendRetryClaim.attempt_id,
+  }, amendFixer)
+  await call('agent_teams_update_task', {
+    task_id: amendNarrow.task_id,
+    status: 'completed',
+    attempt_id: amendRetryClaim.attempt_id,
+    output: 'scanner and tests shipped against the amended contract',
+    changedPaths: ['src/scanner.ts', 'src/scanner.test.ts'],
+    acceptanceResults: [{ criterion: 'scanner handles empty input', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  }, amendFixer)
+  const amendCompleted = await amendTask(amendNarrow.task_id)
+  check('the amended contract completes without cancelling or recreating the task',
+    amendCompleted?.status === 'completed'
+      && amendCompleted.id === amendNarrow.task_id
+      && (amendCompleted.revisions ?? []).length >= 1)
+  await call('agent_teams_delete', {})
+
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })
   const addedAlpha = await call('agent_teams_add_member', { name: 'alpha', role: 'slow implementer' })
   const addedBeta = await call('agent_teams_add_member', { name: 'beta', role: 'researcher' })

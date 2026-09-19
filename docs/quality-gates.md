@@ -27,7 +27,7 @@ every required gate passes
 
 | Capability | Location | Must keep |
 |---|---|---|
-| Task state machine `pending → claimed → in_progress → completed\|failed\|cancelled` | `src/types.ts`, `src/state.ts` | terminal states are read-only; `claimed` cannot jump to `completed` |
+| Task state machine `pending → claimed → in_progress → completed\|failed\|cancelled`, plus the legalized retry `failed → pending` (v0.1.22) | `src/types.ts`, `src/state.ts` | `completed` and `cancelled` are read-only; a failed task is amendable and retryable; `claimed` cannot jump to `completed` |
 | Dependencies only accept an upstream `completed` | `unsatisfiedDependencies()` | `failed` / `cancelled` never unlock downstream work |
 | `attempt` + `attemptId` | `beginTaskAttempt()` / `update_task` | late writes must keep being rejected |
 | Captain dynamic planning | `taskPlanning: captain` | do not revert to requiring a fixed seed DAG |
@@ -93,6 +93,50 @@ punctuation), and a failure lists every uncovered criterion by name. Contract te
 remains human-readable prose rather than an opaque id, but it must not degrade into a
 wildcard.
 
+### 1.4 Added in v0.1.22: the whole contract is amendable, and a failed task retries
+
+Field evidence is in `D:/OwlCats/AI_Tools/Docs/AGENT_TEAMS_IMPROVEMENT_PLAN.md` WP2 and
+`AGENT_TEAMS_FEEDBACK.md` section 1: the amendment covered five contract fields, rejected
+every `kind=work` task, and treated `failed` as immutable. A captain who had undercounted
+`inScope`, or written a brief for the wrong lane, therefore still had to cancel and
+recreate the task — and a red lane had no way back at all.
+
+**Amendable fields.** `agent_teams_amend_task` replaces whole fields (lists are full
+replacements, never deltas) and now covers:
+
+| Task shape | Amendable |
+| --- | --- |
+| quality (`requirements`, `implementation`, `verification`, `review`, `repair`, `integration`) | `objective`, `acceptance`, `verify`, `inScope`, `outOfScope`, `deliverables`, `nonGoals`, `reviewedTaskId`, `subject`, `description` |
+| `work` | `subject`, `description`, `deliverables`, `nonGoals` — a work task has no quality contract, and an attempt to amend `objective`/`acceptance`/`verify`/`inScope`/`outOfScope`/`reviewedTaskId` on it is rejected with that field list |
+
+`reviewedTaskId` must name an existing task whose kind is one of `implementation`,
+`repair`, `verification`, `integration`; pointing a review at itself, at a missing id or
+at a `work` task is rejected by name.
+
+**Statuses.** A `failed` task is amendable — that is the first step of the retry, not a
+rewrite of history — and `agent_teams_reassign_task` returns it to the pool. The shared
+transition table in `src/state.ts` now says so (`failed: ['pending']`), because
+`reassign_task` always produced that move through `invalidateTaskAttempt` while the table
+claimed the status was terminal; `transitionError` and `evaluateQualityCompletion` read
+the same object. `completed` and `cancelled` remain immutable.
+
+**Freeze and the forced override.** Once a `review`/`requirements` task has passed
+judgment (`verdict=pass`, `reviewedTaskId` pointing at the task) the contract is frozen.
+`force: true` with the same mandatory non-empty `reason` overrides that freeze and marks
+the judge's verdict `stale`, so delivery can no longer treat the changed contract as
+reviewed; the amendment also lands in the revisions ledger. `stale` is a durable verdict
+value but deliberately **not** in the `agent_teams_update_task` parameter enum: only the
+captain's forced amendment produces it.
+
+**Running teams.** `agent_teams_edit_plan` (`update_task`) may retarget `dependencies`
+and `assignee` for a task that has not started (`pending`, any attempt) and for a `failed`
+task. A task a member currently holds (`claimed`/`in_progress`) is still refused there:
+that edit belongs to the replan operation with explicit attempt invalidation.
+
+**Visibility.** Every amendment is appended to the task's `revisions` ledger (previous
+values + reason + field list), and `agent_teams_status` prints `revised ×N` on a task whose
+contract was amended.
+
 ## 2. Allowed / not allowed
 
 ### 2.1 Allowed
@@ -119,7 +163,7 @@ wildcard.
 - Do not let a repair task depend on a `failed` review task.
 - Do not rerun an old review with `reassign_task` instead of creating `review-N+1`. `beginTaskAttempt()` clears the previous output.
 - Do not treat `send_message` as a formal next review round. Mail has no gate.
-- Do not revive `failed` / `cancelled` tasks. Terminal states are read-only; the next round must create a new task.
+- Do not revive `failed` / `cancelled` tasks by hand. Since v0.1.22 a `failed` task may be **amended and retried** through `reassign_task` (the legal `failed → pending` transition), but `completed` and `cancelled` stay read-only; any other next round must create a new task.
 - Do not modify `~/.dsh/profiles/web/cordis.patch.yml` unless the user explicitly asks for it in the current window.
 - Do not commit or push `docs/multi-role-profiles.md`, `docs/personal-kb-delivery/`.
 - Do not commit / push / open a PR unless the user explicitly asks.
@@ -245,6 +289,7 @@ type ReviewVerdict =
   | 'pass'
   | 'needs_revision'
   | 'reject'
+  | 'stale' // durable only: a forced amendment invalidated this verdict (v0.1.22)
 
 type FindingSeverity =
   | 'low'

@@ -152,14 +152,18 @@ export function unsatisfiedDependencies(tasks: TeamTask[], dependencies: string[
 
 /**
  * The allowed task status transitions, keyed by current status.
- * Terminal statuses have no outgoing transitions.
+ *
+ * `failed -> pending` is the retry: `agent_teams_reassign_task` has always
+ * produced it through {@link invalidateTaskAttempt}, so leaving it out of the
+ * table made the table lie about the behaviour the tools have (WP2/S08).
+ * `completed` and `cancelled` stay terminal.
  */
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   pending: ['claimed', 'cancelled'],
   claimed: ['in_progress', 'failed', 'cancelled'],
   in_progress: ['completed', 'failed', 'cancelled'],
   completed: [],
-  failed: [],
+  failed: ['pending'],
   cancelled: [],
 }
 

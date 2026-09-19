@@ -74,7 +74,7 @@ the pre-step count, and FAIL must stay 0.
 | S06 | WP10 phases / agents / queues views | done | 935be9b | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
 | S07 | docs + release 0.1.21 | done | 74fc749 | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; t5-replay 7/7; scheduler fix in 0108c81 |
 | F4 | artwork cache revision (hotfix release 0.1.22) | done | | verify 219 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; mutation-tested route check; plan releases below shift by one |
-| S08 | WP2 amend_task extensions + retry from failed | todo | | needs S01 |
+| S08 | WP2 amend_task extensions + retry from failed | done | | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
 | S09 | WP3 superseded + atomic dependency redirect | todo | | needs S01 |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | todo | | needs S03 |
 | S11 | WP6.3 known-delta registry | todo | | needs S03 |
@@ -172,6 +172,60 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S08 — WP2: the whole contract is amendable, and a failed lane retries (done)
+
+Planned test labels (WP2 of the plan): amend `deliverables`, `reviewedTaskId`
+(valid / nonexistent / not an implementation), amend a `work` task, amend a
+`failed` task followed by `reassign` and a successful completion, `force`
+invalidates the review; the lifecycle scenario "captain undercounted inScope →
+amend → member completes without recreate".
+
+- **Rule (`src/quality-gates.ts`, `src/state.ts`, `src/types.ts`):**
+  `ContractAmendmentInput` gained `deliverables`, `nonGoals`, `reviewedTaskId`,
+  `subject`, `description`; `amendTaskContract` takes a sixth `force` parameter and
+  returns `invalidatedReviews`. The field sets are split: a quality task amends the
+  whole contract, a `work` task amends `subject`/`description`/`deliverables`/
+  `nonGoals` and is rejected by name when a quality field is attempted.
+  `reviewedTaskId` must exist, must not be the task itself, and must point at an
+  `implementation`/`repair`/`verification`/`integration` task. `completed` and
+  `cancelled` stay immutable; `failed` became amendable. `force` overrides the
+  post-review freeze and marks the passing verdict `stale` (new durable
+  `ReviewVerdict`), so the changed contract must be reviewed again.
+  `TASK_TRANSITIONS.failed` is now `['pending']` — the retry `reassign_task`
+  already performed through `invalidateTaskAttempt`.
+- **Tools (`src/tools.ts`):** `agent_teams_amend_task` exposes the new payload plus
+  `force`, applies the staled verdicts inside the same team lock, returns
+  `staled_reviews`, and its description says what is amendable. A running team's
+  `update_task` now accepts `dependencies`/`assignee` edits for `pending` (any
+  attempt) and `failed` tasks; `claimed`/`in_progress` still refuse, because that
+  edit belongs to the S10 replan with attempt invalidation. `agent_teams_status`
+  prints `revised ×N` for an amended contract.
+- **RED first:** the amend suite showed 5 new failures out of 15 (no
+  `invalidatedReviews`, no new fields, work tasks rejected),
+  `tdd.state.transition-table-covers-every-status` and
+  `tdd.state.failed-retry-transition-is-legal` failed, and the lifecycle scenario
+  died at `task t1 is failed; terminal contracts are immutable`.
+- **GREEN:** amend suite 15/15; `quality-gates-tdd` 108 PASS / 0 FAIL; lifecycle
+  `all lifecycle checks passed` including the three new ones (`a failed contract is
+  amendable and the revision is recorded`, `the retry keeps the same task in the
+  same lane instead of recreating it`, `the amended contract completes without
+  cancelling or recreating the task`); `verify.mjs` 230 PASS / 0 FAIL with four new
+  source-level checks (the extended amend payload, the stale verdict kept out of the
+  member-facing enum, the `revised ×N` status line, the running-team edit rule).
+- **Two honest test adaptations:** the retry assertion first demanded
+  `status === 'pending'`, but `reassign_task` returns after it has already kicked
+  the member, so the task may be dispatched again — the check now asserts identity,
+  lane, amendment and a live generation instead of a status that races the
+  scheduler. The new lifecycle block also read the shared `task()` helper, which is
+  bound to the `lifecycle` team, and now reads its own team.
+- **Split of `stale` from WP3:** the plan lists `verdict: stale` under both WP2 and
+  WP3. It ships here with the force path, which is the only producer; WP3/S09 reuses
+  the value for `superseded`. `superseded` itself is deliberately **not** in the
+  transition table yet — the status does not exist until S09.
+- **Deferred to S10 (planned, not scope creep):** editing `dependencies`/`assignee`
+  of a `claimed`/`in_progress` task needs the replan operation with explicit
+  `invalidate: true`, which is WP4.
 
 ### S07 — docs + release 0.1.21 (done, `74fc749`)
 

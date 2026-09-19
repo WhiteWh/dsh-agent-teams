@@ -213,6 +213,7 @@ const artworkSource = await readFile(new URL('../src/client/artwork.ts', import.
 const artworkHostSource = await readFile(new URL('../src/artwork.ts', import.meta.url), 'utf8')
 const hostSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
 const toolsSource = await readFile(new URL('../src/tools.ts', import.meta.url), 'utf8')
+const gatesSource = await readFile(new URL('../src/quality-gates.ts', import.meta.url), 'utf8')
 const localesSource = await readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
 const localeKeys = Object.keys(agentTeamsZh).sort()
 const englishLocaleKeys = Object.keys(agentTeamsEn).sort()
@@ -290,6 +291,51 @@ check(
     && hostSource.includes('agent_teams_edit_plan')
     && hostSource.includes('Never inspect or edit .agent-teams state files or plugin source code'),
 )
+// WP2/S08: the amendment covers the whole contract and has a documented escape
+// from the post-review freeze, while the verdict that freeze produces stays out
+// of the member-facing parameter enum.
+{
+  const amendBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_amend_task'"),
+    toolsSource.indexOf("name: 'agent_teams_send_message'"),
+  )
+  const updateBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_update_task'"),
+    toolsSource.indexOf("name: 'agent_teams_amend_task'"),
+  )
+  check(
+    'amend_task exposes the whole contract plus the forced-freeze override',
+    amendBlock.includes('deliverables: {')
+      && amendBlock.includes('nonGoals: {')
+      && amendBlock.includes('reviewedTaskId: {')
+      && amendBlock.includes('subject: {')
+      && amendBlock.includes('description: {')
+      && amendBlock.includes('force: {')
+      && amendBlock.includes('staled_reviews')
+      && amendBlock.includes('amendTaskContract(fresh, task, normalizeBlankOptionalTaskFields(input), CAPTAIN_KEY, args.reason, args.force === true)')
+      && amendBlock.includes('current.verdict = review.verdict'),
+    `amend block is ${String(amendBlock.length)} characters`,
+  )
+  check(
+    'the stale verdict is produced by the amendment and never offered to a member',
+    updateBlock.includes("enum: ['pass', 'needs_revision', 'reject']")
+      && !updateBlock.includes("'stale'")
+      && gatesSource.includes("verdict: 'stale' as const")
+      && gatesSource.includes('invalidatedReviews')
+      && toolsSource.includes('current.verdict = review.verdict'),
+  )
+  check(
+    'the status report shows how often a contract was amended',
+    toolsSource.includes('revisions?: number')
+      && toolsSource.includes('revised ×')
+      && toolsSource.includes('...(task.revisions ?? []).length === 0 ? {} : { revisions: (task.revisions ?? []).length }'),
+  )
+  check(
+    'a running team accepts dependency and assignee edits for pending and failed tasks',
+    toolsSource.includes("? task.status === 'pending' && (task.attempt ?? 0) === 0")
+      && toolsSource.includes(": task.status === 'pending' || task.status === 'failed'"),
+  )
+}
 check(
   'discarded and stopped teams render terminal semantics instead of pending execution copy',
   activityPanelSource.includes("const discarded = historic && team.phase === 'staged'")

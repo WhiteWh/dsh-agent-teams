@@ -770,6 +770,12 @@ export interface ContractAmendmentInput {
   verify?: string[]
   inScope?: string[]
   outOfScope?: string[]
+  deliverables?: string[]
+  nonGoals?: string[]
+  reviewedTaskId?: string
+  /** Work tasks have no quality contract, but their brief is still amendable. */
+  subject?: string
+  description?: string
 }
 
 export interface AmendTaskContractResult {
@@ -777,9 +783,33 @@ export interface AmendTaskContractResult {
   error?: string
   task?: TeamTask
   revision?: TaskRevision
+  /**
+   * Review / requirements tasks whose passing verdict the forced amendment
+   * invalidated. Callers must persist them alongside {@link task}: their verdict
+   * becomes `stale`, so delivery can no longer treat the changed contract as
+   * reviewed.
+   */
+  invalidatedReviews?: readonly TeamTask[]
 }
 
-const AMENDABLE_CONTRACT_FIELDS = ['objective', 'acceptance', 'verify', 'inScope', 'outOfScope'] as const
+/** Quality-contract fields a `work` task does not have and cannot acquire. */
+const QUALITY_CONTRACT_FIELDS = [
+  'objective', 'acceptance', 'verify', 'inScope', 'outOfScope', 'reviewedTaskId',
+] as const
+
+/**
+ * The brief of a `work` task: everything it has instead of a quality contract.
+ * `deliverables` and `nonGoals` belong to both shapes.
+ */
+const AMENDABLE_WORK_FIELDS = ['subject', 'description', 'deliverables', 'nonGoals'] as const
+
+/** Every contract field an amendment may replace, for the rejection text. */
+const AMENDABLE_CONTRACT_FIELDS = [
+  ...QUALITY_CONTRACT_FIELDS, ...AMENDABLE_WORK_FIELDS,
+] as const
+
+/** Task kinds a review or repair contract may point at through `reviewedTaskId`. */
+const REVIEWABLE_TASK_KINDS: readonly TaskKind[] = ['implementation', 'repair', 'verification', 'integration']
 
 /**
  * Controlled contract amendment (the pure rule; tooling keeps it
@@ -794,6 +824,13 @@ const AMENDABLE_CONTRACT_FIELDS = ['objective', 'acceptance', 'verify', 'inScope
  * before its next quality gate. Completion gates need no special casing:
  * they read the task's current fields, so they naturally evaluate the
  * amended contract.
+ *
+ * A `failed` task is amendable — that is the first step of the retry, not a
+ * rewrite of history — while `completed` and `cancelled` stay immutable. The
+ * freeze after a passing verdict can be overridden with `force`, which demands
+ * the same non-empty reason and additionally stales the verdict that judged the
+ * old contract; otherwise a contract that turned out to be wrong could only be
+ * fixed by cancelling and recreating the lane.
  */
 export function amendTaskContract(
   team: TeamState,
@@ -801,16 +838,28 @@ export function amendTaskContract(
   input: ContractAmendmentInput,
   by: string,
   reason: string,
+  force = false,
 ): AmendTaskContractResult {
   if (!nonemptyString(by)) return { ok: false, error: 'contract amendment requires a non-empty author identity' }
   if (!nonemptyString(reason)) return { ok: false, error: 'contract amendment requires a non-empty reason' }
-  if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+  if (task.status === 'completed' || task.status === 'cancelled') {
     return { ok: false, error: `task ${task.id} is ${task.status}; terminal contracts are immutable` }
   }
-  if (taskKindOf(task) === 'work') {
-    return { ok: false, error: `task ${task.id} has kind=work and no contract to amend` }
-  }
-  if (!AMENDABLE_CONTRACT_FIELDS.some((field) => input[field] !== undefined)) {
+  const kind = taskKindOf(task)
+  const qualityFields = QUALITY_CONTRACT_FIELDS.filter((field) => input[field] !== undefined)
+  const workFields = AMENDABLE_WORK_FIELDS.filter((field) => input[field] !== undefined)
+  if (kind === 'work') {
+    if (qualityFields.length > 0) {
+      return {
+        ok: false,
+        error: `task ${task.id} has kind=work and no quality contract to amend;`
+          + ` a work task amends ${AMENDABLE_WORK_FIELDS.join(', ')}`,
+      }
+    }
+    if (workFields.length === 0) {
+      return { ok: false, error: `amendment requires at least one of: ${AMENDABLE_WORK_FIELDS.join(', ')}` }
+    }
+  } else if (qualityFields.length + workFields.length === 0) {
     return { ok: false, error: `amendment requires at least one of: ${AMENDABLE_CONTRACT_FIELDS.join(', ')}` }
   }
   const next: Record<string, unknown> = {}
@@ -822,7 +871,20 @@ export function amendTaskContract(
     next['objective'] = input.objective
     previous['objective'] = task.objective
   }
-  for (const field of ['acceptance', 'verify'] as const) {
+  for (const field of ['subject'] as const) {
+    const value = input[field]
+    if (value === undefined) continue
+    if (!nonemptyString(value)) {
+      return { ok: false, error: `amended ${field} must be a non-empty string` }
+    }
+    next[field] = value
+    previous[field] = task[field]
+  }
+  if (input.description !== undefined) {
+    next['description'] = nonemptyString(input.description) ? input.description : undefined
+    previous['description'] = task.description
+  }
+  for (const field of ['acceptance', 'verify', 'deliverables', 'nonGoals'] as const) {
     const value = input[field]
     if (value === undefined) continue
     if (!nonemptyStringList(value)) {
@@ -848,16 +910,42 @@ export function amendTaskContract(
     next[field] = value
     previous[field] = task[field]
   }
-  const reviewPassed = team.tasks.some((item) => (
+  if (input.reviewedTaskId !== undefined) {
+    if (!nonemptyString(input.reviewedTaskId)) {
+      return { ok: false, error: 'amended reviewedTaskId must be a non-empty task id' }
+    }
+    if (input.reviewedTaskId === task.id) {
+      return { ok: false, error: `task ${task.id} cannot review itself` }
+    }
+    const target = team.tasks.find((item) => item.id === input.reviewedTaskId)
+    if (target === undefined) {
+      return { ok: false, error: `reviewed task "${input.reviewedTaskId}" does not exist` }
+    }
+    const targetKind = taskKindOf(target)
+    if (!REVIEWABLE_TASK_KINDS.includes(targetKind)) {
+      return {
+        ok: false,
+        error: `reviewed task "${target.id}" has kind=${targetKind}; a review judges one of: ${REVIEWABLE_TASK_KINDS.join(', ')}`,
+      }
+    }
+    next['reviewedTaskId'] = input.reviewedTaskId
+    previous['reviewedTaskId'] = task.reviewedTaskId
+  }
+  const passedJudgment = team.tasks.filter((item) => (
     (taskKindOf(item) === 'review' || taskKindOf(item) === 'requirements')
     && item.reviewedTaskId === task.id
     && item.verdict === 'pass'
   ))
-  if (reviewPassed) {
-    return { ok: false, error: `task ${task.id} already passed review; its contract is frozen` }
+  if (passedJudgment.length > 0 && !force) {
+    return {
+      ok: false,
+      error: `task ${task.id} already passed review; its contract is frozen`
+        + ' (pass force=true with the same reason to amend it and stale that verdict)',
+    }
   }
+  const at = Date.now()
   const revision: TaskRevision = {
-    at: Date.now(),
+    at,
     by,
     reason,
     fields: Object.keys(next),
@@ -866,11 +954,14 @@ export function amendTaskContract(
   return {
     ok: true,
     revision,
+    ...force && passedJudgment.length > 0
+      ? { invalidatedReviews: passedJudgment.map((item) => ({ ...item, verdict: 'stale' as const, updatedAt: at })) }
+      : {},
     task: {
       ...task,
       ...next,
       revisions: [...(task.revisions ?? []), revision],
-      updatedAt: Date.now(),
+      updatedAt: at,
     } as TeamTask,
   }
 }

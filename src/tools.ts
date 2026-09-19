@@ -516,7 +516,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           member.executionPrompt = trimmedOptional(mutation.executionPrompt)
         } else if (mutation.action === 'update_task') {
           const task = requireTask(fresh, mutation.taskId)
-          if (task.status !== 'pending' || (task.attempt ?? 0) !== 0 || task.reassigning === true) {
+          // WP2/S08: on a running team the captain may retarget a task that has
+          // not started (`pending`, any attempt) and one that failed — retrying a
+          // failed lane is the point. A task a member currently holds
+          // (`claimed`/`in_progress`) is still off limits here: that edit needs
+          // the explicit replan with attempt invalidation (WP4/S10).
+          const editable = staged
+            ? task.status === 'pending' && (task.attempt ?? 0) === 0
+            : task.status === 'pending' || task.status === 'failed'
+          if (!editable || task.reassigning === true) {
             throw new Error(`task "${task.id}" has already started and cannot be edited`)
           }
           if (!staged && mutation.assignee === CAPTAIN_KEY) throw new Error('use reassign_task for captain takeover')
@@ -1819,15 +1827,21 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_amend_task',
-    description: 'Captain-only controlled contract amendment for one non-terminal quality task: replace a wrong objective/acceptance/verify/inScope/outOfScope when the original contract makes honest completion impossible (for example a verify command that cannot pass, or an inScope that forbids the file the objective names). The amendment is appended to the task\'s revisions ledger with previous values and the reason, and is rejected once a review/requirements task has passed judgment on this task. Members cannot amend contracts; the implementer re-reads the amended contract before its next quality gate. Lists are full replacements, not deltas.',
+    description: 'Captain-only controlled contract amendment for one task that is pending, claimed, in_progress or failed: replace a wrong objective/acceptance/verify/inScope/outOfScope/deliverables/nonGoals/reviewedTaskId when the original contract makes honest completion impossible (for example a verify command that cannot pass, or an inScope that forbids the file the objective names), and amend the subject/description/deliverables of a kind=work task. The amendment is appended to the task\'s revisions ledger with previous values and the reason, and is rejected once a review/requirements task has passed judgment on this task; pass force=true with the same mandatory reason to override that freeze, which marks the passing verdict stale so the changed contract must be reviewed again. A completed or cancelled task stays immutable. Members cannot amend contracts; the implementer re-reads the amended contract before its next quality gate. Lists are full replacements, not deltas.',
     parameters: {
       task_id: { type: 'string', required: true, description: 'Task whose contract is being amended.' },
       reason: { type: 'string', required: true, description: 'Why the current contract is wrong; recorded in the revisions ledger.' },
+      force: { type: 'boolean', description: 'Override the freeze a passing review/requirements verdict put on this contract. The verdict becomes stale, so the amended contract has to be reviewed again. Requires the same non-empty reason.' },
       objective: { type: 'string', description: 'Replacement objective.' },
       acceptance: { type: 'array', items: { type: 'string' }, description: 'Replacement acceptance criteria (full list, not a delta).' },
       verify: { type: 'array', items: { type: 'string' }, description: 'Replacement verification commands (full list, not a delta).' },
       inScope: { type: 'array', items: { type: 'string' }, description: 'Replacement workspace-relative inScope paths (full list).' },
       outOfScope: { type: 'array', items: { type: 'string' }, description: 'Replacement workspace-relative outOfScope paths (full list).' },
+      deliverables: { type: 'array', items: { type: 'string' }, description: 'Replacement expected deliverable paths or names (full list).' },
+      nonGoals: { type: 'array', items: { type: 'string' }, description: 'Replacement explicit non-goals (full list).' },
+      reviewedTaskId: { type: 'string', description: 'Replacement source task for a review/repair contract; it must exist and be an implementation, repair, verification or integration task.' },
+      subject: { type: 'string', description: 'Replacement title; for a kind=work task this is the amendable brief.' },
+      description: { type: 'string', description: 'Replacement description; for a kind=work task this is the amendable brief. An empty value clears it.' },
     },
     output: {
       schema: {
@@ -1838,12 +1852,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           status: { type: 'string', required: true },
           revised_fields: { type: 'string', required: true },
           revision_count: { type: 'number', required: true },
+          staled_reviews: { type: 'string', required: true },
           contract: { type: 'string', required: true },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Task ${value.task_id} contract amended (${value.revised_fields}); ${value.revision_count} revision(s) on record, status ${value.status}. New contract: ${value.contract}`,
+        text: `Task ${value.task_id} contract amended (${value.revised_fields}); ${value.revision_count} revision(s) on record, status ${value.status}. New contract: ${value.contract}`
+          + (value.staled_reviews === '' ? '' : ` Staled reviews: ${value.staled_reviews}.`),
       }],
     },
     async execute(args, exec) {
@@ -1860,25 +1876,43 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...args.verify === undefined ? {} : { verify: args.verify },
           ...args.inScope === undefined ? {} : { inScope: args.inScope },
           ...args.outOfScope === undefined ? {} : { outOfScope: args.outOfScope },
+          ...args.deliverables === undefined ? {} : { deliverables: args.deliverables },
+          ...args.nonGoals === undefined ? {} : { nonGoals: args.nonGoals },
+          ...args.reviewedTaskId === undefined ? {} : { reviewedTaskId: args.reviewedTaskId },
+          ...args.subject === undefined ? {} : { subject: args.subject },
+          ...args.description === undefined ? {} : { description: args.description },
         }
-        const result = amendTaskContract(fresh, task, normalizeBlankOptionalTaskFields(input), CAPTAIN_KEY, args.reason)
+        const result = amendTaskContract(fresh, task, normalizeBlankOptionalTaskFields(input), CAPTAIN_KEY, args.reason, args.force === true)
         if (!result.ok || result.task === undefined) {
           throw new Error(result.error ?? 'amend_task rejected by quality gates')
         }
         Object.assign(task, result.task)
         task.updatedAt = Date.now()
+        // A forced amendment stales the verdict that judged the old contract:
+        // delivery must not treat the changed contract as already reviewed.
+        for (const review of result.invalidatedReviews ?? []) {
+          const current = fresh.tasks.find((item) => item.id === review.id)
+          if (current === undefined) continue
+          current.verdict = review.verdict
+          current.updatedAt = review.updatedAt
+        }
         await writeTeam(stateRoot, fresh)
         return {
           taskId: task.id,
           status: task.status,
           fields: result.revision?.fields ?? [],
           revisionCount: task.revisions?.length ?? 0,
+          staledReviews: (result.invalidatedReviews ?? []).map((review) => review.id),
           contract: {
             ...task.objective === undefined ? {} : { objective: task.objective },
             ...task.acceptance === undefined ? {} : { acceptance: task.acceptance },
             ...task.verify === undefined ? {} : { verify: task.verify },
             ...task.inScope === undefined ? {} : { inScope: task.inScope },
             ...task.outOfScope === undefined ? {} : { outOfScope: task.outOfScope },
+            ...task.deliverables === undefined ? {} : { deliverables: task.deliverables },
+            ...task.nonGoals === undefined ? {} : { nonGoals: task.nonGoals },
+            ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
+            ...taskKindOf(task) !== 'work' ? {} : { subject: task.subject, ...task.description === undefined ? {} : { description: task.description } },
           },
         }
       })
@@ -1887,12 +1921,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         taskId: amended.taskId,
         fields: amended.fields,
         reason: args.reason,
+        ...amended.staledReviews.length === 0 ? {} : { staledReviews: amended.staledReviews },
       })
       return {
         task_id: amended.taskId,
         status: amended.status,
         revised_fields: amended.fields.join(', '),
         revision_count: amended.revisionCount,
+        staled_reviews: amended.staledReviews.join(', '),
         contract: JSON.stringify(amended.contract),
       }
     },
@@ -2067,6 +2103,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...(task.commandsRun ?? []),
         ].filter((item) => item.status === 'waived').length,
         ...taskHasWaivers(task) && !waiversConfirmed(team, task) ? { waivers_unconfirmed: true } : {},
+        // WP2/S08: the amendment ledger is part of the contract's identity, so a
+        // reader sees that a task is working against a revised brief.
+        ...(task.revisions ?? []).length === 0 ? {} : { revisions: (task.revisions ?? []).length },
         ...task.profileSeedId === undefined ? {} : { seed_id: task.profileSeedId },
         ...task.output !== undefined ? { output: task.output } : {},
       }))
@@ -2535,7 +2574,7 @@ function renderStatus(value: JsonValue): string {
       activity: string
       spawn_error?: string
     }[]
-    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean }[]
+    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
     member_inboxes: Record<string, { count: number; latest: string }>
@@ -2581,7 +2620,10 @@ function renderStatus(value: JsonValue): string {
       const waived = task.waived === undefined || task.waived === 0
         ? ''
         : ` waived ${task.waived}${task.waivers_unconfirmed === true ? ' (unconfirmed — delivery blocked until a review confirms them)' : ''}`
-      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${waived} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
+      // WP2/S08: how many times the captain has amended this contract. A task
+      // working against a revised brief must be visible as such.
+      const revised = task.revisions === undefined || task.revisions === 0 ? '' : ` revised ×${task.revisions}`
+      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
     }),
     ...team.coverage === undefined || team.coverage.length === 0 ? [] : [
       'Coverage:',

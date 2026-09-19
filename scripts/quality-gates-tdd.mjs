@@ -1261,7 +1261,11 @@ console.log('quality-gates TDD — I. one task-status transition table')
     claimed: ['in_progress', 'failed', 'cancelled'],
     in_progress: ['completed', 'failed', 'cancelled'],
     completed: [],
-    failed: [],
+    // WP2/S08 legalized the retry: `reassign_task` already moved a failed task
+    // back to `pending` through `invalidateTaskAttempt`, bypassing this table, so
+    // the table disagreed with the behaviour the tools actually have. The
+    // `superseded` target lands with WP3/S09.
+    failed: ['pending'],
     cancelled: [],
   }
 
@@ -1294,6 +1298,19 @@ console.log('quality-gates TDD — I. one task-status transition table')
       task({ kind: 'work', status: 'pending' }),
       { status: 'in_progress' },
     )?.ok === false,
+  )
+  // WP2/S08: a failed task is not a dead end. `reassign_task` already retries it,
+  // so the gate must agree that `failed -> pending` is a legal move instead of
+  // rejecting a status it will never see only because the tool bypasses the gate.
+  check(
+    'tdd.state.failed-retry-transition-is-legal',
+    stateModule.transitionError('failed', 'pending') === undefined
+      && requireFn(api.evaluateQualityCompletion, 'evaluateQualityCompletion')(
+        task({ kind: 'work', status: 'failed' }),
+        { status: 'pending' },
+      )?.ok === true
+      && stateModule.transitionError('failed', 'in_progress') !== undefined
+      && stateModule.transitionError('completed', 'pending') !== undefined,
   )
 }
 

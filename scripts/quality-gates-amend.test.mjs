@@ -22,6 +22,7 @@ import {
   hasValidQualityTaskFields,
   isTaskRevision,
 } from '../lib/quality-gates.js'
+import { invalidateTaskAttempt } from '../lib/state.js'
 
 function member(name, role) {
   return { id: `member-${name}`, name, role, joinedAt: 0, status: 'idle' }
@@ -158,4 +159,111 @@ test('durable-state validation accepts well-formed revisions and rejects malform
   assert.equal(hasValidQualityTaskFields({ revisions: [{ at: 1, by: '', reason: 'r', fields: ['inScope'], previous: {} }] }), false)
   assert.equal(hasValidQualityTaskFields({ revisions: [{ at: 1, by: 'captain', reason: 'r', fields: [], previous: {} }] }), false)
   assert.equal(hasValidQualityTaskFields({ revisions: 'nope' }), false)
+})
+
+// ── WP2 / S08: the amendment covers the whole contract, and a failed task is
+// retryable. The first cut amended five fields, rejected every `work` task and
+// treated `failed` as immutable, so a wrong brief or a red lane still ended in
+// "cancel and recreate" — the dead end the feedback section 1 reported.
+
+test('the amendment reaches deliverables, nonGoals and reviewedTaskId', () => {
+  const team = teamWith([
+    implTask(),
+    { id: 't2', subject: 'review', status: 'in_progress', dependencies: ['t1'], createdAt: 0, updatedAt: 0, kind: 'review', reviewedTaskId: 't1' },
+  ])
+  const widened = amendTaskContract(team, team.tasks[0], {
+    deliverables: ['src/amend-e2e.txt', 'docs/amend.md'],
+    nonGoals: ['do not touch the parser'],
+  }, 'captain', 'the deliverable list was unstated')
+  assert.equal(widened.ok, true)
+  assert.deepEqual(widened.task.deliverables, ['src/amend-e2e.txt', 'docs/amend.md'])
+  assert.deepEqual(widened.task.nonGoals, ['do not touch the parser'])
+  assert.deepEqual(widened.task.revisions[0].fields.sort(), ['deliverables', 'nonGoals'])
+  assert.equal(widened.task.revisions[0].previous.deliverables, undefined)
+})
+
+test('an amended reviewedTaskId must name an existing, reviewable task', () => {
+  const team = teamWith([
+    implTask(),
+    implTask({ id: 't3', kind: 'work', status: 'pending', attempt: 0 }),
+    { id: 't2', subject: 'review', status: 'in_progress', dependencies: ['t1'], createdAt: 0, updatedAt: 0, kind: 'review', reviewedTaskId: 't1' },
+  ])
+  const review = team.tasks[2]
+  const repointed = amendTaskContract(team, review, { reviewedTaskId: 't1' }, 'captain', 'no-op review target')
+  assert.equal(repointed.ok, true)
+  assert.equal(repointed.task.reviewedTaskId, 't1')
+  const missing = amendTaskContract(team, review, { reviewedTaskId: 't404' }, 'captain', 'r')
+  assert.equal(missing.ok, false)
+  assert.match(missing.error, /does not exist/)
+  const notReviewable = amendTaskContract(team, review, { reviewedTaskId: 't3' }, 'captain', 'r')
+  assert.equal(notReviewable.ok, false)
+  assert.match(notReviewable.error, /kind=work/)
+  const itself = amendTaskContract(team, review, { reviewedTaskId: 't2' }, 'captain', 'r')
+  assert.equal(itself.ok, false)
+  assert.match(itself.error, /itself/)
+})
+
+test('a work task amends its own brief while its quality fields stay unreachable', () => {
+  const team = teamWith([implTask({ kind: 'work' })])
+  const task = team.tasks[0]
+  const renamed = amendTaskContract(team, task, {
+    subject: 'renamed brief', description: 'say what the lane actually does', deliverables: ['notes.md'],
+  }, 'captain', 'the brief described the wrong lane')
+  assert.equal(renamed.ok, true)
+  assert.equal(renamed.task.subject, 'renamed brief')
+  assert.equal(renamed.task.description, 'say what the lane actually does')
+  assert.deepEqual(renamed.task.deliverables, ['notes.md'])
+  const contract = amendTaskContract(team, task, { verify: ['pnpm test'] }, 'captain', 'r')
+  assert.equal(contract.ok, false)
+  assert.match(contract.error, /kind=work/)
+  assert.match(contract.error, /subject, description, deliverables/)
+})
+
+test('a failed task is amendable as the first retry step, and the retry then completes', () => {
+  const team = teamWith([implTask({ status: 'failed' })])
+  const failed = team.tasks[0]
+  const amended = amendTaskContract(team, failed, { inScope: ['docs/', 'src/'] }, 'captain', 'the scope was undercounted')
+  assert.equal(amended.ok, true)
+  assert.equal(amended.task.status, 'failed')
+  assert.equal(amended.task.revisions.length, 1)
+  const retried = { ...amended.task }
+  invalidateTaskAttempt(retried, 'implementer')
+  assert.equal(retried.status, 'pending')
+  // The member now walks the retry the way a worker does: claim, start, complete.
+  retried.status = 'claimed'
+  retried.status = 'in_progress'
+  const gate = evaluateQualityCompletion(retried, completedResults(retried))
+  assert.equal(gate.ok, true, `the retry must complete against the amended contract, got: ${gate.error}`)
+})
+
+test('completed and cancelled contracts stay immutable', () => {
+  for (const status of ['completed', 'cancelled']) {
+    const team = teamWith([implTask({ status })])
+    const result = amendTaskContract(team, team.tasks[0], { objective: 'x' }, 'captain', 'r')
+    assert.equal(result.ok, false, `${status} must not be amendable`)
+    assert.match(result.error, /terminal/)
+  }
+})
+
+test('force overrides the post-review freeze and stales the review that passed', () => {
+  const team = teamWith([
+    implTask(),
+    { id: 't2', subject: 'review', status: 'completed', dependencies: ['t1'], createdAt: 0, updatedAt: 0, kind: 'review', verdict: 'pass', reviewedTaskId: 't1' },
+  ])
+  const task = team.tasks[0]
+  const frozen = amendTaskContract(team, task, { verify: ['node -e "process.exit(1)"'] }, 'captain', 'late idea')
+  assert.equal(frozen.ok, false)
+  assert.match(frozen.error, /frozen/)
+  const forced = amendTaskContract(team, task, { verify: ['node -e "process.exit(1)"'] }, 'captain', 'the verify command cannot pass here', true)
+  assert.equal(forced.ok, true)
+  assert.equal(forced.invalidatedReviews.length, 1)
+  assert.equal(forced.invalidatedReviews[0].id, 't2')
+  assert.equal(forced.invalidatedReviews[0].verdict, 'stale')
+  assert.equal(hasValidQualityTaskFields({ verdict: 'stale' }), true)
+  // A stale verdict is not a passing one: the amended contract has to be
+  // reviewed again before delivery.
+  assert.equal(evaluateQualityCompletion(
+    { ...forced.invalidatedReviews[0], status: 'in_progress' },
+    { status: 'completed' },
+  ).ok, false)
 })

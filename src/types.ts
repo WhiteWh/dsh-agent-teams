@@ -41,9 +41,16 @@ export const TASK_KINDS: readonly TaskKind[] = [
 ]
 
 /** Review / requirements conclusion. Only `pass` may complete those kinds. */
-export type ReviewVerdict = 'pass' | 'needs_revision' | 'reject'
+export type ReviewVerdict = 'pass' | 'needs_revision' | 'reject' | 'stale'
 
-export const REVIEW_VERDICTS: readonly ReviewVerdict[] = ['pass', 'needs_revision', 'reject']
+/**
+ * Verdicts a reviewer may submit and the durable layer accepts.
+ *
+ * `stale` is deliberately in this list but not in the `update_task` parameter
+ * enum: only the captain's forced contract amendment produces it, by invalidating
+ * a review that passed judgment on a contract that has since changed.
+ */
+export const REVIEW_VERDICTS: readonly ReviewVerdict[] = ['pass', 'needs_revision', 'reject', 'stale']
 
 /** Finding severity used by review / requirements output. */
 export type FindingSeverity = 'low' | 'medium' | 'high' | 'blocker'
