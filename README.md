@@ -26,6 +26,8 @@ Ask in natural language. The plugin provides the team protocol, 19 coordination 
 
 ## Releases
 
+[v0.2.2](./release-notes/v0.2.2.md) is a panel-and-contract release: a member row is one compact line (portrait, role symbol, name, model badge, action symbol with its state label, task chips) ending in the work plaque; the phase board lays sequential work inside a phase out as a line and stretches the column to its longest chain, a cancelled node is a pale scarlet hatched card, and the Tree and Queues views are gone with their model projections — the board is the panel's single graph view and the progress block is one bar again. It also fixes a regression shipped in [v0.2.1](./release-notes/v0.2.1.md): a plan whose declared phases covered every task rendered an empty board.
+
 [v0.2.1](./release-notes/v0.2.1.md) is a panel-visual release: in the members tree a member's work is the node's own height — a plaque three dots wide running down the row with a top-to-bottom wave while that member works — instead of the compact six-dot mark inside its text. The client bundle is the only thing that changed; no state, tool, schema or gate moved.
 
 [v0.2.0](./release-notes/v0.2.0.md) closes the hardening plan: `agent_teams_replan` repairs a running plan in one atomic batch (add/update/retry/supersede/cancel/accept/amend/move) instead of a cancel-and-recreate cascade, `invalidate: true` revokes the attempt a member holds and a revoked capability is refused afterwards, the plan became an entity (`plan.revision`, declared phases, an `agent-teams/plan-revised` diff), one server-computed percentage is shared by the panel, the card and the status text (with a task checklist and a running-mode planner/editor), and several teams are usable at once: a team switcher in the panel, a workspace-wide scheduler sweep and four configurable limits (`maxTeamsPerWorkspace`, `maxTeamsPerSession`, `maxWorkersPerTeam`, `maxConcurrentWorkersGlobal`) with a slot summary in `agent_teams_status`. Nineteen tools.
@@ -111,14 +113,14 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.2.1`. Harness remains a prerelease.**
+**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.2.2`. Harness remains a prerelease.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended installation** | **`0.1.5-rc.1`** | **`0.2.1`** |
-| Retaining an older RC | `0.1.2-rc.1` | `0.2.1` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.2.1` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.2.1` |
+| **Recommended installation** | **`0.1.5-rc.1`** | **`0.2.2`** |
+| Retaining an older RC | `0.1.2-rc.1` | `0.2.2` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.2.2` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.2.2` |
 
 ### 1. Install DeepSeek Harness
 
@@ -134,12 +136,12 @@ Skip this if you already run this version. Alpha is opt-in: select an exact Alph
 Install into the `web` profile. Replace the profile name if needed:
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.2.1
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.2.2
 ```
 
 **After installation, stop and restart Harness for that profile, then refresh the browser.**
 
-The default npm `latest` tag points to `0.2.1`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.2.1/README.md).
+The default npm `latest` tag points to `0.2.2`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.2.2/README.md).
 
 > Desktop users must check the app's embedded Harness core; upgrading the global CLI does not upgrade it. For older `0.1.0-*` / `0.1.1-*` or unlisted hosts, keep a working pair and follow the [older-version and diagnostic guide](./docs/maintenance-workflow.md).
 

@@ -189,6 +189,47 @@ plan's §5 was retitled when the owner answered them.
     add them: `agent_teams_replan` (`add_task`, `move_phase`) and
     `agent_teams_create_task`.
 
+## Round 3 scope (owner request, 2026-09-20, after 0.2.1 with the round-2 patch)
+
+Four items, in the owner's order, one step at a time with RED-first checks, a full
+`pnpm verify` per step and one release at the end of the UI pair and one for the
+contract change.
+
+- **S23 — the work plaque is three dot rows, not five.** The plaque kept five rows
+  from the era of a two-line member row; a one-line row does not need that height.
+  `WorkBar` goes to `[0, 1, 2]` rows, the stagger, dots and idle slot stay as they
+  are, and the existing plaque checks are extended to assert the row count (five
+  rows was the compaction the owner is reversing).
+- **S24 — the phases section collapses like every other section.** Members and the
+  checklist already have a chevron header (`aria-expanded`, `data-*-toggle`,
+  one collapse/expand word); the board gets the same treatment — a
+  `phase.toggle` header with the column count, `phase.expand`/`phase.collapse`,
+  `data-phases-toggle`, default open, and the board body rendered only while open.
+  No new storage key: sibling sections keep their state in component state.
+- **S25 — a phase can be closed, and a closed phase accepts no new tasks.** The
+  captain closes a phase **after accepting its tasks** (his obligation, stated in
+  the captain prompt), through one more operation of the captain-only replan batch:
+  `close_phase`. A phase may close only when every task in it is settled
+  (completed, cancelled or superseded) — otherwise the operation is refused naming
+  the phase and the tasks still open. Once closed:
+  - `agent_teams_replan` refuses `add_task` with that `phase` and refuses
+    `move_phase` into it, with a message that names the closed phase and points at
+    declaring a new one (`move_phase` with a `title`);
+  - `agent_teams_create_task` refuses the same `phase` argument;
+  - the snapshot publishes `closed` per phase, the board marks a closed column, and
+    the running-plan editor never offers a closed phase as a target.
+  State shape: `plan.phases[].closed` (+ `closedAt`), validated by
+  `isTeamPlanPhase`, so an older `team.json` keeps loading as open phases.
+- **S26 — the overall progress bar is one line in three colours.** Segments:
+  (1) the original plan, (2) work added while the team ran, (3) work added after the
+  plan first completed — see D7 for how a task is attributed. The bar keeps its
+  single width and the server-side percentage; the three slices are coloured and
+  the legend names them, so "how much of this was the plan" is readable without
+  reading the task list.
+
+Releases: **0.2.3** after S23+S24 (client only), **0.3.0** after S25+S26 (state and
+tool behaviour change, with an upgrade note for the new `closed` field).
+
 ## Step log
 
 ### S22 — owner UI round 2: compact member node, phases as chains, one graph view (done)
