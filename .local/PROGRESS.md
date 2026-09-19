@@ -561,19 +561,36 @@ the owner to clear a cache.
   `sync-skill --check` (10 skills / 121 files) and `lang-check` (policy clean).
   Left for CI: the whole `pnpm verify` chain, `compatibility.test.mjs`, and the
   real-host matrix.
-- **Artifact:** `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`,
-  2 238 040 bytes, SHA256 `6A6524EB…CA381F`; copied to
-  `D:\OwlCats\AI_Tools\dsh-agent-teams-0.1.22.tgz` for the profile install.
-  Release record: `docs/releases/v0.1.22/README.md`.
+- **Owner UI follow-up (same release, before the first restart):** the member
+  portrait carries one corner mark instead of two — the role symbol is gone from
+  the avatar (the row names the role in words) and the captain avatar lost its
+  role mark too; the role pack stays packaged and resolvable for compact slots.
+  `ActivityPanel.tsx` dropped `memberSymbolUrl`/`LEAD_SYMBOL` from its imports and
+  the `.memberSymbol`/`.leadSymbol` rules left `ActivityPanel.module.css`. The old
+  check `the small corner badge draws both marks from the symbol packs` was
+  replaced by `the corner badge draws the activity mark only, from the symbol
+  pack` (now asserting the avatar renders *no* role mark) plus `the role symbol
+  pack stays resolvable for the compact slots`, so the pack keeps coverage
+  instead of losing it with the UI. `verify.mjs` 220 PASS / 0 FAIL.
+- **Artifact (rebuilt after the badge change):**
+  `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`, 2 237 711 bytes, SHA256
+  `4DF0EC6E…33C3`; the superseded build was `6A6524EB…381F` (2 238 040 bytes) and
+  never reached a restart. Note for the next install: re-adding the *same*
+  `file:` spec makes pnpm skip resolution, so the package must be removed first
+  (the `dsh.profile.bundles` order was restored to `dsh-base, dsh-web-app,
+  @nanmicoder/dsh-agent-teams, dsh-agent-status-bar` after the re-add).
 - **Deployed** into `C:\Users\whitl\.dsh\profiles\web`
   (`dsh plugin --profile web add --save-exact file:…0.1.22.tgz`): profile
-  dependency now points at the 0.1.22 tarball, installed version 0.1.22,
-  `lib/**` byte-identical to this checkout, `ART_REVISION = 5a90736f927c`,
-  `member-engineer-v2.png` 39 838 bytes. The host picks it up on the next
-  restart; the browser then asks for revisioned URLs, so no cache clearing is
+  dependency points at the 0.1.22 tarball, installed version 0.1.22,
+  `lib/client.js`, `lib/index.js`, `lib/artwork.js`, `lib/client/artwork.js` and
+  `lib/client/art-revision.js` byte-identical to this checkout,
+  `ART_REVISION = 5a90736f927c`, `member-engineer-v2.png` 39 838 bytes, the panel
+  bundle no longer contains the role-mark class, and `dsh --profile web
+  --dump-config` still resolves `id: agent-teams`. The host picks it up on the
+  next restart; the browser then asks for revisioned URLs, so no cache clearing is
   needed. Pre-install backups: `*.bak-2026-09-20-pre-0.1.22` (package.json,
-  pnpm-lock.yaml, pnpm-workspace.yaml); rollback target is the 0.1.21 tarball,
-  which stays in place.
+  pnpm-lock.yaml, pnpm-workspace.yaml; plus `package.json.bak-2026-09-20-pre-reinstall`);
+  rollback target is the 0.1.21 tarball, which stays in place.
 
 ### S01 — WP9-a: one TASK_TRANSITIONS table
 

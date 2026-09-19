@@ -419,17 +419,36 @@ check(
   memberSymbolUrl('Lead', 'Backend Engineer') !== LEAD_SYMBOL
     && memberSymbolUrl('Lead', 'Backend Engineer') === memberSymbolUrl('Other', 'Backend Engineer'),
 )
-// The defect this pair replaced: the corner badge drew the same mascot art as
-// the avatar, which is a smudge at 18px. Both marks must come from the symbol
-// packs, and the panel must not fall back to the mascot for either one.
+// The corner badge carries the live activity and nothing else. It used to draw a
+// second, role mark beside the action mark; the row already names the role in
+// words, so the mark was redundant clutter on a 42px portrait. The activity mark
+// must still come from the symbol pack — the mascot art is a smudge at 18px, the
+// defect this pack replaced — and the role mark must be gone from the avatar.
 check(
-  'the small corner badge draws both marks from the symbol packs',
+  'the corner badge draws the activity mark only, from the symbol pack',
   Object.values(ACTION_SYMBOL).every(url => artworkPath(url).endsWith('-symbol.png'))
     && Object.values(ACTION_SYMBOL).every(url => !url.includes('-v2.png'))
     && !activityPanelSource.includes('ACTION_ART[')
     && activityPanelSource.includes('ACTION_SYMBOL[member.activity]')
-    && activityPanelSource.includes('src={memberSymbolUrl(member.name, member.role)'),
+    && !activityPanelSource.includes('css.memberSymbol')
+    && !activityPanelSource.includes('css.leadSymbol')
+    && !activityPanelSource.includes('LEAD_SYMBOL')
+    && !activityPanelCss.includes('.memberSymbol')
+    && !activityPanelCss.includes('.leadSymbol'),
   `action symbols = ${JSON.stringify(ACTION_SYMBOL)}`,
+)
+// The role pack stays packaged and resolvable: it is the compact mark for slots
+// that cannot fit the mascot *and* the label, so the resolver is the interface
+// those slots will use. Dropping it from the avatar must not drop it from the
+// bundle, and it must keep answering for all nine roles plus the lead.
+check(
+  'the role symbol pack stays resolvable for the compact slots',
+  memberSymbolUrl('Engineer', 'Backend Engineer') !== null
+    && artworkPath(memberSymbolUrl('Engineer', 'Backend Engineer') ?? '').endsWith('-symbol.png')
+    && artworkPath(LEAD_SYMBOL).endsWith('-symbol.png')
+    && LEAD_SYMBOL.includes('?v=')
+    && artworkSource.includes('memberSymbolUrl'),
+  `lead symbol = ${LEAD_SYMBOL}`,
 )
 // The names in this pack did not change when the art was redrawn: the whale and
 // the amber terminal are both `member-engineer-v2.png`. A browser that cached

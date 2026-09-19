@@ -891,6 +891,10 @@
   line-height: 20px;
 }
 
+/* The action badge is the only corner mark: it sits at the outer bottom-right
+   corner, where a changing state catches the eye. The role mark that used to sit
+   beside it was dropped — the row names the role in words — and the standalone
+   role symbols stay for slots that cannot fit the mascot or the label. */
 .stateArt {
   position: absolute;
   right: -2px;
@@ -906,34 +910,6 @@
   filter:
     drop-shadow(0 0 1px var(--dsw-alias-bg-layer-1))
     drop-shadow(0 1px 1px rgb(18 45 72 / 24%));
-}
-
-/* Role symbol: the identity mark of the small corner pair. It sits inside the
-   action badge, which stays the outermost mark because the activity is what
-   changes and therefore has to catch the eye first. */
-.memberSymbol,
-.leadSymbol {
-  position: absolute;
-  bottom: -3px;
-  width: 18px;
-  height: 18px;
-  box-sizing: border-box;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 50%;
-  padding: 2px;
-  object-fit: contain;
-  background: var(--dsw-alias-bg-layer-1);
-  filter:
-    drop-shadow(0 0 1px var(--dsw-alias-bg-layer-1))
-    drop-shadow(0 1px 1px rgb(18 45 72 / 24%));
-}
-
-.memberSymbol {
-  right: 13px;
-}
-
-.leadSymbol {
-  right: 14px;
 }
 
 .stateArt[data-activity='working'] {
