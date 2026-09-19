@@ -88,6 +88,7 @@ the pre-step count, and FAIL must stay 0.
 | S19 | WP11 phase 3 team limits | done | | verify 291 PASS/0 FAIL (+2); lifecycle 155 PASS/0 FAIL (+3); all 22 suites exit 0; four configured keys + slot summary in status |
 | S20 | docs + release 0.2.0 | done | | version 0.2.0; notes + release record; artifact 2 317 040 B / SHA256 `FBBA6EBA…12EE` installed into the web profile; tag v0.2.0 with the branch marker; all 22 suites exit 0 |
 | S21 | owner UI round + release 0.2.1 | done | | work plaque (full-node height, 3 dots wide) in the members tree; `cfe9338` UI commit + `09ac60e` release; verify 293 PASS/0 FAIL; artifact 2 318 783 B / SHA256 `2F73FAF8…D411` installed; tag v0.2.1 |
+| S22 | owner UI round 2 + release 0.2.2 | done | | compact one-line member node, phase columns as chains, hatched cancelled nodes, tree/queues views and their model projections deleted; declared-phase regression fixed; verify 271 PASS/0 FAIL; tag v0.2.2 |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -171,8 +172,90 @@ plan's §5 was retitled when the owner answered them.
     (phase 3).
   - If the guard drags the scheduler into S14, move it **whole** to S19 and
     write the reason here.
+- **D7 — the replan tool is the captain's, not the user's (owner note,
+  2026-09-20, before round 3).** `agent_teams_replan` belongs to the captain's
+  tool set like every other `agent_teams_*` tool; a human never calls it. What the
+  user "adds" therefore arrives as work the captain creates. Consequences for
+  round 3:
+  - the **three progress segments** cannot be classified by "who called which
+    tool". They are classified by the creation path: the approved plan
+    (`agent_teams_create`), captain maintenance (an `agent_teams_replan`
+    `add_task`), and captain `create_task` work added after the plan first
+    completed — which is what a user's later request turns into;
+  - **closing a phase** is likewise a captain action on a captain tool (an
+    operation of the replan batch, next to `move_phase`), and the panel's
+    running-plan editor only composes that same captain request;
+  - "нельзя добавлять задачи в закрытую фазу" is enforced where the captain can
+    add them: `agent_teams_replan` (`add_task`, `move_phase`) and
+    `agent_teams_create_task`.
 
 ## Step log
+
+### S22 — owner UI round 2: compact member node, phases as chains, one graph view (done)
+
+Owner request after living with 0.2.1, verbatim intent: compact a member row of
+`members` into one small line (role icon, status icon, name, model, its task list)
+with the work plaque at the end; make the `phases` section lay sequential work out
+in a line while the phase column stretches, which removes the need for the `tree`
+section; paint cancelled task nodes in a very pale scarlet hatch; and delete the
+`queues` section.
+
+- **Member node** (`ActivityPanel.tsx`, `.module.css`): one flex line —
+  `.memberAvatar` (24 px, the old corner action mark dropped) → `.memberRoleIcon`
+  (12 px, the role in words moved into its `title`) → `.memberInfo` (`.memberName`
+  with the role tooltip, `.memberModel` badge, `.memberStateIcon` = action symbol +
+  state label) → `.memberCount` → `.assignmentLine` (chips only) → `<WorkBar />`
+  last, `align-self: stretch` via `.memberRow > .workBar`. `.memberStatusLine`,
+  `.memberRole` and `.assignmentLabel` and their nine `member.status.*` locale keys
+  are gone, so `memberStatusText()` went with them.
+- **Phase board** (`activity-model.ts`): `phaseBoardLayout(tasks, manualPhases)`
+  now gives a task its **intra-column chain depth** as `x` (the longest path of
+  dependencies that stay inside the same phase) and keeps a predecessor's row when
+  its predecessors agree, otherwise the first free row at that depth. A column's
+  `width` is `(maxDepth + 1) * NODE_WIDTH + maxDepth * COLUMN_GAP`, and `columns[]`
+  carries `taskIds`, so a reader (and the header count) never has to infer
+  membership from `x`. Geometry: `COMPACT_DAG_NODE_WIDTH 92`,
+  `COMPACT_DAG_COLUMN_GAP 26`, `COMPACT_DAG_ROW_GAP 8`.
+- **Cancelled nodes**: `.dagNode[data-state='cancelled']` paints the card in
+  `color-mix(#f2b8b5 14%, bg-layer-1)` and hatches it with a 45°, 32 %-pale-scarlet
+  stripe, with dot, head and label tinted to match — settled history, not the error
+  colour.
+- **Deleted with the views** (owner decision — the board makes a second graph view
+  redundant): `DependencyMap` (tree), `QueueView`, `ViewSwitcher`, the old
+  `initialActivityView`/`ACTIVITY_VIEW_STORAGE_KEY`/`ActivityViewMode`, ~60
+  `view.*`/`queue.*`/`dependency.*`/`assignment.*` locale keys, and the model
+  projections that only served them (`taskStages`, `compactDagLayout`,
+  `relatedTaskIds`, `usesParallelTaskGrid`, `dependencyFocusTaskId`,
+  `agentSwimlanes`, `agentQueue`, `queueOverview`, `idleReasonSummary` and their
+  types). The removed checks are named in `verify.mjs` as an owner-requested
+  removal, not as a weakened assertion.
+- **Regression found while previewing (pre-existing, shipped since 0.2.1):**
+  `phaseColumns` returned the declared columns only when `rest.length > 0`, so a
+  plan whose declared phases covered **every** task discarded them and fell through
+  to the DAG levels, which then had nothing to lay out — the board rendered
+  **empty**, exactly for the fully declared plans that use phases. Fixed by
+  returning the declared columns whenever they exist and pushing `unphased` only
+  for what the plan left out; two RED-first checks hold both halves.
+- **New guards** (`verify.mjs`): every `css.<name>` a panel component renders must
+  exist in its stylesheet (this caught `css.viewHint`, deleted with the switcher
+  while the board still used it, and the never-defined `css.archivedWrap`);
+  sequential work in one phase shares a row; parallel work takes its own row; a
+  column stretches to its longest chain; a chain edge is a short forward curve in
+  the row; a cancelled node is a pale hatched card; the phase board is the only
+  graph view; the member row is one compact line ending in the plaque.
+  verify 271 PASS / 0 FAIL; the full `pnpm verify` chain exit 0.
+- **Visual check:** `.local/preview-round2.mjs` renders the member list and the
+  board from the built bundle with the real CSS sheet, the real layout function and
+  headless Chrome (`.local/logs/ui-round2/phase-board.png`).
+- **Follow-up in the same round (owner screenshot):** the progress block drew one
+  bar *row per phase* (`level-0 … level-7` for a team with no declared phases). The
+  owner crossed all of them out — "перечеркнутую кучу говна убери" — so the panel
+  now draws **one** bar: the per-phase render block, `ProgressPhaseView`,
+  `PlanProgressView.phases`, the five `.progressPhase*` rules and the
+  `progress.phase` locale key are gone. The snapshot keeps publishing `byPhase`
+  (host roll-up, still asserted host-side by the snapshot checks), but no panel row
+  renders it and the panel's own view no longer carries the field at all
+  (`!('phases' in view)`); four checks were re-pointed RED-first.
 
 ### S21 — owner UI round: the full-node work plaque (done)
 

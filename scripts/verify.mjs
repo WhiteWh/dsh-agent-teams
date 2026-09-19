@@ -51,16 +51,12 @@ import {
   activityPanelExpandedForSession,
   activityPanelShouldAutoExpand,
   agentColor,
-  agentQueue,
-  agentSwimlanes,
-  compactDagLayout,
   compactModelLabel,
+  COMPACT_DAG_COLUMN_GAP,
   COMPACT_DAG_NODE_HEIGHT,
   COMPACT_DAG_NODE_WIDTH,
-  dependencyFocusTaskId,
-  idleReasonSummary,
+  COMPACT_DAG_ROW_GAP,
   memberRouteLabel,
-  parseActivityView,
   parsePanelTeamSelection,
   parseProgressMode,
   panelSelectedTeamId,
@@ -68,13 +64,9 @@ import {
   phaseBoardLayout,
   phaseColumns,
   planProgress as planProgressView,
-  queueOverview,
-  relatedTaskIds,
   taskModelLabel,
-  taskStages,
   teamIsActive,
   teamProgressSummary,
-  usesParallelTaskGrid,
 } from '../lib/client/activity-model.js'
 import {
   ACTIVITY_POLL_MS,
@@ -456,8 +448,8 @@ check(
 check(
   'discarded and stopped teams render terminal semantics instead of pending execution copy',
   activityPanelSource.includes("const discarded = historic && team.phase === 'staged'")
-    && activityPanelSource.includes("t('member.status.discarded')")
-    && activityPanelSource.includes("t('member.status.stopped')")
+    && activityPanelSource.includes("t('member.state.notCreated')")
+    && activityPanelSource.includes("t('member.state.stopped')")
     && activityPanelSource.includes("'archive.discardedLabel'")
     && localesSource.includes("'task.status.notRun': '未执行'")
     && localesSource.includes("'member.state.notCreated': '未创建'"),
@@ -649,11 +641,11 @@ check(
 // (the task-detail assignment line and a Queues row).
 check(
   'the dependency boards keep their node heads text-only',
-  (activityPanelSource.match(/css\.compactSymbol/gu) ?? []).length === 2
-    && (activityPanelSource.match(/css\.dagNodeHead/gu) ?? []).length === 2
-    && (activityPanelSource.match(/css\.dagNodeDot/gu) ?? []).length === 2
+  (activityPanelSource.match(/css\.compactSymbol/gu) ?? []).length === 1
+    && (activityPanelSource.match(/css\.dagNodeHead/gu) ?? []).length === 1
+    && (activityPanelSource.match(/css\.dagNodeDot/gu) ?? []).length === 1
     && !/dagNodeHead[\s\S]{0,200}compactSymbol/u.test(activityPanelSource),
-  'a DAG node head still draws a symbol, or a compact surface lost its own',
+  'a DAG node head still draws a symbol, or the compact surface lost its own',
 )
 // The names in this pack did not change when the art was redrawn: the whale and
 // the amber terminal are both `member-engineer-v2.png`. A browser that cached
@@ -824,23 +816,26 @@ check(
     && activityPanelCss.includes('.dagRunningState {'),
   'running work should stay visible in both normal and dependency-focus states',
 )
+// Round 2 (owner request) compacted the member row: the long "Working on {id}"
+// sentence and its `member.status.*` keys are gone, so the model now surfaces on
+// the two places that survive — the detail card probe and the member badge.
 check(
   'running tasks surface the assignee model on the activity card',
   activityPanelSource.includes('taskModelLabel(task, members)')
     && activityPanelSource.includes('data-task-model={model || undefined}')
-    && activityPanelSource.includes('data-task-model={detailModel}')
-    && activityPanelSource.includes('member.status.executingModel')
+    && activityPanelSource.includes('data-task-model={model}')
+    && activityPanelSource.includes('data-member-model={memberModel}')
     && activityPanelSource.includes('css.taskDetailModel')
     && activityPanelSource.includes('css.memberModel')
     && activityPanelCss.includes('.taskDetailModel')
     && activityPanelCss.includes('.memberModel'),
-  'the right-side card must show which model a running subtask is using',
+  'the detail card must show which model a running subtask is using',
 )
 // Member model badge contract (inline compact pill): the render path derives
 // one full member route and shows only its last segment visibly, while the
 // noninteractive span keeps the full route in title, aria-label, and the
 // data-member-model DOM probe. The badge must sit inside memberLine after the
-// role and before the member state; the old standalone third-line row is gone.
+// role icon and before the state icon; the old standalone third-line row is gone.
 const memberMapStart = activityPanelSource.indexOf('team.members.map((member) => {')
 const memberBadgeSection = activityPanelSource.slice(
   memberMapStart,
@@ -854,9 +849,21 @@ check(
     && memberBadgeSection.includes('title={memberModel}')
     && memberBadgeSection.includes('aria-label={memberModel}')
     && memberBadgeSection.includes('role="img"')
-    && memberBadgeSection.indexOf('css.memberRole') < memberBadgeSection.indexOf('css.memberModel')
-    && memberBadgeSection.indexOf('css.memberModel') < memberBadgeSection.indexOf('css.memberState'),
-  'the badge must be a noninteractive role=img span inside memberLine after role and before member state, carrying the full route in title/aria-label/data-member-model',
+    && memberBadgeSection.indexOf('css.memberRoleIcon') < memberBadgeSection.indexOf('css.memberModel')
+    && memberBadgeSection.indexOf('css.memberModel') < memberBadgeSection.indexOf('css.memberStateIcon'),
+  'the badge must be a noninteractive role=img span inside memberLine after the role icon and before the state icon, carrying the full route in title/aria-label/data-member-model',
+)
+// Stylesheet contract: a `css.<name>` a component renders must exist in the sheet
+// that component imports. A deleted rule leaves `className={undefined}` behind,
+// which React renders silently — no type error, no missing-render failure — so a
+// stylesheet that drifted away from its components is invisible without this.
+const panelCssSelectors = new Set([...activityPanelCss.matchAll(/\.([A-Za-z][\w-]*)/gu)].map((match) => match[1]))
+const panelCssUses = new Set([...(activityPanelSource + stagingPlanSource).matchAll(/css\.([A-Za-z]\w*)/gu)].map((match) => match[1]))
+const undefinedPanelClasses = [...panelCssUses].filter((name) => !panelCssSelectors.has(name)).sort()
+check(
+  'every style class the panel renders exists in its stylesheet',
+  undefinedPanelClasses.length === 0,
+  `class name(s) rendered without a rule: ${undefinedPanelClasses.join(', ')}`,
 )
 check(
   'the old separate third-line member model span and locale key are removed',
@@ -1296,45 +1303,7 @@ check('t2 depth 1 (longest path)', depths.get('t2') === 1)
 check('t3 depth 2', depths.get('t3') === 2)
 check('missing dep contributes no depth', depths.get('t4') === 0)
 
-console.log('6/8 client relationship projections')
-const projectionTasks = [
-  { id: 't4', dependencies: ['t2'], depth: 2 },
-  { id: 't1', dependencies: [], depth: 0 },
-  { id: 't3', dependencies: ['t1'], depth: 1 },
-  { id: 't2', dependencies: ['t1'], depth: 1 },
-  { id: 't5', dependencies: [], depth: Number.NaN },
-]
-const stages = taskStages(projectionTasks)
-check('task stages sort by depth', stages.map(stage => stage.depth).join(',') === '0,1,2')
-check('task stages sort ids naturally', stages[1]?.tasks.map(task => task.id).join(',') === 't2,t3')
-check('non-finite depth falls back to stage 0', stages[0]?.tasks.some(task => task.id === 't5') === true)
-const chain = relatedTaskIds('t2', projectionTasks)
-check('relationship chain includes upstream dependency', chain.has('t1'))
-check('relationship chain includes focused task', chain.has('t2'))
-check('relationship chain includes downstream dependent', chain.has('t4'))
-check('relationship chain excludes sibling branch', !chain.has('t3'))
-check(
-  'pinned dependency chain wins over keyboard and hover previews',
-  dependencyFocusTaskId('pinned', 'keyboard', 'hover') === 'pinned',
-)
-check(
-  'keyboard dependency chain wins over delayed hover preview',
-  dependencyFocusTaskId(null, 'keyboard', 'hover') === 'keyboard',
-)
-check(
-  'hover dependency chain is used without a pinned or keyboard task',
-  dependencyFocusTaskId(null, null, 'hover') === 'hover',
-)
-const cyclic = [
-  { id: 'a', dependencies: ['b'], depth: 0 },
-  { id: 'b', dependencies: ['a'], depth: 1 },
-]
-check('relationship traversal is cycle-safe', relatedTaskIds('a', cyclic).size === 2)
-check('edge-free tasks switch to the fill-width parallel grid', usesParallelTaskGrid([
-  { id: 't1', dependencies: [], depth: 0 },
-  { id: 't2', dependencies: [], depth: 0 },
-  { id: 't3', dependencies: ['missing'], depth: 0 },
-]))
+console.log('6/8 client panel projections')
 const liveTeam = {
   captainSessionId: 'captain-1',
   members: [{ name: 'analyst', status: 'working', activity: 'working', currentTask: 't1' }],
@@ -1374,24 +1343,6 @@ check('settled failed/completed team is not waiting to be scheduled', teamIsActi
   ],
 }) === false)
 check('progress summary prefers running task titles', teamProgressSummary(liveTeam, '、').detail === 'Clarify requirements')
-check('a real dependency keeps the layered DAG layout', !usesParallelTaskGrid([
-  { id: 't1', dependencies: [], depth: 0 },
-  { id: 't2', dependencies: ['t1'], depth: 1 },
-]))
-const dag = compactDagLayout(projectionTasks.filter(task => Number.isFinite(task.depth)))
-check('compact DAG lays dependency depths out left-to-right',
-  dag.nodes.find(node => node.task.id === 't1')?.x === 0
-    && dag.nodes.find(node => node.task.id === 't2')?.x === 118
-    && dag.nodes.find(node => node.task.id === 't4')?.x === 236)
-check('compact DAG keeps stable rows and reference node geometry',
-  dag.nodes.find(node => node.task.id === 't3')?.y === 38
-    && dag.width === 328
-    && dag.height === 68
-    && COMPACT_DAG_NODE_WIDTH === 92
-    && COMPACT_DAG_NODE_HEIGHT === 30)
-check('compact DAG emits one curved SVG edge per valid dependency',
-  dag.edges.length === 3
-    && dag.edges.some(edge => edge.from === 't1' && edge.to === 't2' && edge.path.startsWith('M92 15C')))
 check(
   'task model labels prefer the snapshot field and fall back to the assignee route',
   memberRouteLabel({ provider: 'openai', model: 'gpt-5.6-sol' }) === 'openai/gpt-5.6-sol'
@@ -1485,100 +1436,37 @@ check('phase columns on an empty plan are empty', phaseColumns([]).length === 0)
       { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
     ]).map(column => column.phaseId).join(',') === 'E0,E1,unphased',
   )
-}
-{
-  const lanes = agentSwimlanes(laneTasks, laneMembers)
+  // Regression (found in round 2): a plan that declares a column for every task
+  // left `rest` empty, so the manual columns were discarded and the board came
+  // out empty — the one shape a max-effort plan actually has.
+  const declared = [
+    { id: 'E0', title: 'Recon', taskIds: ['t1', 't2'] },
+    { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
+    { id: 'E2', title: 'Repair', taskIds: ['t6', 't7', 't8', 't9'] },
+    { id: 'E3', title: 'Migration', taskIds: ['t10', 't11'] },
+  ]
+  const fullyDeclared = phaseColumns(laneTasks, declared)
   check(
-    'agent swimlanes keep one row per member plus an unassigned row',
-    lanes.length === laneMembers.length && lanes.every(lane => lane.member !== undefined),
+    'declared phases that cover every task are kept without an unphased column',
+    fullyDeclared.map(column => column.phaseId).join(',') === 'E0,E1,E2,E3'
+      && fullyDeclared[2]?.tasks.map(task => task.id).join(',') === 't6,t7,t8,t9'
+      && fullyDeclared.flatMap(column => column.tasks).length === laneTasks.length,
   )
-  const migrator = lanes.find(lane => lane.member?.name === 'migrator')
+  const declaredBoard = phaseBoardLayout(laneTasks, declared)
   check(
-    'swimlane buckets split completed, running, queued and blocked work',
-    migrator?.queued.length === 0
-      && migrator?.blocked.map(task => task.id).sort().join(',') === 't10,t11',
-  )
-  const analyst = lanes.find(lane => lane.member?.name === 'implementer')
-  check('swimlane marks finished work as completed', analyst?.completed.map(task => task.id).join(',') === 't2')
-  const shared = agentSwimlanes([laneTask('u1', [], '', 'pending')], laneMembers)
-  check(
-    'unassigned tasks get their own lane',
-    shared.some(lane => lane.member === undefined && lane.queued.some(task => task.id === 'u1')),
-  )
-}
-{
-  const queue = agentQueue(laneTasks, laneMembers, { id: 'm4', name: 'lane-c' })
-  check(
-    'queue reports a member whose only task failed as all-done',
-    queue.idleReason.kind === 'all-done' && queue.next === undefined && queue.taken.length === 1,
-  )
-  const next = agentQueue(laneTasks, laneMembers, { id: 'm2', name: 'lane-a' })
-  check(
-    'queue reports all-done for a member whose work is terminal',
-    next.next === undefined && next.idleReason.kind === 'all-done' && next.taken.length === 1,
-  )
-  // The blocked-by reason and the migration lane from the feedback run: both
-  // waiting on the failed t5.
-  const migratorQueue = agentQueue(laneTasks, laneMembers, { id: 'm9', name: 'migrator' })
-  check(
-    'queue reports the blocking dependency by id',
-    migratorQueue.idleReason.kind === 'blocked-by'
-      && migratorQueue.idleReason.tasks.join(',') === 't5'
-      && migratorQueue.waitingOn.join(',') === 't5'
-      && migratorQueue.next === undefined,
-  )
-  const swimlane = agentSwimlanes(laneTasks, laneMembers).find(lane => lane.member?.name === 'migrator')
-  check(
-    'the same blocking id reaches the agent view',
-    swimlane?.blockedBy.join(',') === 't5' && swimlane.blocked.length === 2,
-  )
-  const reviewing = agentQueue(
-    [
-      laneTask('impl', [], 'dev', 'in_progress'),
-      laneTask('rev', [], 'checker', 'claimed', { kind: 'review', reviewedTaskId: 'impl' }),
-    ],
-    [
-      { id: 'md', name: 'dev', activity: 'working', status: 'working', done: 0, total: 1 },
-      { id: 'mc', name: 'checker', activity: 'working', status: 'working', done: 0, total: 1 },
-    ],
-    { id: 'mc', name: 'checker' },
-  )
-  check(
-    'queue reports waiting-review-of while the reviewed task is still open',
-    reviewing.idleReason.kind === 'waiting-review-of'
-      && reviewing.idleReason.taskId === 'impl'
-      && reviewing.taken.map(task => task.id).join(',') === 'rev',
-  )
-  const noWork = agentQueue(laneTasks, laneMembers, { id: 'mx', name: 'newcomer' })
-  check('queue reports no-tasks for a member without work', noWork.idleReason.kind === 'no-tasks' && noWork.taken.length === 0)
-  check(
-    'idle reason formatting covers every variant',
-    idleReasonSummary({ kind: 'no-tasks' }).key === 'queue.idle.noTasks'
-      && idleReasonSummary({ kind: 'all-done' }).key === 'queue.idle.allDone'
-      && idleReasonSummary({ kind: 'blocked-by', tasks: ['t5'] }).params.tasks === 't5'
-      && idleReasonSummary({ kind: 'waiting-review-of', taskId: 't9' }).params.taskId === 't9',
-  )
-  const overview = queueOverview(laneTasks, laneMembers)
-  // Idle here means "no claimable task right now", which is the question the
-  // view answers: implementer/lane-a/lane-b are excluded because they still hold
-  // work that is dispatchable, while the four members holding a pending task
-  // count as busy-but-waiting. The groups must account for every idle member.
-  const grouped = overview.groups.reduce((sum, group) => sum + group.count, 0)
-  check(
-    'queue overview counts idle members and groups the reasons',
-    overview.idleCount === 5
-      && overview.idleTotal === 9
-      && grouped === overview.idleCount
-      && overview.groups.some(group => group.key === 'queue.idle.blockedBy' && group.count === 1),
-  )
-  check(
-    'idle reasons name the blocking task from the feedback run',
-    queueOverview(laneTasks, laneMembers).groups
-      .some(group => group.key === 'queue.idle.noTasks' || group.key === 'queue.idle.blockedBy'),
+    'a fully declared plan lays out every task it declares',
+    declaredBoard.columns.length === 4
+      && declaredBoard.nodes.length === laneTasks.length
+      && declaredBoard.width > 0
+      && declaredBoard.height > 0,
+    `nodes=${declaredBoard.nodes.length} columns=${declaredBoard.columns.length} width=${declaredBoard.width}`,
   )
 }
+// The queues view and the swimlane projection are gone (owner decision,
+// 2026-09-20 round 2): the phase board is the only graph view, so their checks and
+// their model functions were removed with them rather than left testing dead code.
 check(
-  'agent colours are stable per name, shared by all three views and distinct across the roster',
+  'agent colours are stable per name, shared by the surviving view and distinct across the roster',
   agentColor('lane-a') === agentColor('lane-a')
     && agentColor('lane-a') !== agentColor('lane-b')
     && agentColor('') === agentColor(''),
@@ -1589,11 +1477,13 @@ check(
     { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
   ])
   check(
-    'phase board keeps one fixed X per phase column',
+    'phase columns advance by the width the previous column needed',
     board.columns.length === 3
-      && board.columns[1]?.x === 118
-      && board.nodes.find(node => node.task.id === 't4')?.x === 118
-      && board.nodes.find(node => node.task.id === 't2')?.x === 0,
+      // E0 holds the t1 → t2 chain, so it is two nodes wide; E1 starts after it.
+      && board.columns[0]?.width === 2 * COMPACT_DAG_NODE_WIDTH + 26
+      && board.columns[1]?.x === board.columns[0].width + 26
+      && board.nodes.find(node => node.task.id === 't2')?.x === COMPACT_DAG_NODE_WIDTH + 26
+      && board.nodes.find(node => node.task.id === 't4')?.x === board.columns[1]?.x,
   )
   check(
     'phase board draws an edge per dependency that landed on the board',
@@ -1601,53 +1491,57 @@ check(
       && board.edges.some(edge => edge.from === 't5' && edge.to === 't10'),
   )
   check(
-    'phase board height follows the busiest column',
-    board.height === 6 * 30 + 5 * 8 && board.width === 328,
+    'phase board height follows the busiest column and its width the sum of the columns',
+    board.height === 6 * COMPACT_DAG_NODE_HEIGHT + 5 * COMPACT_DAG_ROW_GAP
+      && board.width === board.columns.reduce((sum, column) => sum + column.width, 0) + 2 * 26,
   )
 }
-check(
-  'persisted view choice falls back to the dependency tree',
-  parseActivityView('phases') === 'phases'
-    && parseActivityView('queues') === 'queues'
-    && parseActivityView(null) === 'tree'
-    && parseActivityView('nonsense') === 'tree'
-    // The Agents view was dropped (the member tree above already carries it), so
-    // a browser that stored that choice must land on the tree, not on a tab that
-    // no longer exists.
-    && parseActivityView('agents') === 'tree',
-)
-// The panel offers the tree and two read-only cuts. The removed view must be
-// gone from the switcher, the markup, the stylesheet and the locale keys, and
-// its model projection must not be reachable from the panel.
-check(
-  'the panel offers the tree and the two surviving cuts only',
-  activityPanelSource.includes("['tree', 'phases', 'queues']")
-    && !activityPanelSource.includes('AgentSwimlanes')
-    && !activityPanelSource.includes('data-agent-swimlanes')
-    && !activityPanelSource.includes('agents.aria')
-    && !activityPanelCss.includes('.swimlane')
-    && !Object.hasOwn(agentTeamsEn, 'view.agents')
-    && !Object.hasOwn(agentTeamsZh, 'view.agents'),
-  `views in switcher: ${activityPanelSource.includes("['tree', 'phases', 'queues']") ? 'tree/phases/queues' : 'unexpected'}`,
-)
-// The members tree spends the block height on the portrait: the assignment line
-// is a row of the same button and the avatar spans both rows, so the icon is not
-// a 42px stamp with half a column empty beside it (owner report). The name also
-// keeps its width — the narrowed text column yields the role text instead.
+// Owner request (2026-09-20, round 2): inside a phase, sequential work reads as a
+// line, parallel work keeps its own row, and the column stretches to its longest
+// chain — which is what makes a separate tree view unnecessary.
 {
-  const rowOpen = activityPanelSource.indexOf('className={css.memberRow}')
-  const assignmentAt = activityPanelSource.indexOf('css.assignmentLine', rowOpen)
-  const rowClose = activityPanelSource.indexOf('</button>', rowOpen)
+  const chained = phaseBoardLayout([
+    { id: 'a', subject: 'one', status: 'completed', state: 'completed', assignee: 'x', dependencies: [], depth: 0 },
+    { id: 'b', subject: 'two', status: 'pending', state: 'open', assignee: 'x', dependencies: ['a'], depth: 1 },
+    { id: 'c', subject: 'three', status: 'pending', state: 'open', assignee: 'y', dependencies: ['a'], depth: 1 },
+    { id: 'd', subject: 'four', status: 'pending', state: 'open', assignee: 'y', dependencies: ['b', 'c'], depth: 2 },
+  ], [{ id: 'E0', title: 'One phase', taskIds: ['a', 'b', 'c', 'd'] }])
+  const at = (id) => chained.nodes.find((node) => node.task.id === id)
+  const step = COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP
   check(
-    'the member portrait spans the whole block in the members tree',
-    rowOpen !== -1
-      && assignmentAt > rowOpen
-      && assignmentAt < rowClose
-      && activityPanelCss.includes('grid-area: 1 / 1 / span 2 / auto')
-      && activityPanelCss.includes('grid-area: 2 / 2 / auto / span 2')
-      && activityPanelCss.includes('max-height: 76px')
-      && /\.memberRow \.memberName \{\s*flex: none;/u.test(activityPanelCss),
-    `row=${String(rowOpen)} assignment=${String(assignmentAt)} close=${String(rowClose)}`,
+    'sequential work inside one phase lines up in a row',
+    at('a')?.y === at('b')?.y
+      && at('b')?.x === step
+      && at('a')?.y === at('d')?.y
+      && at('d')?.x === 2 * step,
+    JSON.stringify(chained.nodes.map((node) => [node.task.id, node.x, node.y])),
+  )
+  check(
+    'parallel work in the same phase takes its own row',
+    at('c')?.x === at('b')?.x
+      && at('c')?.y === COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP
+      && at('c')?.y !== at('b')?.y,
+  )
+  check(
+    'a phase column stretches to the length of its longest chain',
+    chained.columns.length === 1
+      && chained.columns[0]?.width === 3 * COMPACT_DAG_NODE_WIDTH + 2 * COMPACT_DAG_COLUMN_GAP
+      && chained.width === chained.columns[0]?.width
+      && chained.height === 2 * COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP,
+  )
+  const chainEdges = chained.edges.filter((edge) => at(edge.from)?.y === at(edge.to)?.y)
+  check(
+    'a chain edge is a short forward curve inside the row',
+    chained.edges.length === 4
+      && chainEdges.length === 2
+      && chainEdges.every((edge) => {
+        const from = at(edge.from)
+        const to = at(edge.to)
+        return from !== undefined && to !== undefined
+          && to.x - from.x === step
+          && edge.path.startsWith(`M${String(from.x + COMPACT_DAG_NODE_WIDTH)} ${String(from.y + COMPACT_DAG_NODE_HEIGHT / 2)}C`)
+      }),
+    JSON.stringify(chained.edges.map((edge) => edge.path)),
   )
 }
 // Owner request (2026-09-20): work in the members tree is shown by a
@@ -1666,9 +1560,9 @@ check(
       && (glyphInRow === -1 || glyphInRow > rowClose)
       && activityPanelCss.includes('.workBar')
       && activityPanelCss.includes('.workBarDot')
-      && activityPanelCss.includes('grid-area: 1 / 4 / span 2 / auto')
+      && /\.memberRow > \.workBar \{[^}]*align-self: stretch/u.test(activityPanelCss)
       && activityPanelCss.includes('@keyframes agentTeamsBar')
-      && /grid-template-columns: auto minmax\(0, 1fr\) auto auto;/u.test(activityPanelCss),
+      && /\.memberRow \{[^}]*display: flex/u.test(activityPanelCss),
     `row=${String(rowOpen)} bar=${String(barAt)} glyph=${String(glyphInRow)} close=${String(rowClose)}`,
   )
   check(
@@ -1678,7 +1572,54 @@ check(
       && /\.workBar\[data-active='true'\] \.workBarDot \{/u.test(activityPanelCss)
       && activityPanelSource.includes('animationDelay: `${String(row * 0.12)}s`'),
   )
+  // Owner request (2026-09-20, round 2): the member node is one compact line —
+  // role icon, status icon with its word, name, model badge, task chips — ending
+  // in the plaque. The retired role words and status sentence must not return.
+  const lineOpen = activityPanelSource.indexOf('className={css.memberRow}')
+  const lineClose = activityPanelSource.indexOf('</button>', lineOpen)
+  const rowSection = activityPanelSource.slice(lineOpen, lineClose)
+  const order = ['css.memberAvatar', 'css.memberRoleIcon', 'css.memberInfo', 'css.memberCount', 'css.assignmentLine', '<WorkBar active=']
+    .map((marker) => rowSection.indexOf(marker))
+  check(
+    'the member row is one compact line that ends in the work plaque',
+    order.every((at, index) => at !== -1 && (index === 0 || at > order[index - 1]))
+      && rowSection.includes('data-member-model={memberModel}')
+      && rowSection.includes('css.memberStateIcon')
+      && !rowSection.includes('css.memberStatusLine')
+      && !rowSection.includes('css.assignmentLabel')
+      && !activityPanelCss.includes('.memberStatusLine')
+      && !activityPanelCss.includes('.assignmentLabel')
+      && !activityPanelSource.includes('member.status.'),
+    `order=[${order.join(',')}]`,
+  )
 }
+// Owner request (2026-09-20, round 2): a cancelled node is painted in a very pale
+// scarlet hatch — settled history, not an alarm — and the panel keeps a single
+// graph view: the tree and the queues section are gone with their model code.
+check(
+  'a cancelled node is a pale hatched card, not an alarm',
+  /\.dagNode\[data-state='cancelled'\] \{[^}]*background-color: color-mix\(in srgb, #f2b8b5/u.test(activityPanelCss)
+    && /\.dagNode\[data-state='cancelled'\] \{[^}]*repeating-linear-gradient\(\s*45deg/u.test(activityPanelCss)
+    && !/\.dagNode\[data-state='cancelled'\] \{[^}]*state-error-primary/u.test(activityPanelCss),
+)
+check(
+  'the panel keeps the phase board as its only graph view',
+  activityPanelSource.includes('data-phase-board')
+    && !activityPanelSource.includes('DependencyMap')
+    && !activityPanelSource.includes('QueueView')
+    && !activityPanelSource.includes('ViewSwitcher')
+    && !activityPanelCss.includes('.viewSwitcher')
+    && !activityPanelCss.includes('.queueRow')
+    && !localesSource.includes("'view.")
+    && !localesSource.includes("'queue.")
+    && !activityModelSource.includes('export function queueOverview')
+    && !activityModelSource.includes('export function agentSwimlanes')
+    && !activityModelSource.includes('export function compactDagLayout')
+    && !activityModelSource.includes('export function taskStages')
+    && !activityModelSource.includes('export function relatedTaskIds')
+    && !activityModelSource.includes('export type ActivityViewMode')
+    && !activityModelSource.includes('ACTIVITY_VIEW_STORAGE_KEY'),
+)
 
 // The phase titles and the board are one coordinate system, so they must share
 // one scroller. Two scrollers let the header row drift away from its own columns
@@ -1693,7 +1634,7 @@ check(
     scrollAt !== -1
       && scrollAt < headerAt
       && headerAt < canvasAt
-      && activityPanelSource.includes('style={{ left: column.x, width: COMPACT_DAG_NODE_WIDTH }}')
+      && activityPanelSource.includes('style={{ left: column.x, width: column.width }}')
       && !activityPanelSource.includes('css.phaseColumns')
       && !activityPanelCss.includes('.phaseColumns')
       && activityPanelCss.includes('.phaseBoardScroll'),
@@ -2357,12 +2298,15 @@ const progressPlan = [
     'the panel selector switches the snapshot number, not the math',
     view.mode === 'equal' && view.percent === 50 && view.percentByKind === 55 && view.percentEqual === 50
       && view.completed === 3 && view.total === 8
-      && view.phases.length === 2 && view.phases[0]?.percent === 60 && view.phases[1]?.percent === 0,
+      // Owner decision (2026-09-20, round 2): the row-per-phase block read as a
+      // wall of bars, so the view carries no per-phase roll-up any more. The
+      // snapshot keeps publishing `byPhase`; no panel row renders it.
+      && !('phases' in view),
   )
   const fallback = planProgressView({ ...snapshotTeam, progress: undefined }, 'byKind')
   check(
     'a card without a snapshot payload falls back to the equal count it can compute',
-    fallback.percent === 50 && fallback.mode === 'equal' && fallback.phases.length === 0,
+    fallback.percent === 50 && fallback.mode === 'equal' && !('phases' in fallback),
   )
   check(
     'a stored progress-mode preference is parsed and an unknown one is ignored',
@@ -2370,13 +2314,14 @@ const progressPlan = [
       && parseProgressMode('weighted') === null && parseProgressMode(null) === null,
   )
   check(
-    'both locales carry the percent, phase and checklist keys',
-    ['progress.percent', 'progress.phase', 'progress.mode.byKind', 'progress.mode.equal',
+    'both locales carry the percent, mode and checklist keys, and no per-phase key',
+    ['progress.percent', 'progress.mode.byKind', 'progress.mode.equal',
       'checklist.title', 'checklist.collapse', 'checklist.expand', 'checklist.empty', 'checklist.waivers',
-      'checklist.supersededBy'].every((key) => localesSource.includes(`'${key}'`)),
+      'checklist.supersededBy'].every((key) => localesSource.includes(`'${key}'`))
+      && !localesSource.includes("'progress.phase'"),
   )
   check(
-    'the panel renders the percent bar, the phase rows and the checklist',
+    'the panel renders the percent bar and the checklist, without a row per phase',
     activityPanelSource.includes('function TaskChecklist')
       && activityPanelSource.includes('data-task-checklist')
       && activityPanelSource.includes('data-checklist-row')
@@ -2387,7 +2332,10 @@ const progressPlan = [
       && activityModelSource.includes('PROGRESS_MODE_STORAGE_KEY')
       && activityPanelCss.includes('.checklistRow')
       && activityPanelCss.includes('.progressBar')
-      && activityPanelCss.includes('.progressPhaseRow'),
+      && !activityPanelSource.includes('css.progressPhaseRow')
+      && !activityPanelSource.includes('data-progress-phases')
+      && !activityPanelCss.includes('.progressPhaseRow')
+      && !activityPanelCss.includes('.progressPhases'),
   )
   check(
     'the conversation card carries a mini percent bar',

@@ -31,19 +31,13 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import {
-  ACTIVITY_VIEW_STORAGE_KEY,
   activityPanelExpandedForSession,
   activityPanelShouldAutoExpand,
   agentColor,
-  agentQueue,
-  compactDagLayout,
   compactModelLabel,
   COMPACT_DAG_NODE_HEIGHT,
   COMPACT_DAG_NODE_WIDTH,
-  dependencyFocusTaskId,
-  idleReasonSummary,
   memberRouteLabel,
-  parseActivityView,
   parsePanelTeamSelection,
   parseProgressMode,
   PANEL_TEAM_STORAGE_KEY,
@@ -53,14 +47,10 @@ import {
   phaseColumns,
   planProgress as planProgressView,
   PROGRESS_MODE_STORAGE_KEY,
-  queueOverview,
-  relatedTaskIds,
   settledTask,
   taskCheckGlyph,
   taskModelLabel,
   teamIsActive,
-  usesParallelTaskGrid,
-  type ActivityViewMode,
   type ManualPhase,
   type PanelTeamTab,
   type ProgressMode,
@@ -136,12 +126,6 @@ function initialPanelLayout(): PanelLayout {
 function initialPanelBounds(): PanelBounds {
   if (typeof window === 'undefined') return { width: 1440, height: 900, anchorRight: 1440 }
   return { width: window.innerWidth, height: window.innerHeight, anchorRight: window.innerWidth }
-}
-
-/** Persisted panel view; the dependency tree is the default. */
-function initialActivityView(): ActivityViewMode {
-  if (typeof window === 'undefined') return 'tree'
-  return parseActivityView(window.localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY))
 }
 
 /** Initial-letter fallback for unmatched roles. */
@@ -291,36 +275,6 @@ function memberStateLabel(
   return t('member.state.unassigned')
 }
 
-function memberStatusText(
-  member: ActivityMember,
-  tasks: readonly ActivityTask[],
-  t: AgentTeamsTranslate,
-): string {
-  const owned = tasks.filter((task) => task.assignee === member.name)
-  const current = owned.find((task) => task.id === member.currentTask)
-  const blocked = owned.find((task) => task.state === 'blocked')
-  if (member.activity === 'working' && current !== undefined) {
-    const model = taskModelLabel(current, [member])
-    return model === ''
-      ? t('member.status.executing', { taskId: current.id })
-      : t('member.status.executingModel', { taskId: current.id, model })
-  }
-  if (member.activity === 'working') return t('member.status.working')
-  if (blocked !== undefined) {
-    const dependency = tasks.find((task) => blocked.dependencies.includes(task.id) && task.state !== 'completed')
-    if (dependency !== undefined) {
-      return t('member.status.waitingOn', {
-        taskId: dependency.id,
-        assignee: dependency.assignee || t('task.assignee.unclaimed'),
-      })
-    }
-    return t('member.status.waitingPrerequisite')
-  }
-  if (member.total === 0) return t('member.status.waitingAssignment')
-  if (member.done === member.total) return t('member.status.delivered')
-  return t(member.activity === 'idle' ? 'member.status.idle' : 'member.status.unknown')
-}
-
 function compactTaskLabel(subject: string): string {
   const withoutVerb = subject.replace(/^开发\s*/u, '').replace(/^\d+[-_.、\s]*/u, '')
   const head = withoutVerb.split(/[（(·：:]/u)[0]?.trim() ?? withoutVerb
@@ -411,21 +365,6 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
             </button>
           </span>
         )}
-      {!discarded && progress.phases.length > 1 && (
-        <span className={css.progressPhases} data-progress-phases>
-          {progress.phases.map((phase) => (
-            <span key={phase.phaseId} className={css.progressPhaseRow} data-phase-id={phase.phaseId}>
-              <span className={css.progressPhaseTitle}>{phase.title ?? phase.phaseId}</span>
-              <span className={css.progressPhaseBar}>
-                <span className={css.progressBarFill} style={{ width: `${String(phase.percent)}%` }} />
-              </span>
-              <span className={css.progressPhaseCount}>
-                {t('progress.phase', { percent: phase.percent, completed: phase.completed, total: phase.total })}
-              </span>
-            </span>
-          ))}
-        </span>
-      )}
       {team.tasks.length > 0 ? (
         <span className={css.progressSegments} aria-hidden>
           {team.tasks.map((task) => <span key={task.id} data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)} />)}
@@ -444,172 +383,67 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
   )
 }
 
-function DependencyMap({ tasks, members, t, discarded = false, focusTaskId = null }: {
+/**
+ * The detail card of one task: the board shows it under the columns when a node is
+ * clicked (the tree view that used to own this card is gone — WP11 phase 2's
+ * board lays sequential work out in a line, so a second graph view is redundant).
+ */
+function TaskDetail({ task, tasks, members, t, discarded = false }: {
+  readonly task: ActivityTask
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
   readonly discarded?: boolean
-  /** A task the checklist asked to pin; the tree consumes it on arrival. */
-  readonly focusTaskId?: string | null
 }) {
-  const [open, setOpen] = useState(true)
-  const [hoverTaskId, setHoverTaskId] = useState<string | null>(null)
-  const [keyboardTaskId, setKeyboardTaskId] = useState<string | null>(null)
-  const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const focusedTaskId = dependencyFocusTaskId(pinnedTaskId, keyboardTaskId, hoverTaskId)
-  // The checklist lives outside this component, so a requested pin arrives as a
-  // prop. Pinning it locally keeps the tree's own hover/keyboard/Esc handling
-  // unchanged: this is just one more way to set the same state.
-  useEffect(() => {
-    if (focusTaskId !== null) setPinnedTaskId(focusTaskId)
-  }, [focusTaskId])
-  const layout = useMemo(() => compactDagLayout(tasks), [tasks])
-  const parallel = useMemo(() => usesParallelTaskGrid(tasks), [tasks])
-  const related = useMemo(
-    () => focusedTaskId === null ? null : relatedTaskIds(focusedTaskId, tasks),
-    [focusedTaskId, tasks],
-  )
-  const scheduleHover = (id: string | null): void => {
-    if (hoverTimer.current !== null) {
-      clearTimeout(hoverTimer.current)
-      hoverTimer.current = null
-    }
-    if (id === null) {
-      setHoverTaskId(null)
-      return
-    }
-    hoverTimer.current = setTimeout(() => {
-      hoverTimer.current = null
-      setHoverTaskId(id)
-    }, 180)
-  }
-  useEffect(() => () => {
-    if (hoverTimer.current !== null) clearTimeout(hoverTimer.current)
-  }, [])
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setPinnedTaskId(null)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => { window.removeEventListener('keydown', onKeyDown) }
-  }, [])
-  if (tasks.length === 0) return null
-  const fallbackTask = tasks.find((task) => task.state === 'blocked')
-    ?? tasks.find((task) => task.state === 'running')
-    ?? tasks[0]!
-  const detailTask = tasks.find((task) => task.id === focusedTaskId) ?? fallbackTask
-  const detailModel = taskModelLabel(detailTask, members)
-  const waitingOn = detailTask.dependencies.filter((dependency) => (
-    tasks.find((task) => task.id === dependency)?.status !== 'completed'
-  ))
-  const dependents = tasks.filter((task) => task.dependencies.includes(detailTask.id))
+  const model = taskModelLabel(task, members)
+  const waitingOn = unsatisfiedDependenciesOf(task, tasks)
+  const dependents = tasks.filter((candidate) => candidate.dependencies.includes(task.id))
   return (
-    <section className={css.dependencySection} aria-label={t('dependency.aria')} data-dependency-map>
-      <header className={css.sectionHead}>
-        <button type="button" className={css.sectionToggleTitle} onClick={() => { setOpen((current) => !current) }} aria-expanded={open}>
-          <Chevron open={open} /><IconBranchOutline16 /> {t(parallel ? 'dependency.parallel' : 'dependency.title')}
-        </button>
-        <span className={css.sectionHint}>{pinnedTaskId === null
-          ? t(parallel ? 'dependency.hint.parallel' : 'dependency.hint.chain')
-          : t('dependency.hint.pinned', { taskId: pinnedTaskId })}</span>
-      </header>
-      {open && (
-        <>
-          <div className={css.dagViewport}>
-            <div
-              className={css.dagCanvas}
-              data-layout={parallel ? 'parallel' : 'dependency'}
-              style={parallel ? undefined : { width: layout.width, height: layout.height }}
-            >
-              {!parallel && <svg className={css.dagEdges} width={layout.width} height={layout.height} aria-hidden>
-                {layout.edges.map((edge) => {
-                  const active = related !== null && related.has(edge.from) && related.has(edge.to)
-                  return <path key={`${edge.from}:${edge.to}`} d={edge.path} data-active={active} data-dimmed={related !== null && !active} />
-                })}
-              </svg>}
-              {layout.nodes.map(({ task, x, y }) => {
-                const model = taskModelLabel(task, members)
-                const shortModel = compactModelLabel(model)
-                return (
-                  <button
-                    key={task.id}
-                    type="button"
-                    className={css.dagNode}
-                    style={parallel
-                      ? { height: COMPACT_DAG_NODE_HEIGHT }
-                      : { left: x, top: y, width: COMPACT_DAG_NODE_WIDTH, height: COMPACT_DAG_NODE_HEIGHT }}
-                    data-task-id={task.id}
-                    data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
-                    data-task-model={model || undefined}
-                    data-focused={related?.has(task.id) ?? false}
-                    data-dimmed={related !== null && !related.has(task.id)}
-                    aria-pressed={pinnedTaskId === task.id}
-                    title={taskTitle(task, model)}
-                    onClick={() => { setPinnedTaskId((current) => current === task.id ? null : task.id) }}
-                    onMouseEnter={() => { scheduleHover(task.id) }}
-                    onMouseLeave={() => { scheduleHover(null) }}
-                    onFocus={() => { setKeyboardTaskId(task.id) }}
-                    onBlur={() => { setKeyboardTaskId(null) }}
-                  >
-                    <span className={css.dagNodeHead}><span className={css.dagNodeDot} />{task.id}</span>
-                    <span className={css.dagNodeLabel}>
-                      {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
-                    </span>
-                    {task.state === 'running' && (
-                      <span className={css.dagRunningState} aria-label={t('task.runningAria')}>
-                        <WorkGlyph active />
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-          <section className={css.taskDetail} data-task-detail={detailTask.id}>
-            <span className={css.taskDetailHead}>
-              <span className={css.taskDetailId}>{detailTask.id}</span>
-              <span className={css.taskDetailSubject} title={detailTask.subject}>{detailTask.subject.replace(/^开发\s*/u, '')}</span>
-              <span className={css.taskDetailBadge} data-state={discarded ? 'cancelled' : taskTone(detailTask.state, detailTask.status)}>
-                {discarded ? t('task.status.notRun') : taskStatusLabel(detailTask.status, t)}
-              </span>
-            </span>
-            <span className={css.taskDetailLine}>
-              {ownerSymbolUrl(detailTask.assignee, members) !== null
-                && (
-                  <img
-                    className={css.compactSymbol}
-                    src={ownerSymbolUrl(detailTask.assignee, members) ?? ''}
-                    alt=""
-                    aria-hidden
-                  />
-                )}
-              {detailTask.assignee || t('task.assignee.unclaimed')} · {discarded
-                ? t('task.detail.notRun')
-                : detailTask.status === 'completed'
-                ? t('task.detail.completed')
-                : detailTask.dependencies.length === 0
-                ? t('task.detail.noPrerequisite')
-                : waitingOn.length === 0
-                  ? t('task.detail.ready')
-                  : t('task.detail.waitingOn', { tasks: formatTaskIds(waitingOn, t) })}
-            </span>
-            {detailModel !== '' && (
-              <span className={css.taskDetailModel} data-task-model={detailModel}>
-                {t('task.model', { model: detailModel })}
-              </span>
-            )}
-            <span className={css.taskDetailMeta}>{dependents.length === 0
-              ? t('task.detail.noDownstream')
-              : t('task.detail.unlocks', { tasks: formatTaskIds(dependents.map((task) => task.id), t) })}</span>
-          </section>
-        </>
+    <section className={css.taskDetail} data-task-detail={task.id}>
+      <span className={css.taskDetailHead}>
+        <span className={css.taskDetailId}>{task.id}</span>
+        <span className={css.taskDetailSubject} title={task.subject}>{task.subject.replace(/^开发\s*/u, '')}</span>
+        <span className={css.taskDetailBadge} data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}>
+          {discarded ? t('task.status.notRun') : taskStatusLabel(task.status, t)}
+        </span>
+      </span>
+      <span className={css.taskDetailLine}>
+        {ownerSymbolUrl(task.assignee, members) !== null
+          && (
+            <img
+              className={css.compactSymbol}
+              src={ownerSymbolUrl(task.assignee, members) ?? ''}
+              alt=""
+              aria-hidden
+            />
+          )}
+        {task.assignee || t('task.assignee.unclaimed')} · {discarded
+          ? t('task.detail.notRun')
+          : task.status === 'completed'
+          ? t('task.detail.completed')
+          : task.dependencies.length === 0
+          ? t('task.detail.noPrerequisite')
+          : waitingOn.length === 0
+            ? t('task.detail.ready')
+            : t('task.detail.waitingOn', { tasks: formatTaskIds(waitingOn, t) })}
+      </span>
+      {model !== '' && (
+        <span className={css.taskDetailModel} data-task-model={model}>
+          {t('task.model', { model })}
+        </span>
       )}
+      <span className={css.taskDetailMeta}>{dependents.length === 0
+        ? t('task.detail.noDownstream')
+        : t('task.detail.unlocks', { tasks: formatTaskIds(dependents.map((candidate) => candidate.id), t) })}</span>
     </section>
   )
 }
 
-/** Node button shared by the tree and the phase board. */
+/** The dependencies of one task that are not completed yet. */
+function unsatisfiedDependenciesOf(task: ActivityTask, tasks: readonly ActivityTask[]): string[] {
+  const byId = new Map(tasks.map((candidate) => [candidate.id, candidate]))
+  return task.dependencies.filter((id) => byId.get(id)?.status !== 'completed')
+}
 function TaskNode({ task, members, t, style, parallel = false, discarded = false, pinned = false, focused = true, dimmed = false, onClick, onHover }: {
   readonly task: ActivityTask
   readonly members: readonly ActivityMember[]
@@ -658,7 +492,7 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
   )
 }
 
-/** Phases view: fixed column per phase, dependency edges between columns. */
+/** Phase board: one column per phase, stretched to the longest chain it holds. */
 function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
@@ -679,7 +513,9 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
       <div className={css.phaseBoardScroll} data-phase-scroll>
         <div className={css.phaseHeaderRow} style={{ width: layout.width }}>
           {layout.columns.map((column) => {
-            const count = layout.nodes.filter((node) => node.x === column.x).length
+            // A column owns its phase's tasks; the count cannot be derived from
+            // x any more, because a chain spreads across the column's width.
+            const count = column.taskIds.length
             const title = column.title ?? (column.phaseId === 'unphased'
               ? t('phase.unphased')
               : t('phase.column', { order: column.order + 1 }))
@@ -687,7 +523,7 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
               <div
                 key={column.phaseId}
                 className={css.phaseColumn}
-                style={{ left: column.x, width: COMPACT_DAG_NODE_WIDTH }}
+                style={{ left: column.x, width: column.width }}
                 data-phase-id={column.phaseId}
               >
                 <span className={css.phaseColumnHead} title={title}>{title}</span>
@@ -720,143 +556,12 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
           ))}
         </div>
       </div>
-      <p className={css.viewHint}>{t('phase.autoHint')}</p>
+      <p className={css.phaseHint}>{t('phase.autoHint')}</p>
     </div>
   )
 }
 
-/** Queues view: who holds what, what is next, and why they are standing still. */
-function QueueView({ tasks, members, t, discarded = false }: {
-  readonly tasks: readonly ActivityTask[]
-  readonly members: readonly ActivityMember[]
-  readonly t: AgentTeamsTranslate
-  readonly discarded?: boolean
-}) {
-  const overview = useMemo(() => queueOverview(tasks, members), [tasks, members])
-  const rows = useMemo(() => members.map((member) => ({
-    member,
-    queue: agentQueue(tasks, members, member),
-  })), [tasks, members])
-  const reasonText = (key: ReturnType<typeof idleReasonSummary>['key'], params: Record<string, string>): string => (
-    key === 'queue.idle.blockedBy'
-      ? t('queue.idle.blockedBy', { tasks: params.tasks ?? '' })
-      : key === 'queue.idle.waitingReview'
-        ? t('queue.idle.waitingReview', { taskId: params.taskId ?? '' })
-        : t(key)
-  )
-  return (
-    <div className={css.queueView} data-queue-view>
-      <div className={css.queueHeadline}>
-        <span className={css.queueIdleCount} data-idle-count={overview.idleCount} data-idle-total={overview.idleTotal}>
-          {overview.idleCount === 0
-            ? t('queue.idle.none')
-            : t('queue.idleHeadline', { idle: overview.idleCount, total: overview.idleTotal })}
-        </span>
-        {overview.groups.map((group) => (
-          <span key={group.key} className={css.queueGroup} data-reason={group.key}>
-            {reasonText(group.key, {})} × {group.count}
-          </span>
-        ))}
-      </div>
-      <div className={css.queueTable} role="table" aria-label={t('queue.aria')}>
-        <div className={css.queueRow} role="row" data-head>
-          <span role="columnheader">{t('queue.member')}</span>
-          <span role="columnheader">{t('queue.current')}</span>
-          <span role="columnheader">{t('queue.next')}</span>
-          <span role="columnheader">{t('queue.idleReason')}</span>
-        </div>
-        {rows.map(({ member, queue }) => {
-          const summary = idleReasonSummary(queue.idleReason)
-          const current = queue.taken.find((task) => task.status === 'in_progress' || task.status === 'claimed')
-          const working = queue.next !== undefined
-          return (
-            <div
-              key={member.id || member.name}
-              className={css.queueRow}
-              role="row"
-              data-agent={member.name}
-              data-idle={!working}
-            >
-              <span role="cell" className={css.queueMember}>
-                {memberSymbolUrl(member.name, member.role) !== null
-                  ? (
-                    <img
-                      className={css.compactSymbol}
-                      src={memberSymbolUrl(member.name, member.role) ?? ''}
-                      alt=""
-                      aria-hidden
-                    />
-                  )
-                  : <span className={css.queueDot} style={{ background: agentColor(member.name) }} />}
-                {member.name}
-              </span>
-              <span role="cell" className={css.queueCell} title={member.currentTask ?? ''}>
-                {discarded
-                  ? t('queue.current.none')
-                  : current === undefined ? t('queue.current.none') : current.id}
-              </span>
-              <span role="cell" className={css.queueCell}>
-                {working ? queue.next?.id : t('queue.current.none')}
-              </span>
-              <span role="cell" className={css.queueReason} data-reason={summary.key}>
-                {working ? t('agents.busy') : reasonText(summary.key, {
-                  tasks: summary.params.tasks ?? '',
-                  taskId: summary.params.taskId ?? '',
-                })}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-/** Switch between the dependency tree and the three read-only cuts. */
-function ViewSwitcher({ view, onChange, t }: {
-  readonly view: ActivityViewMode
-  readonly onChange: (view: ActivityViewMode) => void
-  readonly t: AgentTeamsTranslate
-}) {
-  const modes: readonly ActivityViewMode[] = ['tree', 'phases', 'queues']
-  const labelKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
-    tree: 'view.tree',
-    phases: 'view.phases',
-    queues: 'view.queues',
-  }
-  const hintKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
-    tree: 'view.tree.hint',
-    phases: 'view.phases.hint',
-    queues: 'view.queues.hint',
-  }
-  return (
-    <div className={css.viewSwitcher} role="tablist" aria-label={t('view.aria')}>
-      {modes.map((mode) => (
-        <button
-          key={mode}
-          type="button"
-          role="tab"
-          aria-selected={view === mode}
-          className={css.viewTab}
-          data-view={mode}
-          data-active={view === mode}
-          title={t(hintKey[mode])}
-          onClick={() => { onChange(mode) }}
-        >
-          {t(labelKey[mode])}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-/**
- * The flat task checklist (WP8): every task of the team in one place, because
- * the tree only shows a task as a chip under its member and as a node in the
- * DAG. Rows follow the phase columns, then the DAG depth, so the list reads in
- * the order the work becomes claimable. Clicking a row pins that node in the
- * dependency tree.
- */
+/** Task checklist: every task in phase order, carrying its check glyph. */
 function TaskChecklist({ tasks, t, onFocus, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly t: AgentTeamsTranslate
@@ -1193,6 +898,45 @@ function RunningPlanEditor({ team, t }: {
 }
 
 /** Switch between the session's live teams (WP11 phase 2). */
+/**
+ * The panel's only graph view: the phase board, its detail card and the checklist.
+ *
+ * The owner dropped the tree and the queues view (2026-09-20, round 2): inside a
+ * phase the board already draws sequential work as a line and the column stretches
+ * to fit it, so a second view of the same graph only split attention. The checklist
+ * underneath stays the flat list, and a row click pins the node in the board.
+ */
+function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly discarded?: boolean
+  /** Declared phases from the plan (WP7); they drive the columns and the order. */
+  readonly manualPhases?: readonly ManualPhase[]
+}) {
+  const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
+  const pin = (id: string): void => { setPinnedTaskId((current) => current === id ? null : id) }
+  const pinned = pinnedTaskId === null ? undefined : tasks.find((task) => task.id === pinnedTaskId)
+  return (
+    <>
+      <section className={css.dependencySection} aria-label={t('phase.aria')} data-phase-section>
+        <PhaseBoard
+          tasks={tasks}
+          members={members}
+          t={t}
+          discarded={discarded}
+          pinnedTaskId={pinnedTaskId}
+          onPin={pin}
+          manualPhases={manualPhases}
+        />
+      </section>
+      {pinned !== undefined && (
+        <TaskDetail task={pinned} tasks={tasks} members={members} t={t} discarded={discarded} />
+      )}
+      <TaskChecklist tasks={tasks} t={t} onFocus={setPinnedTaskId} manualPhases={manualPhases} />
+    </>
+  )
+}
 function TeamSwitcher({ tabs, selected, onSelect, t }: {
   readonly tabs: readonly PanelTeamTab[]
   readonly selected: string | null
@@ -1229,66 +973,6 @@ function TeamSwitcher({ tabs, selected, onSelect, t }: {
 }
 
 /** The three read-only cuts plus the tree, switching on the stored view. */
-function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: {
-  readonly tasks: readonly ActivityTask[]
-  readonly members: readonly ActivityMember[]
-  readonly t: AgentTeamsTranslate
-  readonly discarded?: boolean
-  /** Declared phases from the plan (WP7); they drive the columns and the order. */
-  readonly manualPhases?: readonly ManualPhase[]
-}) {
-  const [view, setView] = useState<ActivityViewMode>(() => initialActivityView())
-  const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
-  // The checklist focuses a node in the tree; the tree owns the pin itself, so
-  // the panel hands it the requested id and switches the view.
-  const [focusTaskId, setFocusTaskId] = useState<string | null>(null)
-  const select = (next: ActivityViewMode): void => {
-    setView(next)
-    try {
-      window.localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, next)
-    } catch {
-      // A blocked localStorage only costs the preference, never the switch.
-    }
-  }
-  const focus = (taskId: string): void => {
-    setView('tree')
-    setFocusTaskId(taskId)
-  }
-  return (
-    <>
-      <ViewSwitcher view={view} onChange={select} t={t} />
-      {view === 'tree' && (
-        <DependencyMap
-          tasks={tasks}
-          members={members}
-          t={t}
-          discarded={discarded}
-          focusTaskId={focusTaskId}
-        />
-      )}
-      {view === 'phases' && (
-        <section className={css.dependencySection} aria-label={t('phase.aria')} data-phase-section>
-          <PhaseBoard
-            tasks={tasks}
-            members={members}
-            t={t}
-            discarded={discarded}
-            pinnedTaskId={pinnedTaskId}
-            onPin={(id) => { setPinnedTaskId((current) => current === id ? null : id) }}
-            manualPhases={manualPhases}
-          />
-        </section>
-      )}
-      {view === 'queues' && (
-        <section className={css.dependencySection} aria-label={t('queue.aria')} data-queues-section>
-          <QueueView tasks={tasks} members={members} t={t} discarded={discarded} />
-        </section>
-      )}
-      <TaskChecklist tasks={tasks} t={t} onFocus={focus} manualPhases={manualPhases} />
-    </>
-  )
-}
-
 function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic = false }: {
   readonly team: ActivityTeam
   readonly modelDirectory?: ModelDirectory
@@ -1447,17 +1131,23 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                     ) : (
                       <span className={css.memberInitial} style={{ background: accentOf(member.id) }}>{memberInitial(member.name)}</span>
                     )}
-                    {/* The corner mark carries the live activity only: the row
-                        already names the role in words, so a role icon there was
-                        a second answer to a question nobody asked. The role
-                        symbols stay packaged for slots that are too small for the
-                        mascot *and* for the label. */}
-                    <img className={css.stateArt} data-activity={member.activity} src={ACTION_SYMBOL[member.activity]} alt="" aria-hidden />
                   </span>
+                  {/* Owner request (2026-09-20, round 2): the row is one compact
+                      line — role icon, status icon, name, model, task chips — with
+                      the work plaque at the end. The role is in words in the
+                      tooltip, so the icon does not repeat a label the row drops. */}
+                  {memberSymbolUrl(member.name, member.role) !== null && (
+                    <img
+                      className={css.memberRoleIcon}
+                      src={memberSymbolUrl(member.name, member.role) ?? ''}
+                      alt=""
+                      aria-hidden
+                      title={member.role}
+                    />
+                  )}
                   <span className={css.memberInfo}>
                     <span className={css.memberLine}>
-                      <span className={css.memberName}>{member.name}</span>
-                      {member.role !== '' && <span className={css.memberRole}>{member.role}</span>}
+                      <span className={css.memberName} title={member.role === '' ? member.name : `${member.name} · ${member.role}`}>{member.name}</span>
                       {/* Inline member model badge: compact visible label, full route in
                           title/aria-label (accessible tooltip) and the data-member-model
                           DOM probe; noninteractive span, no tab stop. */}
@@ -1466,44 +1156,31 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                           {compactModelLabel(memberModel)}
                         </span>
                       )}
-                      <span className={css.memberState} data-activity={member.activity}>
-                        {discarded
-                          ? t('member.state.notCreated')
-                          : stopped
-                            ? t('member.state.stopped')
-                            : team.phase === 'staged'
-                              ? t('member.state.staged')
-                              : memberStateLabel(member, team.tasks, historic, t)}
+                      <span className={css.memberStateIcon} data-activity={member.activity}>
+                        <img
+                          className={css.stateArt}
+                          data-activity={member.activity}
+                          src={ACTION_SYMBOL[member.activity]}
+                          alt=""
+                          aria-hidden
+                        />
+                        <span className={css.memberState}>
+                          {discarded
+                            ? t('member.state.notCreated')
+                            : stopped
+                              ? t('member.state.stopped')
+                              : team.phase === 'staged'
+                                ? t('member.state.staged')
+                                : memberStateLabel(member, team.tasks, historic, t)}
+                        </span>
                       </span>
                     </span>
-                    <span className={css.memberStatusLine}>{discarded
-                      ? t('member.status.discarded')
-                      : stopped
-                        ? t('member.status.stopped')
-                        : team.phase === 'staged'
-                          ? t('member.status.staged')
-                      : historic && owned.length > 0 && owned.every((task) => settledTask(task.status))
-                        ? t('member.status.settled')
-                      : memberStatusText(member, team.tasks, t)}</span>
                   </span>
                   <span className={css.memberCount}>{member.done}/{member.total}</span>
-                  {/* The plaque is the node's own height: the row's work state is
-                      read from the shape, not from an icon inside the text. */}
-                  <WorkBar active={!discarded && !stopped && member.activity === 'working'} />
-                  {/* The assignment line is a row of this button rather than a
-                      sibling of it: that is what lets the portrait span the whole
-                      block instead of leaving half a column empty (owner report).
-                      A div is not valid inside a button, so it is a span with a
-                      flex layout. */}
                   <span className={css.assignmentLine}>
-                    <span className={css.assignmentLabel}>{t(discarded
-                      ? 'assignment.discarded'
-                      : team.phase === 'staged'
-                        ? 'assignment.staged'
-                        : 'assignment.label')}</span>
                     <span className={css.assignmentTasks}>
                       {owned.length === 0
-                        ? <span className={css.taskEmpty}>{t('assignment.empty')}</span>
+                        ? <span className={css.taskEmpty}>{t('checklist.unassigned')}</span>
                         : owned.map((task) => {
                             const model = taskModelLabel(task, team.members)
                             const shortModel = compactModelLabel(model)
@@ -1521,6 +1198,9 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                           })}
                     </span>
                   </span>
+                  {/* The plaque ends the row and spans its whole height: the work
+                      state is read from the shape, not from an icon in the text. */}
+                  <WorkBar active={!discarded && !stopped && member.activity === 'working'} />
                 </button>
               </div>
             )
@@ -2102,7 +1782,7 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
                     />
                   )}
                   {visibleArchived.map((team) => (
-                    <div key={`${team.captainSessionId}:${team.teamId}`} data-team-id={team.teamId} data-historic className={css.archivedWrap}>
+                    <div key={`${team.captainSessionId}:${team.teamId}`} data-team-id={team.teamId} data-historic>
                       <span className={css.archiveLabel}>{t(team.phase === 'staged' ? 'archive.discardedLabel' : 'archive.label')}</span>
                       <TeamSection team={team} onNavigate={navigateToSession} t={t} historic />
                     </div>

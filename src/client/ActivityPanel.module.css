@@ -559,24 +559,8 @@
 }
 
 .captainRole,
-.memberRole {
-  overflow: hidden;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 10px;
-  line-height: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .captainSummary,
-.memberStatusLine {
-  overflow: hidden;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10.5px;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .taskDetailModel {
   overflow: hidden;
@@ -664,8 +648,7 @@
   gap: 8px;
 }
 
-.progressBar,
-.progressPhaseBar {
+.progressBar {
   display: block;
   flex: 1;
   height: 6px;
@@ -704,43 +687,6 @@
 .progressModeButton:hover {
   color: var(--dsw-alias-label-primary);
   border-color: var(--dsw-alias-label-secondary);
-}
-
-.progressPhases {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.progressPhaseRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.progressPhaseTitle {
-  flex: 0 0 84px;
-  overflow: hidden;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.progressPhaseCount {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.progressPhaseBar {
-  height: 4px;
-}
-
-.progressPhaseBar .progressBarFill {
-  background: var(--dsw-alias-state-business-primary);
-  opacity: 0.75;
 }
 
 .progressSegments {
@@ -1282,16 +1228,17 @@
   content: '';
 }
 
+/* Owner request (2026-09-20, round 2): one compact line per member — a small
+   mascot, the role symbol, the status symbol and label, the name, the model, the
+   task chips, and the work plaque ending the row. */
 .memberRow {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  grid-template-rows: auto auto;
-  gap: 2px 8px;
+  display: flex;
   align-items: center;
+  gap: 6px;
   width: 100%;
   min-width: 0;
-  min-height: 48px;
-  padding: 4px 6px;
+  min-height: 26px;
+  padding: 2px 6px;
   box-sizing: border-box;
   border: 0;
   border-radius: 8px;
@@ -1303,42 +1250,31 @@
   transition: background-color 120ms ease, transform 120ms ease;
 }
 
-/* Placement inside the member row: the portrait spans both rows (the head line
-   and the assignment line), so the block height is spent on the icon instead of
-   an empty half column next to the chips. */
-.memberRow > .memberAvatar {
-  grid-area: 1 / 1 / span 2 / auto;
-  align-self: stretch;
-  max-height: 76px;
-  justify-content: flex-start;
-}
-
 .memberRow > .memberInfo {
-  grid-area: 1 / 2;
+  flex: 1;
+  min-width: 0;
 }
 
 .memberRow > .memberCount {
-  grid-area: 1 / 3;
+  flex: none;
 }
 
-/* Owner request (2026-09-20): work is the node's own height and three dots wide,
-   a wave running down it while the member works. The compact six-dot glyph is
-   gone from the member row; it still marks the captain node and the collapsed
-   pill, where no full-height node exists. */
+/* The plaque ends the row and stretches to its height. */
 .memberRow > .workBar {
-  grid-area: 1 / 4 / span 2 / auto;
   align-self: stretch;
+  margin-left: 2px;
 }
 
 .workBar {
   display: flex;
+  flex: none;
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
   gap: 2px;
   width: 13px;
-  min-height: 100%;
-  padding: 2px 0;
+  min-height: 22px;
+  padding: 1px 0;
   box-sizing: border-box;
 }
 
@@ -1368,10 +1304,6 @@
   45% { opacity: 0.95; }
 }
 
-.memberRow > .assignmentLine {
-  grid-area: 2 / 2 / auto / span 2;
-}
-
 .memberRow:hover,
 .memberRow[data-activity='working'] {
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, var(--dsw-alias-bg-layer-1));
@@ -1381,18 +1313,37 @@
   transform: scale(0.995);
 }
 
-/* The portrait fills its grid cell; the square mascot then takes the cell height
-   as its width, so the column is exactly as wide as the mark is tall. */
+/* The compact mascot: a 24px mark, not a block-height portrait. */
 .memberAvatar {
-  width: auto;
-  height: auto;
-  min-height: 48px;
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
 }
 
-.memberRow .memberArt {
-  width: auto;
-  height: 100%;
+.memberAvatar .memberArt {
+  width: 24px;
+  height: 24px;
   object-fit: contain;
+}
+
+/* Role and status symbols sit in the row; the role's words live in the tooltip. */
+.memberRoleIcon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  object-fit: contain;
+  opacity: 0.85;
+}
+
+.memberStateIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
 }
 
 .memberAvatar[data-unread='true']::after {
@@ -1477,7 +1428,8 @@
 }
 
 .memberState {
-  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
 }
 
 .memberCount {
@@ -1488,25 +1440,22 @@
 
 .assignmentLine {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 7px;
+  max-width: 45%;
   min-width: 0;
   padding: 0;
-}
-
-.assignmentLabel {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 9.5px;
-  line-height: 14px;
+  overflow: hidden;
 }
 
 .assignmentTasks {
   display: flex;
   flex: 1;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .assignmentChip {
@@ -1688,6 +1637,30 @@
 
 .dagNode[data-state='failed'] {
   border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 56%, var(--dsw-alias-border-l2));
+}
+
+/* Owner request (2026-09-20, round 2): a cancelled node is settled history, not
+   an alarm — the card is painted in a very pale scarlet and hatched over it. */
+.dagNode[data-state='cancelled'] {
+  border-color: color-mix(in srgb, #f2b8b5 45%, var(--dsw-alias-border-l2));
+  background-color: color-mix(in srgb, #f2b8b5 14%, var(--dsw-alias-bg-layer-1));
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, #f2b8b5 32%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.dagNode[data-state='cancelled'] .dagNodeDot {
+  background: #f2b8b5;
+}
+
+.dagNode[data-state='cancelled'] .dagNodeHead {
+  color: color-mix(in srgb, #f2b8b5 68%, var(--dsw-alias-label-primary));
+}
+
+.dagNode[data-state='cancelled'] .dagNodeLabel {
+  color: color-mix(in srgb, #f2b8b5 70%, var(--dsw-alias-label-tertiary));
 }
 
 .dagNodeHead {
@@ -2590,47 +2563,11 @@
   line-height: 14px;
 }
 
-/* ── WP10: view switcher, phases, agents, queues (read-only cuts) ── */
+/* ── WP10: the phase board (the panel's only graph view) ── */
 
-.viewSwitcher {
-  display: flex;
-  gap: 3px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--dsw-alias-button-ghost-active-fill);
-}
-
-.viewTab {
-  flex: 1;
-  min-width: 0;
-  padding: 4px 6px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 15px;
-  cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease;
-}
-
-.viewTab:hover {
-  color: var(--dsw-alias-label-secondary);
-}
-
-.viewTab[data-active='true'] {
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-}
-
-.viewTab:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
-  outline-offset: 1px;
-}
-
-.viewHint {
+/* The board's own footnote: it explains how the columns are derived, so it
+   lives next to the columns instead of with the removed view switcher. */
+.phaseHint {
   margin: 0;
   color: var(--dsw-alias-label-tertiary);
   font-size: 9.5px;
@@ -2689,104 +2626,19 @@
 
 /* Identity dot for the dense lists: the fallback where a member's role matched
    no symbol, so the row still carries a stable per-member colour. */
-.queueDot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
 
-.queueView {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 7px;
-}
 
-.queueHeadline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  align-items: baseline;
-}
 
-.queueIdleCount {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
 
-.queueGroup {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 9.5px;
-  line-height: 14px;
-}
 
-.queueGroup[data-reason='queue.idle.blockedBy'] {
-  color: var(--dsw-alias-state-warn-primary);
-}
 
-.queueTable {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-}
 
-.queueRow {
-  display: grid;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  grid-template-columns: minmax(58px, 1.1fr) minmax(40px, 0.8fr) minmax(40px, 0.8fr) minmax(56px, 1.3fr);
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 9.5px;
-  line-height: 14px;
-}
 
-.queueRow[data-head] {
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 9px;
-  font-weight: 600;
-}
 
-.queueRow[data-idle='true']:not([data-head]) {
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, var(--dsw-alias-bg-layer-1));
-}
 
-.queueMember {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.queueCell {
-  overflow: hidden;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.queueReason {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.queueReason[data-reason='queue.idle.blockedBy'] {
-  color: var(--dsw-alias-state-warn-primary);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .panel,

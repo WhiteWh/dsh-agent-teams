@@ -1,40 +1,5 @@
 /** Pure relationship projections used by the AgentTeams activity panel. */
 
-/** Minimum task shape needed to derive dependency relationships. */
-export interface RelationshipTask {
-  readonly id: string
-  readonly dependencies: readonly string[]
-  readonly depth: number
-}
-
-/** One dependency-depth stage in stable display order. */
-export interface RelationshipStage<T extends RelationshipTask> {
-  readonly depth: number
-  readonly tasks: readonly T[]
-}
-
-/** Geometry used by the compact task DAG in the activity panel. */
-export interface CompactDagNode<T extends RelationshipTask> {
-  readonly task: T
-  readonly x: number
-  readonly y: number
-}
-
-/** One dependency edge routed between two compact DAG nodes. */
-export interface CompactDagEdge {
-  readonly from: string
-  readonly to: string
-  readonly path: string
-}
-
-/** Complete, scrollable compact DAG projection. */
-export interface CompactDagLayout<T extends RelationshipTask> {
-  readonly width: number
-  readonly height: number
-  readonly nodes: readonly CompactDagNode<T>[]
-  readonly edges: readonly CompactDagEdge[]
-}
-
 /** Reference-panel geometry: narrow nodes with enough room for curved edges. */
 export const COMPACT_DAG_NODE_WIDTH = 92
 export const COMPACT_DAG_NODE_HEIGHT = 30
@@ -175,16 +140,14 @@ export type ProgressMode = 'byKind' | 'equal'
 /** Where the panel remembers the reader's progress-mode choice. */
 export const PROGRESS_MODE_STORAGE_KEY = 'dsh-agent-teams:activity-panel:progress:v1'
 
-/** One phase row of the progress block. */
-export interface ProgressPhaseView {
-  readonly phaseId: string
-  readonly title?: string
-  readonly percent: number
-  readonly completed: number
-  readonly total: number
-}
-
-/** The progress block as the panel renders it. */
+/**
+ * The progress block as the panel renders it.
+ *
+ * The panel shows one bar. The snapshot also publishes a per-phase roll-up
+ * (`byPhase`) and the wire mirror below keeps it, but no view field surfaces it:
+ * the owner read the row-per-phase block as a wall of bars and removed it
+ * (2026-09-20, round 2), so the selector deliberately has nothing to map.
+ */
 export interface PlanProgressView {
   readonly mode: ProgressMode
   readonly percent: number
@@ -198,10 +161,12 @@ export interface PlanProgressView {
   readonly waived: number
   readonly superseded: number
   readonly cancelled: number
-  readonly phases: readonly ProgressPhaseView[]
 }
 
-/** The host progress payload, mirrored structurally (see activity-monitor). */
+/**
+ * The host progress payload, mirrored structurally (see activity-monitor).
+ * `byPhase` is part of the published snapshot, not of what the panel draws.
+ */
 interface ProgressPayload {
   readonly mode: ProgressMode
   readonly percentByKind: number
@@ -267,7 +232,6 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
     waived: 0,
     superseded,
     cancelled,
-    phases: [],
   }
 }
 
@@ -282,7 +246,7 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
  *
  * @param team - the team snapshot, with or without a `progress` payload.
  * @param mode - the requested mode, or undefined for the team's default.
- * @returns the numbers and phase rows the panel draws.
+ * @returns the numbers the panel draws.
  */
 export function planProgress(
   team: { readonly tasks: readonly { readonly status: string; readonly state?: string }[]; readonly progress?: ProgressPayload },
@@ -307,13 +271,6 @@ export function planProgress(
     waived: payload.waived,
     superseded: payload.superseded,
     cancelled: payload.cancelled,
-    phases: payload.byPhase.map((phase) => ({
-      phaseId: phase.phaseId,
-      ...phase.title === undefined ? {} : { title: phase.title },
-      percent: percentOf(phase),
-      completed: phase.completed,
-      total: phase.total,
-    })),
   }
 }
 
@@ -332,12 +289,6 @@ export function taskCheckGlyph(status: string): { readonly tone: ChecklistTone; 
     return { tone: 'running', glyph: '◐' }
   }
   return { tone: 'open', glyph: '○' }
-}
-
-/** Use a fill-width grid when the task graph has no real dependency edges. */
-export function usesParallelTaskGrid<T extends RelationshipTask>(tasks: readonly T[]): boolean {  if (tasks.length === 0) return false
-  const taskIds = new Set(tasks.map((task) => task.id))
-  return tasks.every((task) => task.dependencies.every((dependency) => !taskIds.has(dependency)))
 }
 
 /**
@@ -384,88 +335,6 @@ export function activityPanelShouldAutoExpand({
 }
 
 /**
- * Resolve the task whose dependency chain should be highlighted.
- *
- * A pinned task is an explicit user choice. Keyboard focus takes precedence
- * over delayed pointer intent so an older hover timer cannot steal the active
- * chain from someone navigating the task map with the keyboard.
- */
-export function dependencyFocusTaskId(
-  pinnedTaskId: string | null,
-  keyboardTaskId: string | null,
-  hoverTaskId: string | null,
-): string | null {
-  return pinnedTaskId ?? keyboardTaskId ?? hoverTaskId
-}
-
-/** Group tasks by their precomputed dependency depth. */
-export function taskStages<T extends RelationshipTask>(tasks: readonly T[]): readonly RelationshipStage<T>[] {
-  const byDepth = new Map<number, T[]>()
-  for (const task of tasks) {
-    const depth = Number.isFinite(task.depth) ? Math.max(0, Math.floor(task.depth)) : 0
-    const stage = byDepth.get(depth) ?? []
-    stage.push(task)
-    byDepth.set(depth, stage)
-  }
-  return [...byDepth.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([depth, stageTasks]) => ({
-      depth,
-      tasks: stageTasks.slice().sort((left, right) => left.id.localeCompare(right.id, 'en', { numeric: true })),
-    }))
-}
-
-/**
- * Lay tasks out as the reference panel's compact left-to-right DAG.
- *
- * Columns are dependency-depth stages. Rows are stable task-id order within
- * each stage. Edges use cubic curves so fan-in remains readable without
- * turning every task into a large card.
- */
-export function compactDagLayout<T extends RelationshipTask>(tasks: readonly T[]): CompactDagLayout<T> {
-  const stages = taskStages(tasks)
-  const positions = new Map<string, { x: number; y: number }>()
-  const nodes: CompactDagNode<T>[] = []
-  for (const [column, stage] of stages.entries()) {
-    for (const [row, task] of stage.tasks.entries()) {
-      const x = column * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP)
-      const y = row * (COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
-      positions.set(task.id, { x, y })
-      nodes.push({ task, x, y })
-    }
-  }
-  const edges: CompactDagEdge[] = []
-  for (const task of tasks) {
-    const target = positions.get(task.id)
-    if (target === undefined) continue
-    for (const dependency of task.dependencies) {
-      const source = positions.get(dependency)
-      if (source === undefined) continue
-      const x1 = source.x + COMPACT_DAG_NODE_WIDTH
-      const y1 = source.y + COMPACT_DAG_NODE_HEIGHT / 2
-      const x2 = target.x
-      const y2 = target.y + COMPACT_DAG_NODE_HEIGHT / 2
-      edges.push({
-        from: dependency,
-        to: task.id,
-        path: `M${x1} ${y1}C${x1 + 14} ${y1},${x2 - 14} ${y2},${x2} ${y2}`,
-      })
-    }
-  }
-  const rows = Math.max(1, ...stages.map((stage) => stage.tasks.length))
-  return {
-    width: stages.length === 0
-      ? 0
-      : stages.length * COMPACT_DAG_NODE_WIDTH + (stages.length - 1) * COMPACT_DAG_COLUMN_GAP,
-    height: stages.length === 0
-      ? 0
-      : rows * COMPACT_DAG_NODE_HEIGHT + (rows - 1) * COMPACT_DAG_ROW_GAP,
-    nodes,
-    edges,
-  }
-}
-
-/**
  * Whether a task is settled: done, red, or dead (cancelled, or replaced by
  * another task). A superseded task will never finish, so every projection that
  * asks "is this lane over" must treat it like the other terminal statuses.
@@ -474,19 +343,14 @@ export function settledTask(status: string): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'superseded'
 }
 
-/** Whether a task has already finished (either way). */
-function isTerminal(status: string): boolean {
-  return settledTask(status)
-}
-
 /** Natural-id ordering used by every projection below. */
 function byTaskId<T extends { readonly id: string }>(left: T, right: T): number {
   return left.id.localeCompare(right.id, 'en', { numeric: true })
 }
 
-// ── WP10: three read-only cuts of the same state (phases, agents, queues) ──
+// ── WP10: the phase board, the panel's only cut of the same state ──
 
-/** One task as the three cuts need to see it. */
+/** One task as the phase board needs to see it. */
 export interface PhaseTask {
   readonly id: string
   readonly subject?: string
@@ -497,20 +361,8 @@ export interface PhaseTask {
   readonly kind?: string
   readonly round?: number
   readonly depth?: number
-  /** Set on a review task: the task it judges, used for the waiting-review reason. */
+  /** Set on a review task: the task it judges, so a blocked review stays visible. */
   readonly reviewedTaskId?: string
-}
-
-/** One member row the three cuts need to see. */
-export interface ProjectionMember {
-  readonly id?: string
-  readonly name: string
-  readonly activity?: string
-  readonly status?: string
-  readonly done?: number
-  readonly total?: number
-  readonly currentTask?: string
-  readonly unread?: number
 }
 
 /** A manually declared phase (comes from `plan.phases` once WP7 lands). */
@@ -520,7 +372,7 @@ export interface ManualPhase {
   readonly taskIds: readonly string[]
 }
 
-/** One phase column of the phases view. */
+/** One phase column of the phase board. */
 export interface PhaseColumn<T extends PhaseTask> {
   /** `level-N` for a derived column, or the manual phase id. */
   readonly phaseId: string
@@ -545,7 +397,7 @@ function autoLevel(taskId: string, byId: ReadonlyMap<string, PhaseTask>): number
 }
 
 /**
- * Phase columns for the phases view.
+ * Phase columns for the phase board.
  *
  * Manual phases win when they are present (WP7 stores them in `plan.phases`);
  * every task they do not mention falls back into an auto-derived column built
@@ -579,8 +431,15 @@ export function phaseColumns<T extends PhaseTask>(
     })
   }
   const rest = tasks.filter((task) => !assigned.has(task.id))
-  if (rest.length > 0 && columns.length > 0) {
-    columns.push({ phaseId: 'unphased', order: columns.length, tasks: rest.slice().sort(byTaskId) })
+  // A declared plan wins even when it accounts for every task: the unphased
+  // column only collects what the plan left out. Requiring `rest` to be non-empty
+  // here discarded the declared columns for a fully declared plan and fell
+  // through to the DAG levels, which then had nothing left to lay out — the
+  // board came out empty, exactly for the max-effort plans that declare phases.
+  if (columns.length > 0) {
+    if (rest.length > 0) {
+      columns.push({ phaseId: 'unphased', order: columns.length, tasks: rest.slice().sort(byTaskId) })
+    }
     return columns
   }
   const byLevel = new Map<number, T[]>()
@@ -599,219 +458,6 @@ export function phaseColumns<T extends PhaseTask>(
     }))
 }
 
-/** One participant lane of the agents view. */
-export interface Swimlane<T extends PhaseTask> {
-  readonly member?: ProjectionMember
-  readonly name: string
-  readonly completed: readonly T[]
-  readonly running: readonly T[]
-  readonly queued: readonly T[]
-  readonly blocked: readonly T[]
-  /** Unfinished dependencies of the blocked tasks, deduplicated. */
-  readonly blockedBy: readonly string[]
-}
-
-/**
- * One row per participant: what they finished, what they hold now, what they
- * can pick up next and what a failed dependency is holding back.
- *
- * A task is `queued` when every dependency reached `completed`, and `blocked`
- * otherwise (with the offending ids surfaced as {@link Swimlane.blockedBy}) —
- * that pair is what answers "why is the team standing still".
- *
- * Since v0.1.22 the panel no longer renders this projection: the owner dropped
- * the Agents view because the member tree above carries the same information.
- * The projection stays as tested model code (see FOLLOWUPS F5) — either a future
- * view renders it again, or it goes together with its checks.
- */
-export function agentSwimlanes<T extends PhaseTask>(
-  tasks: readonly T[],
-  members: readonly ProjectionMember[],
-): readonly Swimlane<T>[] {
-  const statusById = new Map(tasks.map((task) => [task.id, task.status]))
-  const lane = (member: ProjectionMember | undefined, name: string): Swimlane<T> => {
-    const owned = tasks.filter((task) => task.assignee === name)
-    const unfinished = owned.filter((task) => !isTerminal(task.status))
-    const blocked = unfinished.filter((task) => blockingIds(task, statusById).length > 0)
-    const blockedBy: string[] = []
-    for (const task of blocked) {
-      for (const id of blockingIds(task, statusById)) {
-        if (blockedBy.includes(id)) continue
-        blockedBy.push(id)
-      }
-    }
-    return {
-      ...member === undefined ? {} : { member },
-      name,
-      completed: owned.filter((task) => task.status === 'completed').sort(byTaskId),
-      running: owned.filter((task) => task.status === 'in_progress' || task.status === 'claimed').sort(byTaskId),
-      queued: unfinished.filter((task) => !blocked.includes(task)).sort(byTaskId),
-      blocked: blocked.slice().sort(byTaskId),
-      blockedBy,
-    }
-  }
-  const lanes = members.map((member) => lane(member, member.name))
-  const unassigned = lane(undefined, '')
-  if (unassigned.completed.length + unassigned.running.length + unassigned.queued.length + unassigned.blocked.length > 0) {
-    lanes.push(unassigned)
-  }
-  return lanes
-}
-
-/** Why one participant has nothing to do right now. */
-export type IdleReason =
-  | { readonly kind: 'no-tasks' }
-  | { readonly kind: 'all-done' }
-  | { readonly kind: 'blocked-by'; readonly tasks: readonly string[] }
-  | { readonly kind: 'waiting-review-of'; readonly taskId: string }
-
-/** One participant's queue: what they hold, what is next, and why not. */
-export interface AgentQueue<T extends PhaseTask> {
-  readonly member?: ProjectionMember
-  readonly taken: readonly T[]
-  readonly next?: T
-  readonly waitingOn: readonly string[]
-  readonly idleReason: IdleReason
-}
-
-/** Unfinished dependencies of one task. */
-function waitingDependencies(task: PhaseTask, statusById: ReadonlyMap<string, string>): string[] {
-  return task.dependencies.filter((dependency) => statusById.get(dependency) !== 'completed')
-}
-
-/**
- * Everything that still fences one task: unfinished dependencies plus, for a
- * `review`, the task it judges. A review of a task that has not finished is not
- * claimable — closing it would certify work that does not exist yet.
- */
-function blockingIds(task: PhaseTask, statusById: ReadonlyMap<string, string>): string[] {
-  const blocking = waitingDependencies(task, statusById)
-  if (task.kind === 'review'
-    && task.reviewedTaskId !== undefined
-    && !isTerminal(statusById.get(task.reviewedTaskId) ?? 'pending')
-    && !blocking.includes(task.reviewedTaskId)) {
-    blocking.push(task.reviewedTaskId)
-  }
-  return blocking
-}
-
-/** Whether a task can be picked up right now. */
-function isClaimable(task: PhaseTask, statusById: ReadonlyMap<string, string>): boolean {
-  return !isTerminal(task.status) && blockingIds(task, statusById).length === 0
-}
-
-/**
- * The queue view's row for one participant.
- *
- * `next` is the first claimable task assigned to them; `idleReason` says why
- * there is none, in the order the panel explains it: the member holds no work
- * at all, everything they hold is terminal, their next task waits on named
- * upstream tasks, or they are the reviewer of a task that has not finished.
- */
-export function agentQueue<T extends PhaseTask>(
-  tasks: readonly T[],
-  members: readonly ProjectionMember[],
-  member: ProjectionMember | undefined,
-): AgentQueue<T> {
-  const statusById = new Map(tasks.map((task) => [task.id, task.status]))
-  if (member === undefined) {
-    const unassigned = tasks.filter((task) => task.assignee === '').sort(byTaskId)
-    const next = unassigned.find((task) => isClaimable(task, statusById))
-    const waitingOn = [...new Set(unassigned.flatMap((task) => blockingIds(task, statusById)))]
-    const idleReason: IdleReason = next !== undefined
-      ? { kind: 'no-tasks' }
-      : waitingOn.length > 0
-        ? { kind: 'blocked-by', tasks: waitingOn }
-        : { kind: 'no-tasks' }
-    return {
-      taken: unassigned,
-      ...next === undefined ? {} : { next },
-      waitingOn,
-      idleReason,
-    }
-  }
-  const taken = tasks.filter((task) => task.assignee === member.name).sort(byTaskId)
-  const next = taken.find((task) => isClaimable(task, statusById))
-  const waitingOn = [...new Set(taken.flatMap((task) => blockingIds(task, statusById)))]
-  if (next !== undefined) return { member, taken, next, waitingOn, idleReason: { kind: 'no-tasks' } }
-  if (taken.length > 0 && taken.every((task) => isTerminal(task.status))) {
-    return { member, taken, waitingOn, idleReason: { kind: 'all-done' } }
-  }
-  const waitingReview = taken.find((task) => (
-    task.kind === 'review'
-    && task.reviewedTaskId !== undefined
-    && !isTerminal(statusById.get(task.reviewedTaskId) ?? 'pending')
-  ))
-  if (waitingReview?.reviewedTaskId !== undefined) {
-    return { member, taken, waitingOn, idleReason: { kind: 'waiting-review-of', taskId: waitingReview.reviewedTaskId } }
-  }
-  if (waitingOn.length > 0) {
-    return { member, taken, waitingOn, idleReason: { kind: 'blocked-by', tasks: waitingOn } }
-  }
-  return { member, taken, waitingOn, idleReason: { kind: 'no-tasks' } }
-}
-
-/** Locale key plus params for one idle reason. */
-export interface IdleReasonSummary {
-  readonly key: 'queue.idle.noTasks' | 'queue.idle.allDone' | 'queue.idle.blockedBy' | 'queue.idle.waitingReview'
-  readonly params: { readonly tasks?: string; readonly taskId?: string }
-}
-
-/** Translate one idle reason into its locale key and interpolation params. */
-export function idleReasonSummary(reason: IdleReason): IdleReasonSummary {
-  switch (reason.kind) {
-    case 'all-done':
-      return { key: 'queue.idle.allDone', params: {} }
-    case 'blocked-by':
-      return { key: 'queue.idle.blockedBy', params: { tasks: reason.tasks.join(', ') } }
-    case 'waiting-review-of':
-      return { key: 'queue.idle.waitingReview', params: { taskId: reason.taskId } }
-    default:
-      return { key: 'queue.idle.noTasks', params: {} }
-  }
-}
-
-/** One grouped idle reason of the queue overview. */
-export interface IdleReasonGroup {
-  readonly key: IdleReasonSummary['key']
-  readonly count: number
-}
-
-/** Headline plus grouped reasons for the queue view. */
-export interface QueueOverview {
-  readonly idleCount: number
-  readonly idleTotal: number
-  readonly groups: readonly IdleReasonGroup[]
-}
-
-/**
- * Group the team's idle reasons: the direct answer to "8 of 9 are idle — why?".
- *
- * A member whose next task exists is working, not idle, and is excluded from
- * both the count and the groups.
- */
-export function queueOverview<T extends PhaseTask>(
-  tasks: readonly T[],
-  members: readonly ProjectionMember[],
-): QueueOverview {
-  const groups: IdleReasonGroup[] = []
-  let idleCount = 0
-  for (const member of members) {
-    const queue = agentQueue(tasks, members, member)
-    if (queue.next !== undefined) continue
-    idleCount += 1
-    const key = idleReasonSummary(queue.idleReason).key
-    const existing = groups.find((group) => group.key === key)
-    if (existing === undefined) groups.push({ key, count: 1 })
-    else groups[groups.indexOf(existing)] = { key, count: existing.count + 1 }
-  }
-  return {
-    idleCount,
-    idleTotal: members.length,
-    groups: groups.slice().sort((left, right) => right.count - left.count || left.key.localeCompare(right.key, 'en')),
-  }
-}
-
 /** Palette shared by every view; the same agent keeps one colour everywhere. */
 const AGENT_COLORS = [
   'var(--dsw-alias-state-business-primary)',
@@ -822,8 +468,8 @@ const AGENT_COLORS = [
 ] as const
 
 /**
- * Stable colour token for one agent name, identical in the tree, phase and
- * agent views. `captain` and unassigned work get their own reserved tokens so
+ * Stable colour token for one agent name, identical on the phase board and in
+ * the member list. `captain` and unassigned work get their own reserved tokens so
  * they never collide with a member's colour.
  *
  * @param name - member name, `captain`, or `''` for unassigned work.
@@ -839,12 +485,6 @@ export function agentColor(name: string): string {
   return AGENT_COLORS[Math.abs(hash) % AGENT_COLORS.length] ?? AGENT_COLORS[0]
 }
 
-/** The two read-only cuts plus the original dependency tree. */
-export type ActivityViewMode = 'tree' | 'phases' | 'queues'
-
-/** Persisted per-browser choice of panel view, next to the panel geometry. */
-export const ACTIVITY_VIEW_STORAGE_KEY = 'dsh-agent-teams:activity-panel:view:v1'
-
 /** One positioned node of the phase board. */
 export interface PhaseNode<T extends PhaseTask> {
   readonly task: T
@@ -859,34 +499,38 @@ export interface PhaseEdge {
   readonly path: string
 }
 
-/** A phase board laid out in fixed columns, one per phase. */
+/** A phase board: one flexible column per phase, chains laid out inside it. */
 export interface PhaseBoardLayout<T extends PhaseTask> {
   readonly width: number
   readonly height: number
-  readonly columns: readonly { readonly phaseId: string; readonly order: number; readonly title?: string; readonly x: number }[]
+  readonly columns: readonly {
+    readonly phaseId: string
+    readonly order: number
+    readonly title?: string
+    /** Left edge of the column; the column spans {@link width}. */
+    readonly x: number
+    /** How wide this column grew to fit its longest same-phase chain. */
+    readonly width: number
+    /** Task ids of this column, so a reader never has to infer them from x. */
+    readonly taskIds: readonly string[]
+  }[]
   readonly nodes: readonly PhaseNode<T>[]
   readonly edges: readonly PhaseEdge[]
 }
 
 /**
- * Parse a persisted view choice, falling back to the dependency tree.
+ * Lay the phase board out: one column per phase, and inside a column the work
+ * runs left to right along its own chain.
  *
- * A stored `agents` — the swimlane view the panel no longer renders, because the
- * member tree above already carries the same information — falls back to the
- * tree rather than leaving the tab strip without a selected tab.
- */
-export function parseActivityView(raw: string | null | undefined): ActivityViewMode {
-  return raw === 'phases' || raw === 'queues' ? raw : 'tree'
-}
-
-/**
- * Lay the phase board out with a fixed X per phase column.
- *
- * This is {@link compactDagLayout}'s geometry with the column taken from the
- * phase instead of the dependency depth, so a manually declared phase keeps its
- * declared order even when its tasks sit at mixed depths. Rows are assigned in
- * task-id order inside each column, and an edge is emitted for every dependency
- * whose other end also landed on the board.
+ * The owner's request (2026-09-20, round 2): a phase that contains sequential
+ * work must read as a line rather than a stack, and the column stretches to fit
+ * the longest chain it holds. So a task's x inside its column is its **chain
+ * depth** — the longest path of dependencies that live in the same phase — and
+ * its row is the row its same-column predecessors already use when they agree,
+ * otherwise the first free row at that depth. Parallel work therefore keeps its
+ * own row while a chain stays on one line, which is what makes a separate tree
+ * view unnecessary. An edge is emitted for every dependency whose other end also
+ * landed on the board.
  *
  * @param tasks - the team's tasks.
  * @param manualPhases - optional declared phases (WP7's `plan.phases`).
@@ -898,20 +542,58 @@ export function phaseBoardLayout<T extends PhaseTask>(
   const columns = phaseColumns(tasks, manualPhases)
   const positions = new Map<string, { x: number; y: number }>()
   const nodes: PhaseNode<T>[] = []
-  const placed: { phaseId: string; order: number; title?: string; x: number }[] = []
-  for (const [index, column] of columns.entries()) {
-    const x = index * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP)
+  const placed: { phaseId: string; order: number; title?: string; x: number; width: number; taskIds: string[] }[] = []
+  let columnX = 0
+  let boardHeight = 0
+  for (const column of columns) {
+    const inColumn = new Map(column.tasks.map((task) => [task.id, task]))
+    /** Longest chain of dependencies that stay inside this phase. */
+    const depthOf = (task: T, seen: ReadonlySet<string> = new Set()): number => {
+      const local = task.dependencies.filter((id) => inColumn.has(id) && !seen.has(id))
+      if (local.length === 0) return 0
+      return 1 + Math.max(...local.map((id) => depthOf(inColumn.get(id) as T, new Set([...seen, task.id]))))
+    }
+    const depths = new Map(column.tasks.map((task) => [task.id, depthOf(task)]))
+    const rowsAtDepth = new Map<number, Set<number>>()
+    const rowOfTask = new Map<string, number>()
+    const ordered = [...column.tasks].sort((left, right) => (
+      (depths.get(left.id) ?? 0) - (depths.get(right.id) ?? 0) || left.id.localeCompare(right.id)
+    ))
+    for (const task of ordered) {
+      const depth = depths.get(task.id) ?? 0
+      const used = rowsAtDepth.get(depth) ?? new Set<number>()
+      // A chain continues on its predecessor's row; parallel work stacks.
+      const predecessorRows = task.dependencies
+        .map((id) => rowOfTask.get(id))
+        .filter((row): row is number => row !== undefined)
+      const shared = predecessorRows.length > 0 && predecessorRows.every((row) => row === predecessorRows[0])
+        ? predecessorRows[0]
+        : undefined
+      let row = shared !== undefined && !used.has(shared) ? shared : 0
+      while (used.has(row)) row += 1
+      used.add(row)
+      rowsAtDepth.set(depth, used)
+      rowOfTask.set(task.id, row)
+    }
+    const maxDepth = Math.max(0, ...[...depths.values()])
+    const maxRow = Math.max(0, ...[...rowOfTask.values()])
+    const width = (maxDepth + 1) * COMPACT_DAG_NODE_WIDTH + maxDepth * COMPACT_DAG_COLUMN_GAP
     placed.push({
       phaseId: column.phaseId,
       order: column.order,
       ...column.title === undefined ? {} : { title: column.title },
-      x,
+      x: columnX,
+      width,
+      taskIds: column.tasks.map((task) => task.id),
     })
-    for (const [row, task] of column.tasks.entries()) {
-      const y = row * (COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
+    for (const task of column.tasks) {
+      const x = columnX + (depths.get(task.id) ?? 0) * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP)
+      const y = (rowOfTask.get(task.id) ?? 0) * (COMPACT_DAG_NODE_HEIGHT + COMPACT_DAG_ROW_GAP)
       positions.set(task.id, { x, y })
       nodes.push({ task, x, y })
     }
+    columnX += width + COMPACT_DAG_COLUMN_GAP
+    boardHeight = Math.max(boardHeight, (maxRow + 1) * COMPACT_DAG_NODE_HEIGHT + maxRow * COMPACT_DAG_ROW_GAP)
   }
   const edges: PhaseEdge[] = []
   for (const task of tasks) {
@@ -931,52 +613,11 @@ export function phaseBoardLayout<T extends PhaseTask>(
       })
     }
   }
-  const rows = Math.max(1, ...columns.map((column) => column.tasks.length))
   return {
-    width: columns.length === 0
-      ? 0
-      : columns.length * COMPACT_DAG_NODE_WIDTH + (columns.length - 1) * COMPACT_DAG_COLUMN_GAP,
-    height: columns.length === 0 ? 0 : rows * COMPACT_DAG_NODE_HEIGHT + (rows - 1) * COMPACT_DAG_ROW_GAP,
+    width: columns.length === 0 ? 0 : columnX - COMPACT_DAG_COLUMN_GAP,
+    height: columns.length === 0 ? 0 : boardHeight,
     columns: placed,
     nodes,
     edges,
   }
-}
-
-/**
- * Return the complete upstream/downstream chain around one task.
- *
- * Traversal uses both dependency directions and remains cycle-safe, so the UI
- * can highlight every handoff related to the focused task even if malformed
- * durable data contains a cycle.
- */
-export function relatedTaskIds(taskId: string, tasks: readonly RelationshipTask[]): ReadonlySet<string> {
-  const byId = new Map(tasks.map((task) => [task.id, task]))
-  if (!byId.has(taskId)) return new Set()
-  const dependents = new Map<string, string[]>()
-  for (const task of tasks) {
-    for (const dependency of task.dependencies) {
-      const targets = dependents.get(dependency) ?? []
-      targets.push(task.id)
-      dependents.set(dependency, targets)
-    }
-  }
-  const related = new Set<string>()
-  const upstreamSeen = new Set<string>()
-  const downstreamSeen = new Set<string>()
-  const visitUpstream = (id: string): void => {
-    if (upstreamSeen.has(id)) return
-    upstreamSeen.add(id)
-    related.add(id)
-    for (const dependency of byId.get(id)?.dependencies ?? []) visitUpstream(dependency)
-  }
-  const visitDownstream = (id: string): void => {
-    if (downstreamSeen.has(id)) return
-    downstreamSeen.add(id)
-    related.add(id)
-    for (const dependent of dependents.get(id) ?? []) visitDownstream(dependent)
-  }
-  visitUpstream(taskId)
-  visitDownstream(taskId)
-  return related
 }
