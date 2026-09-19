@@ -882,6 +882,22 @@ function isTeamMember(value: unknown): value is TeamMember {
     && (value['status'] === 'idle' || value['status'] === 'working' || value['status'] === 'removed')
 }
 
+/**
+ * `taskPlanning.weights` as it is frozen into a team profile (WP8/S16).
+ *
+ * The predicate is repeated here instead of importing `resolveProgressWeights`
+ * on purpose: `progress.ts` reads the dependency helpers from this module, so
+ * importing it back would close an ESM cycle (`state.ts` ↔ `progress.ts`), the
+ * same trap that already forces `quality-gates.ts` to import one-way only.
+ */
+function isProgressWeightsValue(value: unknown): boolean {
+  if (value === 'equal') return true
+  if (!isRecord(value)) return false
+  return Object.values(value).every(
+    (weight) => typeof weight === 'number' && Number.isFinite(weight) && weight > 0,
+  )
+}
+
 /** Validate one task record at the durable JSON boundary. */
 function isTeamProfileSnapshot(value: unknown): value is TeamProfileSnapshot {
   return isRecord(value)
@@ -893,6 +909,7 @@ function isTeamProfileSnapshot(value: unknown): value is TeamProfileSnapshot {
     && (value['fallback'] === undefined || (isRecord(value['fallback']) && typeof value['fallback']['provider'] === 'string' && typeof value['fallback']['model'] === 'string'))
     && (value['taskPlanning'] === undefined || value['taskPlanning'] === 'captain' || value['taskPlanning'] === 'seed')
     && (value['reviewPolicy'] === undefined || isReviewPolicy(value['reviewPolicy']))
+    && (value['progressWeights'] === undefined || isProgressWeightsValue(value['progressWeights']))
 }
 
 function coerceProfileSnapshot(value: unknown): TeamProfileSnapshot | undefined {
@@ -1162,6 +1179,18 @@ export async function listArchivedTeamIds(stateRoot: string): Promise<string[]> 
 
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled' | 'superseded'
+
+/**
+ * How many acceptance criteria and verify commands of this task were reported
+ * `waived` (WP1). Both the status report and the panel checklist show the count,
+ * so one team cannot report two different numbers for the same task.
+ */
+export function waivedResultCount(task: TeamTask): number {
+  return [
+    ...task.acceptanceResults ?? [],
+    ...task.commandsRun ?? [],
+  ].filter((item) => item.status === 'waived').length
+}
 
 /**
  * The visual state of one task: `running` while in_progress or held for a scope

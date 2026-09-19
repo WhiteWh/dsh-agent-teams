@@ -337,6 +337,12 @@ export interface TeamProfileSnapshot {
    * the task's `inScope` and excluded from the overlap comparison.
    */
   sharedInScope?: string[]
+  /**
+   * Frozen progress weighting from `taskPlanning.weights` (WP8/S16): `'equal'`
+   * makes the equal count the team's default percentage, a table overrides the
+   * per-kind defaults. Absent means the built-in kind table.
+   */
+  progressWeights?: 'equal' | Record<string, number>
   /** Frozen review-loop policy from the creating profile. */
   reviewPolicy?: ReviewPolicy
 }

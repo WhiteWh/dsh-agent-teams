@@ -18,6 +18,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { artworkRevision, committedArtworkRevision } from './art-revision.mjs'
 import { serveArtwork } from '../lib/artwork.js'
+import { PROGRESS_KIND_WEIGHTS, planProgress, resolveProgressWeights } from '../lib/progress.js'
+import { assembleTeamSnapshot } from '../lib/snapshot.js'
 import { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from '../lib/tool-names.js'
 import {
   CAPTAIN_KEY,
@@ -55,8 +57,10 @@ import {
   idleReasonSummary,
   memberRouteLabel,
   parseActivityView,
+  parseProgressMode,
   phaseBoardLayout,
   phaseColumns,
+  planProgress as planProgressView,
   queueOverview,
   relatedTaskIds,
   taskModelLabel,
@@ -2018,6 +2022,280 @@ check(
   'failed live captain delivery falls back to the durable mailbox',
   steerCaptainReport({ steer: () => { throw new Error('offline') } }, 'alice', 'finished t1') === false,
 )
+
+console.log('6c/8 plan progress and the task checklist (WP8)')
+const progressPlan = [
+  { id: 't1', status: 'completed', kind: 'work', dependencies: [] },
+  { id: 't2', status: 'completed', kind: 'implementation', dependencies: [] },
+  { id: 't3', status: 'in_progress', kind: 'implementation', dependencies: [] },
+  { id: 't4', status: 'failed', kind: 'review', dependencies: [] },
+  { id: 't5', status: 'superseded', kind: 'work', dependencies: [] },
+  { id: 't6', status: 'cancelled', kind: 'work', dependencies: [] },
+  { id: 't7', status: 'completed', kind: 'repair', dependencies: [], hasWaivers: true },
+  { id: 't8', status: 'pending', kind: 'verification', dependencies: ['t3'] },
+]
+{
+  const defaults = resolveProgressWeights(undefined)
+  check(
+    'progress weights default to the kind table',
+    defaults.mode === 'byKind'
+      && defaults.byKind.implementation === 3
+      && defaults.byKind.repair === 2
+      && defaults.byKind.work === 1
+      && defaults.byKind.review === 1
+      && PROGRESS_KIND_WEIGHTS.verification === 1,
+  )
+  check(
+    'a profile may ask for the equal mode',
+    resolveProgressWeights('equal').mode === 'equal'
+      && resolveProgressWeights('equal').byKind.implementation === 3,
+  )
+  check(
+    'a per-kind weight table overrides single kinds only',
+    resolveProgressWeights({ review: 5 }).mode === 'byKind'
+      && resolveProgressWeights({ review: 5 }).byKind.review === 5
+      && resolveProgressWeights({ review: 5 }).byKind.implementation === 3,
+  )
+  const rejectedWeights = []
+  for (const bad of ['fast', { review: 0 }, { review: -2 }, { review: 'high' }, 7]) {
+    try {
+      resolveProgressWeights(bad)
+      rejectedWeights.push(`accepted ${JSON.stringify(bad)}`)
+    } catch (error) {
+      if (!/taskPlanning\.weights/.test(String(error))) rejectedWeights.push(`unnamed ${JSON.stringify(bad)}`)
+    }
+  }
+  check('an invalid weight table is rejected with the key that owns it', rejectedWeights.length === 0)
+
+  check(
+    'an empty plan is zero percent with no phases',
+    (() => {
+      const empty = planProgress([])
+      return empty.percent === 0 && empty.percentByKind === 0 && empty.percentEqual === 0
+        && empty.total === 0 && empty.completed === 0 && empty.byPhase.length === 0
+    })(),
+  )
+  check(
+    'cancelled and superseded work leaves the denominator',
+    (() => {
+      const dead = planProgress([
+        { id: 't1', status: 'cancelled', kind: 'implementation', dependencies: [] },
+        { id: 't2', status: 'cancelled', kind: 'work', dependencies: [] },
+        { id: 't3', status: 'superseded', kind: 'implementation', dependencies: [] },
+      ])
+      return dead.percentByKind === 0 && dead.percentEqual === 0
+        && dead.total === 3 && dead.cancelled === 2 && dead.superseded === 1
+        && dead.completed === 0
+    })(),
+  )
+  const progressPlan = [
+    { id: 't1', status: 'completed', kind: 'work', dependencies: [] },
+    { id: 't2', status: 'completed', kind: 'implementation', dependencies: [] },
+    { id: 't3', status: 'in_progress', kind: 'implementation', dependencies: [] },
+    { id: 't4', status: 'failed', kind: 'review', dependencies: [] },
+    { id: 't5', status: 'superseded', kind: 'work', dependencies: [] },
+    { id: 't6', status: 'cancelled', kind: 'work', dependencies: [] },
+    { id: 't7', status: 'completed', kind: 'repair', dependencies: [], hasWaivers: true },
+    { id: 't8', status: 'pending', kind: 'verification', dependencies: ['t3'] },
+  ]
+  const mixed = planProgress(progressPlan)
+  check(
+    'byKind and equal weigh the same plan differently',
+    mixed.percentByKind === 55 && mixed.percentEqual === 50 && mixed.percent === 55 && mixed.mode === 'byKind',
+  )
+  check(
+    'progress counts every bucket the panel legend needs',
+    mixed.total === 8 && mixed.completed === 3 && mixed.running === 1 && mixed.blocked === 1
+      && mixed.failed === 1 && mixed.superseded === 1 && mixed.cancelled === 1 && mixed.waived === 1,
+  )
+  check(
+    'per-phase rows follow the DAG levels',
+    mixed.byPhase.length === 2
+      && mixed.byPhase[0]?.phaseId === 'level-0'
+      && mixed.byPhase[0]?.completed === 3
+      && mixed.byPhase[0]?.total === 7
+      && mixed.byPhase[0]?.percentByKind === 60
+      && mixed.byPhase[0]?.percentEqual === 60
+      && mixed.byPhase[1]?.phaseId === 'level-1'
+      && mixed.byPhase[1]?.total === 1
+      && mixed.byPhase[1]?.percentByKind === 0,
+  )
+  check(
+    'declared phases win over the DAG levels',
+    (() => {
+      const declared = planProgress(progressPlan, {
+        phases: [{ id: 'E1', title: 'Recon', taskIds: ['t1', 't2'] }],
+      })
+      return declared.byPhase.length === 2
+        && declared.byPhase[0]?.phaseId === 'E1'
+        && declared.byPhase[0]?.title === 'Recon'
+        && declared.byPhase[0]?.percentByKind === 100
+        && declared.byPhase[0]?.percentEqual === 100
+        && declared.byPhase[1]?.phaseId === 'unphased'
+        && declared.byPhase[1]?.total === 6
+    })(),
+  )
+  check(
+    'the equal mode is a request, not a rewrite of the table',
+    planProgress(progressPlan, { weights: 'equal' }).percentEqual === 50
+      && planProgress(progressPlan, { weights: 'equal' }).percent === 50
+      && planProgress(progressPlan, { weights: 'equal' }).mode === 'equal',
+  )
+  check(
+    'a profile resolves its weights into the frozen team snapshot',
+    resolveTeamProfile({
+      weighted: {
+        members: [{ name: 'a', role: 'engineer' }],
+        taskPlanning: { mode: 'captain', weights: { implementation: 4 } },
+      },
+    }, 'weighted', 4).progressWeights?.implementation === 4
+      && resolveTeamProfile({
+        even: { members: [{ name: 'a', role: 'engineer' }], taskPlanning: { weights: 'equal' } },
+      }, 'even', 4).progressWeights === 'equal'
+      && resolveTeamProfile({
+        plain: { members: [{ name: 'a', role: 'engineer' }], taskPlanning: 'captain' },
+      }, 'plain', 4).progressWeights === undefined,
+  )
+  const badWeightValues = ['fast', { review: -1 }, { review: 'high' }, {}]
+  check(
+    'a bad weight table fails create with the key that owns it',
+    badWeightValues.every((weights) => {
+      try {
+        resolveTeamProfile({ bad: { members: [{ name: 'a', role: 'engineer' }], taskPlanning: { weights } } }, 'bad', 4)
+        return false
+      } catch (error) {
+        return /taskPlanning\.weights/.test(String(error))
+      }
+    }),
+  )
+}
+
+{
+  const progressRoot = await mkdtemp(join(tmpdir(), 'dsh-agent-teams-progress-'))
+  try {
+    const progressTeam = {
+      name: 'Progress Team',
+      id: 'progress-team',
+      description: 'wp8',
+      captainSessionId: 'sess-progress',
+      createdAt: Date.now(),
+      members: [],
+      tasks: progressPlan.map((task, index) => ({
+        ...task,
+        subject: `lane ${index + 1}`,
+        createdAt: index,
+        updatedAt: index,
+      })),
+      taskSeq: progressPlan.length,
+      profile: { name: 'progress-profile', progressWeights: 'equal' },
+    }
+    await createTeamDir(progressRoot, progressTeam)
+    const progressSnapshot = await assembleTeamSnapshot(
+      { logger: { warn() {} } },
+      progressRoot,
+      'verify-workspace',
+      progressTeam,
+      { historic: true },
+    )
+    check(
+      'the snapshot carries both numbers and the profile default',
+      progressSnapshot.progress.percentByKind === 55
+        && progressSnapshot.progress.percentEqual === 50
+        && progressSnapshot.progress.percent === 50
+        && progressSnapshot.progress.mode === 'equal'
+        && progressSnapshot.progress.byPhase.length === 2,
+    )
+    const byKindSnapshot = await assembleTeamSnapshot(
+      { logger: { warn() {} } },
+      progressRoot,
+      'verify-workspace',
+      { ...progressTeam, profile: undefined },
+      { historic: true },
+    )
+    check(
+      'a team without weights keeps the kind table',
+      byKindSnapshot.progress.mode === 'byKind'
+        && byKindSnapshot.progress.percentByKind === 55
+        && byKindSnapshot.progress.percent === 55,
+    )
+  } finally {
+    await rm(progressRoot, { recursive: true, force: true })
+  }
+}
+
+{
+  const snapshotTeam = {
+    teamId: 'progress-team',
+    name: 'Progress Team',
+    phase: 'running',
+    captainSessionId: 'sess-progress',
+    members: [],
+    tasks: progressPlan,
+    messageCount: 0,
+    captainInbox: [],
+    progress: {
+      mode: 'byKind',
+      percent: 55,
+      percentByKind: 55,
+      percentEqual: 50,
+      completed: 3,
+      total: 8,
+      running: 1,
+      blocked: 1,
+      failed: 1,
+      waived: 1,
+      superseded: 1,
+      cancelled: 1,
+      byPhase: [
+        { phaseId: 'level-0', completed: 3, total: 7, percentByKind: 60, percentEqual: 60 },
+        { phaseId: 'level-1', completed: 0, total: 1, percentByKind: 0, percentEqual: 0 },
+      ],
+    },
+  }
+  const view = planProgressView(snapshotTeam, 'equal')
+  check(
+    'the panel selector switches the snapshot number, not the math',
+    view.mode === 'equal' && view.percent === 50 && view.percentByKind === 55 && view.percentEqual === 50
+      && view.completed === 3 && view.total === 8
+      && view.phases.length === 2 && view.phases[0]?.percent === 60 && view.phases[1]?.percent === 0,
+  )
+  const fallback = planProgressView({ ...snapshotTeam, progress: undefined }, 'byKind')
+  check(
+    'a card without a snapshot payload falls back to the equal count it can compute',
+    fallback.percent === 50 && fallback.mode === 'equal' && fallback.phases.length === 0,
+  )
+  check(
+    'a stored progress-mode preference is parsed and an unknown one is ignored',
+    parseProgressMode('equal') === 'equal' && parseProgressMode('byKind') === 'byKind'
+      && parseProgressMode('weighted') === null && parseProgressMode(null) === null,
+  )
+  check(
+    'both locales carry the percent, phase and checklist keys',
+    ['progress.percent', 'progress.phase', 'progress.mode.byKind', 'progress.mode.equal',
+      'checklist.title', 'checklist.collapse', 'checklist.expand', 'checklist.empty', 'checklist.waivers',
+      'checklist.supersededBy'].every((key) => localesSource.includes(`'${key}'`)),
+  )
+  check(
+    'the panel renders the percent bar, the phase rows and the checklist',
+    activityPanelSource.includes('function TaskChecklist')
+      && activityPanelSource.includes('data-task-checklist')
+      && activityPanelSource.includes('data-checklist-row')
+      && activityPanelSource.includes('taskCheckGlyph')
+      && activityPanelSource.includes('progressPercent')
+      && activityPanelSource.includes('data-progress-bar')
+      && activityModelSource.includes('export function planProgress')
+      && activityModelSource.includes('PROGRESS_MODE_STORAGE_KEY')
+      && activityPanelCss.includes('.checklistRow')
+      && activityPanelCss.includes('.progressBar')
+      && activityPanelCss.includes('.progressPhaseRow'),
+  )
+  check(
+    'the conversation card carries a mini percent bar',
+    agentTeamsCardSource.includes('data-card-progress')
+      && agentTeamsCardSource.includes('planProgress')
+      && agentTeamsCardCss.includes('.cardProgress'),
+  )
+}
 
 console.log('7/8 member model selection and continuation restore')
 const captain = {

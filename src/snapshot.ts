@@ -12,9 +12,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { memberActivity } from './members.ts'
+import { planProgress } from './progress.ts'
+import type { PlanProgress } from './progress.ts'
 import {
   CAPTAIN_KEY, listArchivedTeamIds, readArchivedTeam, readUnreadMailbox, readTeam,
-  taskDepthsById, taskVisualState,
+  taskDepthsById, taskVisualState, waivedResultCount,
 } from './state.ts'
 import type { MemberStatus, TeamState, TeamTask } from './types.ts'
 
@@ -57,6 +59,10 @@ export interface TeamActivityTask {
   readonly attempt?: number
   /** Set on a review task: the task it judges (WP10's waiting-review reason). */
   readonly reviewedTaskId?: string
+  /** Reported `waived` acceptance criteria / verify commands (WP1, shown in the checklist). */
+  readonly waived?: number
+  /** The task that replaced this one, for the checklist's `→ tN` link (WP3). */
+  readonly supersededBy?: string
 }
 
 /** One captain-inbox preview row. */
@@ -77,6 +83,8 @@ export interface TeamActivitySnapshot {
   readonly halted?: boolean
   readonly members: readonly TeamActivityMember[]
   readonly tasks: readonly TeamActivityTask[]
+  /** Plan progress (WP8): both percentages plus the per-phase rows. */
+  readonly progress: PlanProgress
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
 }
@@ -194,7 +202,12 @@ export async function assembleTeamSnapshot(
       ...task.verdict === undefined ? {} : { verdict: task.verdict },
       ...task.attempt === undefined ? {} : { attempt: task.attempt },
       ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
+      ...waivedResultCount(task) === 0 ? {} : { waived: waivedResultCount(task) },
+      ...task.supersededBy === undefined ? {} : { supersededBy: task.supersededBy },
     })),
+    progress: planProgress(tasks, {
+      ...state.profile?.progressWeights === undefined ? {} : { weights: state.profile.progressWeights },
+    }),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),
     captainInbox: captainInbox.slice(-5).map((message) => ({

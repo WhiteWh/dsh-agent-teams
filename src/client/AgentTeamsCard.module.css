@@ -18,6 +18,39 @@
   min-width: 0;
 }
 
+/* WP8: the plan percentage under the team name, so the conversation card shows
+   progress without opening the panel. */
+.cardProgress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.cardProgressBar {
+  display: block;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l3);
+  overflow: hidden;
+}
+
+.cardProgressFill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--dsw-alias-state-business-primary);
+  transition: width 0.2s ease;
+}
+
+.cardProgressLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .leadAvatar {
   flex: none;
   width: 30px;

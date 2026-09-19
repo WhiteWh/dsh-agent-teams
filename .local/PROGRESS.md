@@ -82,7 +82,7 @@ the pre-step count, and FAIL must stay 0.
 | S13 | docs + release 0.1.23 | done | fc0ba2c | version 0.1.23; notes + release record; tag v0.1.23 with the branch marker; artifact packed and installed into the web profile |
 | S14 | WP11 phase 1 team_id addressing | done | | verify 240 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; lifecycle 145 PASS/0 FAIL (+16 multi-team checks); all 21 suites exit 0; D5 schema-optional id with a listing error, D6 guard |
 | S15 | docs + release 0.1.24 | done | | version 0.1.24; notes + release record; tag v0.1.24 with the branch marker; artifact 2 263 430 B / SHA256 `77423C11…4CBD` installed into the web profile; 0.1.23 was taken by the F4 hotfix |
-| S16 | WP8 plan progress + task checklist | todo | | needs S09; D3: server-side byKind/equal modes |
+| S16 | WP8 plan progress + task checklist | done | | verify 261 PASS/0 FAIL (+21); qg-tdd 134 PASS/0 FAIL (+2); lifecycle 147 PASS/0 FAIL (+2); all 21 suites exit 0; D3 both modes server-side |
 | S17 | WP7 replan live team | todo | | needs S08–S10, S02; D4: nearest-ancestor phase fitting + lift-and-flag |
 | S18 | WP11 phase 2 N teams in UI + scheduler | todo | | needs S16, S06 |
 | S19 | WP11 phase 3 team limits | todo | | |
@@ -172,6 +172,56 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S16 — WP8: plan progress and the task checklist (done)
+
+Scope (plan §WP8, owner decision D3): one server-computed percentage per team plus a
+flat list of every task, because the panel showed only an equal-share segment bar, a
+`N/M` counter and a per-member percentage nobody rendered.
+
+- **`src/progress.ts` (new):** `planProgress(tasks, { weights, phases })` returns both
+  percentages (`percentByKind`, `percentEqual`), the mode the profile prefers, the
+  counts the legend needs (completed/total/running/blocked/failed/waived/superseded/
+  cancelled) and one row per phase. The rule is
+  `Σ weight(completed) / Σ weight(total − cancelled − superseded)`; an empty
+  denominator reports 0 instead of 100. Blocked reuses `unsatisfiedDependencies`, so a
+  dependency on a superseded task is satisfied through its replacement exactly as the
+  scheduler sees it. Phase rows follow declared phases when they exist (declared first,
+  the rest as `unphased`), otherwise the DAG levels — the same notion of a phase the
+  Phases view draws.
+- **D3 weights:** `resolveProgressWeights` accepts `'equal'` or a per-kind table with
+  the documented defaults (`implementation` 3, `repair` 2, everything else 1). The mode
+  selects only the headline number: both are always computed, so the panel switch never
+  needs a second round trip. A bad table is rejected with `taskPlanning.weights…`.
+- **Profile and durable state:** `taskPlanning.weights` is validated by
+  `normalizeTaskPlanning` (and now also key-checked by the lint, which previously
+  skipped the nested `taskPlanning` scope entirely), resolved into
+  `NormalizedTeamProfile.progressWeights`, frozen into `TeamProfileSnapshot` by
+  `initializeProfileTeam` and validated at the durable boundary in `state.ts`.
+- **Surfaces:** the snapshot carries `progress`; `agent_teams_status` carries the
+  snake_case `progress` payload and prints
+  `Progress: 62% (8/13; running 2, blocked 1, failed 0, waived 1)` before the task list,
+  with `[x]`/`[~]`/`[ ]`/`[!]` per task; the panel draws the proportional bar, the phase
+  rows and a mode switch (stored per browser), and a new collapsible `TaskChecklist`
+  lists every task in phase-then-depth order (status glyph, id, subject, kind/round,
+  assignee, status, waivers, `→ tN` for a superseded task); clicking a row pins that
+  node in the dependency tree. The conversation card shows the same percentage under the
+  team name. Locale keys added in both dictionaries.
+- **Also fixed while here:** the client `ActivityTask.state` union was missing
+  `superseded` (S09 shipped the state without the mirror type), `waivedResultCount` is
+  now one helper used by both the status report and the snapshot, and the snapshot task
+  payload gained `waived`/`supersededBy` for the checklist.
+- **Green:** typecheck exit 0; build exit 0; `verify.mjs` **261 PASS / 0 FAIL** (240
+  before, +21: weights, fixtures, phase rows, snapshot payload, client selector, stored
+  mode, locales, panel/card structure); `quality-gates-tdd` **134 PASS / 0 FAIL** (+2
+  profile checks); `lifecycle-verify` **147 PASS / 0 FAIL** (+2 on the rendered status
+  text and its glyphs); all 21 suites, `verify-package`, `sync-skill --check` and the
+  language check exit 0 (logs in `.local/logs/s16b/`).
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs` and the
+  real-host matrix; the manual scratch-profile look at the new bar and checklist.
+- **Not in this step:** declared phases from the plan entity (`plan.phases`, WP7/S17)
+  and the multi-team switcher (S18). The progress payload already takes phases as an
+  argument, so S17 only has to pass them in.
 
 ### S15 — docs + release 0.1.24 (done)
 

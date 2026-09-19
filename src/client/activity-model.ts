@@ -115,9 +115,175 @@ export function teamProgressSummary(
   return { working: 0, detail: '' }
 }
 
+// ── WP8: plan progress and the task checklist ──────────────────────────────
+
+/** How the headline percentage is computed. Both numbers arrive from the host. */
+export type ProgressMode = 'byKind' | 'equal'
+
+/** Where the panel remembers the reader's progress-mode choice. */
+export const PROGRESS_MODE_STORAGE_KEY = 'dsh-agent-teams:activity-panel:progress:v1'
+
+/** One phase row of the progress block. */
+export interface ProgressPhaseView {
+  readonly phaseId: string
+  readonly title?: string
+  readonly percent: number
+  readonly completed: number
+  readonly total: number
+}
+
+/** The progress block as the panel renders it. */
+export interface PlanProgressView {
+  readonly mode: ProgressMode
+  readonly percent: number
+  readonly percentByKind: number
+  readonly percentEqual: number
+  readonly completed: number
+  readonly total: number
+  readonly running: number
+  readonly blocked: number
+  readonly failed: number
+  readonly waived: number
+  readonly superseded: number
+  readonly cancelled: number
+  readonly phases: readonly ProgressPhaseView[]
+}
+
+/** The host progress payload, mirrored structurally (see activity-monitor). */
+interface ProgressPayload {
+  readonly mode: ProgressMode
+  readonly percentByKind: number
+  readonly percentEqual: number
+  readonly completed: number
+  readonly total: number
+  readonly running: number
+  readonly blocked: number
+  readonly failed: number
+  readonly waived: number
+  readonly superseded: number
+  readonly cancelled: number
+  readonly byPhase: readonly { phaseId: string; title?: string; percentByKind: number; percentEqual: number; completed: number; total: number }[]
+}
+
+/** A stored progress-mode preference, or `null` when nothing usable was stored. */
+export function parseProgressMode(raw: string | null | undefined): ProgressMode | null {
+  if (raw === 'equal' || raw === 'byKind') return raw
+  return null
+}
+
+/** Equal-weight percentage over the tasks themselves (no host payload). */
+function fallbackProgress(tasks: readonly { readonly status: string; readonly state?: string }[]): PlanProgressView {
+  let total = 0
+  let completed = 0
+  let running = 0
+  let blocked = 0
+  let failed = 0
+  let superseded = 0
+  let cancelled = 0
+  for (const task of tasks) {
+    if (task.status === 'completed') {
+      completed += 1
+      total += 1
+      continue
+    }
+    if (task.status === 'cancelled') {
+      cancelled += 1
+      continue
+    }
+    if (task.status === 'superseded') {
+      superseded += 1
+      continue
+    }
+    total += 1
+    if (task.status === 'failed') failed += 1
+    else if (task.state === 'blocked') blocked += 1
+    else if (task.status !== 'pending') running += 1
+  }
+  const percent = total === 0 ? 0 : Math.round((completed / total) * 100)
+  return {
+    // Without the host payload only the equal count is computable, so the
+    // fallback reports the mode it actually used instead of mislabelling it.
+    mode: 'equal',
+    percent,
+    percentByKind: percent,
+    percentEqual: percent,
+    completed,
+    total,
+    running,
+    blocked,
+    failed,
+    waived: 0,
+    superseded,
+    cancelled,
+    phases: [],
+  }
+}
+
+/**
+ * The progress block of one team: the host's two percentages, with the one the
+ * reader asked for selected. The math stays on the server (WP8) — this selector
+ * only picks a number and follows the mode switch, so the text report, the
+ * conversation card and the panel cannot drift apart.
+ *
+ * A synthetic team (a legacy card rebuilt without a snapshot payload) has no
+ * host numbers; it falls back to the equal count over its own tasks.
+ *
+ * @param team - the team snapshot, with or without a `progress` payload.
+ * @param mode - the requested mode, or undefined for the team's default.
+ * @returns the numbers and phase rows the panel draws.
+ */
+export function planProgress(
+  team: { readonly tasks: readonly { readonly status: string; readonly state?: string }[]; readonly progress?: ProgressPayload },
+  mode?: ProgressMode | null,
+): PlanProgressView {
+  const payload = team.progress
+  if (payload === undefined) return fallbackProgress(team.tasks)
+  const selected: ProgressMode = mode ?? payload.mode
+  const percentOf = (entry: { percentByKind: number; percentEqual: number }): number => (
+    selected === 'equal' ? entry.percentEqual : entry.percentByKind
+  )
+  return {
+    mode: selected,
+    percent: percentOf(payload),
+    percentByKind: payload.percentByKind,
+    percentEqual: payload.percentEqual,
+    completed: payload.completed,
+    total: payload.total,
+    running: payload.running,
+    blocked: payload.blocked,
+    failed: payload.failed,
+    waived: payload.waived,
+    superseded: payload.superseded,
+    cancelled: payload.cancelled,
+    phases: payload.byPhase.map((phase) => ({
+      phaseId: phase.phaseId,
+      ...phase.title === undefined ? {} : { title: phase.title },
+      percent: percentOf(phase),
+      completed: phase.completed,
+      total: phase.total,
+    })),
+  }
+}
+
+/** The four states a checklist row can show. */
+export type ChecklistTone = 'done' | 'open' | 'running' | 'failed'
+
+/**
+ * The checkbox of one task status: the glyph the checklist row draws plus the
+ * tone its styling keys off. A cancelled or superseded task is a crossed box —
+ * it is settled and will not be delivered.
+ */
+export function taskCheckGlyph(status: string): { readonly tone: ChecklistTone; readonly glyph: string } {
+  if (status === 'completed') return { tone: 'done', glyph: '✓' }
+  if (status === 'failed' || status === 'cancelled' || status === 'superseded') return { tone: 'failed', glyph: '✕' }
+  if (status === 'claimed' || status === 'in_progress' || status === 'awaiting_scope_review') {
+    return { tone: 'running', glyph: '◐' }
+  }
+  return { tone: 'open', glyph: '○' }
+}
+
 /** Use a fill-width grid when the task graph has no real dependency edges. */
-export function usesParallelTaskGrid<T extends RelationshipTask>(tasks: readonly T[]): boolean {
-  if (tasks.length === 0) return false
+export function usesParallelTaskGrid<T extends RelationshipTask>(tasks: readonly T[]): boolean {  if (tasks.length === 0) return false
   const taskIds = new Set(tasks.map((task) => task.id))
   return tasks.every((task) => task.dependencies.every((dependency) => !taskIds.has(dependency)))
 }

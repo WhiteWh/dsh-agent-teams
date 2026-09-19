@@ -44,14 +44,20 @@ import {
   idleReasonSummary,
   memberRouteLabel,
   parseActivityView,
+  parseProgressMode,
   phaseBoardLayout,
+  phaseColumns,
+  planProgress as planProgressView,
+  PROGRESS_MODE_STORAGE_KEY,
   queueOverview,
   relatedTaskIds,
   settledTask,
+  taskCheckGlyph,
   taskModelLabel,
   teamIsActive,
   usesParallelTaskGrid,
   type ActivityViewMode,
+  type ProgressMode,
 } from './activity-model.ts'
 import {
   ACTIVITY_HALT_URL,
@@ -324,9 +330,64 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
   const completed = discarded ? 0 : team.tasks.filter((task) => task.status === 'completed').length
   const settled = !discarded && team.tasks.length > 0 && team.tasks.every((task) => settledTask(task.status))
   const summaryTone = discarded ? 'discarded' : blocked > 0 ? 'warning' : settled ? 'completed' : 'running'
+  // WP8: the two percentages come from the host; this only selects one and
+  // remembers the reader's choice, so the panel matches `agent_teams_status`.
+  const [mode, setMode] = useState<ProgressMode | null>(() => {
+    try {
+      return parseProgressMode(window.localStorage.getItem(PROGRESS_MODE_STORAGE_KEY))
+    } catch {
+      return null
+    }
+  })
+  const progress = planProgressView(team, mode)
+  const selectMode = (): void => {
+    const next: ProgressMode = progress.mode === 'equal' ? 'byKind' : 'equal'
+    setMode(next)
+    try {
+      window.localStorage.setItem(PROGRESS_MODE_STORAGE_KEY, next)
+    } catch {
+      // A blocked localStorage only costs the preference, never the switch.
+    }
+  }
   return (
     <section className={css.progressOverview} aria-label={t('progress.aria')} data-progress-summary>
       <span className={css.progressTitle}>{t('progress.title')}</span>
+      {discarded
+        ? <span className={css.progressEmpty} />
+        : (
+          <span className={css.progressBarBlock} data-progress-bar={progress.percent}>
+            <span className={css.progressBar}>
+              <span className={css.progressBarFill} style={{ width: `${String(progress.percent)}%` }} data-progress-fill />
+            </span>
+            <span className={css.progressPercent}>
+              {t('progress.percent', { percent: progress.percent, completed: progress.completed, total: progress.total })}
+            </span>
+            <button
+              type="button"
+              className={css.progressModeButton}
+              data-progress-mode={progress.mode}
+              title={t('progress.mode.hint')}
+              onClick={selectMode}
+            >
+              {t(progress.mode === 'equal' ? 'progress.mode.equal' : 'progress.mode.byKind')}
+            </button>
+          </span>
+        )}
+      {!discarded && progress.phases.length > 1 && (
+        <span className={css.progressPhases} data-progress-phases>
+          {progress.phases.map((phase) => (
+            <span key={phase.phaseId} className={css.progressPhaseRow} data-phase-id={phase.phaseId}>
+              <span className={css.progressPhaseTitle}>{phase.title ?? phase.phaseId}</span>
+              <span className={css.progressPhaseBar}>
+                <span className={css.progressBarFill} style={{ width: `${String(phase.percent)}%` }} />
+              </span>
+              <span className={css.progressPhaseCount}>
+                {t('progress.phase', { percent: phase.percent, completed: phase.completed, total: phase.total })}
+              </span>
+            </span>
+          ))}
+        </span>
+      )}
       {team.tasks.length > 0 ? (
         <span className={css.progressSegments} aria-hidden>
           {team.tasks.map((task) => <span key={task.id} data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)} />)}
@@ -345,11 +406,13 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
   )
 }
 
-function DependencyMap({ tasks, members, t, discarded = false }: {
+function DependencyMap({ tasks, members, t, discarded = false, focusTaskId = null }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
   readonly discarded?: boolean
+  /** A task the checklist asked to pin; the tree consumes it on arrival. */
+  readonly focusTaskId?: string | null
 }) {
   const [open, setOpen] = useState(true)
   const [hoverTaskId, setHoverTaskId] = useState<string | null>(null)
@@ -357,6 +420,12 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
   const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusedTaskId = dependencyFocusTaskId(pinnedTaskId, keyboardTaskId, hoverTaskId)
+  // The checklist lives outside this component, so a requested pin arrives as a
+  // prop. Pinning it locally keeps the tree's own hover/keyboard/Esc handling
+  // unchanged: this is just one more way to set the same state.
+  useEffect(() => {
+    if (focusTaskId !== null) setPinnedTaskId(focusTaskId)
+  }, [focusTaskId])
   const layout = useMemo(() => compactDagLayout(tasks), [tasks])
   const parallel = useMemo(() => usesParallelTaskGrid(tasks), [tasks])
   const related = useMemo(
@@ -741,6 +810,85 @@ function ViewSwitcher({ view, onChange, t }: {
   )
 }
 
+/**
+ * The flat task checklist (WP8): every task of the team in one place, because
+ * the tree only shows a task as a chip under its member and as a node in the
+ * DAG. Rows follow the phase columns, then the DAG depth, so the list reads in
+ * the order the work becomes claimable. Clicking a row pins that node in the
+ * dependency tree.
+ */
+function TaskChecklist({ tasks, t, onFocus }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly t: AgentTeamsTranslate
+  readonly onFocus: (taskId: string) => void
+}) {
+  const [open, setOpen] = useState(true)
+  const rows = useMemo(() => {
+    const ordered: ActivityTask[] = []
+    for (const column of phaseColumns(tasks)) {
+      ordered.push(...column.tasks.slice().sort((left, right) => (
+        left.depth - right.depth || left.id.localeCompare(right.id)
+      )))
+    }
+    return ordered
+  }, [tasks])
+  return (
+    <section className={css.checklist} aria-label={t('checklist.aria')} data-task-checklist>
+      <button
+        type="button"
+        className={css.checklistToggle}
+        aria-expanded={open}
+        onClick={() => { setOpen((current) => !current) }}
+        data-checklist-toggle
+      >
+        <span><Chevron open={open} />{t('checklist.title', { count: rows.length })}</span>
+        <span>{t(open ? 'checklist.collapse' : 'checklist.expand')}</span>
+      </button>
+      {open && (rows.length === 0
+        ? <span className={css.emptyHint}>{t('checklist.empty')}</span>
+        : (
+          <div className={css.checklistRows}>
+            {rows.map((task) => {
+              const check = taskCheckGlyph(task.status)
+              const waived = task.waived === undefined || task.waived === 0
+                ? ''
+                : t('checklist.waivers', { count: task.waived })
+              const supersededBy = (task as { supersededBy?: string }).supersededBy
+              return (
+                <button
+                  type="button"
+                  key={task.id}
+                  className={css.checklistRow}
+                  data-checklist-row={task.id}
+                  data-check={check.tone}
+                  title={taskTitle(task, task.model ?? '')}
+                  onClick={() => { onFocus(task.id) }}
+                >
+                  <span className={css.checklistBox} data-check={check.tone}>{check.glyph}</span>
+                  <span className={css.checklistId}>{task.id}</span>
+                  <span className={css.checklistSubject}>{task.subject}</span>
+                  {task.kind !== undefined && (
+                    <span className={css.checklistKind}>
+                      {task.kind}{task.round === undefined ? '' : ` r${String(task.round)}`}
+                    </span>
+                  )}
+                  <span className={css.checklistAssignee}>{task.assignee || t('checklist.unassigned')}</span>
+                  <span className={css.checklistStatus} data-state={taskTone(task.state, task.status)}>
+                    {taskStatusLabel(task.status, t)}
+                  </span>
+                  {waived !== '' && <span className={css.checklistFlag}>{waived}</span>}
+                  {supersededBy !== undefined && supersededBy !== '' && (
+                    <span className={css.checklistFlag}>{t('checklist.supersededBy', { task: supersededBy })}</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        ))}
+    </section>
+  )
+}
+
 /** The three read-only cuts plus the tree, switching on the stored view. */
 function TaskViews({ tasks, members, t, discarded = false }: {
   readonly tasks: readonly ActivityTask[]
@@ -750,6 +898,9 @@ function TaskViews({ tasks, members, t, discarded = false }: {
 }) {
   const [view, setView] = useState<ActivityViewMode>(() => initialActivityView())
   const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
+  // The checklist focuses a node in the tree; the tree owns the pin itself, so
+  // the panel hands it the requested id and switches the view.
+  const [focusTaskId, setFocusTaskId] = useState<string | null>(null)
   const select = (next: ActivityViewMode): void => {
     setView(next)
     try {
@@ -758,10 +909,22 @@ function TaskViews({ tasks, members, t, discarded = false }: {
       // A blocked localStorage only costs the preference, never the switch.
     }
   }
+  const focus = (taskId: string): void => {
+    setView('tree')
+    setFocusTaskId(taskId)
+  }
   return (
     <>
       <ViewSwitcher view={view} onChange={select} t={t} />
-      {view === 'tree' && <DependencyMap tasks={tasks} members={members} t={t} discarded={discarded} />}
+      {view === 'tree' && (
+        <DependencyMap
+          tasks={tasks}
+          members={members}
+          t={t}
+          discarded={discarded}
+          focusTaskId={focusTaskId}
+        />
+      )}
       {view === 'phases' && (
         <section className={css.dependencySection} aria-label={t('phase.aria')} data-phase-section>
           <PhaseBoard
@@ -779,6 +942,7 @@ function TaskViews({ tasks, members, t, discarded = false }: {
           <QueueView tasks={tasks} members={members} t={t} discarded={discarded} />
         </section>
       )}
+      <TaskChecklist tasks={tasks} t={t} onFocus={focus} />
     </>
   )
 }

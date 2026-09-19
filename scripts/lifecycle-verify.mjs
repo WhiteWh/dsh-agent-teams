@@ -1167,8 +1167,24 @@ try {
     unpinnedWaiverRefused = /evidence/.test(String(error))
   }
   check('an unpinned check still demands its own evidence', unpinnedWaiverRefused)
+  const registryStatus = await call('agent_teams_status', {})
   check('the status report carries the registry',
-    (await call('agent_teams_status', {})).known_deltas?.[0]?.id === 'lint-baseline')
+    registryStatus.known_deltas?.[0]?.id === 'lint-baseline')
+  // WP8/S16: the text report leads with the same percentage the panel shows and
+  // marks every task with a checkbox glyph.
+  const statusText = definitions.get('agent_teams_status').output
+    .render({}, registryStatus)
+    .map(part => part.text ?? '')
+    .join('\n')
+  check('the status report prints the plan percentage before the task list',
+    /^Progress: 50% \(1\/2; running 1, blocked 0, failed 0, waived 1\)$/mu.test(statusText)
+      && /^Tasks \(2\):$/mu.test(statusText)
+      && statusText.indexOf('Progress:') < statusText.indexOf('Tasks ('),
+  )
+  check('every reported task carries its checkbox glyph',
+    statusText.includes('- [x] t1 ')
+      && statusText.includes('- [~] t2 '),
+  )
   await call('agent_teams_delete', {})
 
   // ── WP11 phase 1: team identity is data, not the calling session ──

@@ -62,6 +62,7 @@ import {
   pinKnownDelta,
   unpinKnownDelta,
   pinnedWaiverEvidence,
+  waivedResultCount,
   waiversConfirmed,
 } from './state.ts'
 import type { ContractAmendmentInput } from './state.ts'
@@ -82,6 +83,7 @@ import { TERMINAL_TASK_STATUSES, type KnownDelta, type TeamMember, type TeamStat
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler } from './scheduler.ts'
 import { installMailboxAdmission, mailboxPrompt } from './mailbox.ts'
 import { resolveTeamProfile } from './profiles.ts'
+import { planProgress } from './progress.ts'
 
 export { steerCaptainReport } from './members.ts'
 
@@ -2624,10 +2626,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // WP1: waived acceptance criteria / commands are shown as their own
         // count so a reader can see that a completed task was not fully
         // verified, and whether its waivers are still unconfirmed.
-        waived: [
-          ...(task.acceptanceResults ?? []),
-          ...(task.commandsRun ?? []),
-        ].filter((item) => item.status === 'waived').length,
+        waived: waivedResultCount(task),
         ...taskHasWaivers(task) && !waiversConfirmed(team, task) ? { waivers_unconfirmed: true } : {},
         // WP2/S08: the amendment ledger is part of the contract's identity, so a
         // reader sees that a task is working against a revised brief.
@@ -2701,6 +2700,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         viewer: identity.name,
         members,
         tasks,
+        // WP8/S16: the plan percentage is computed here, not in the panel, so
+        // the text report and the GUI cannot disagree about the same team.
+        progress: progressPayload(team.tasks, team.profile?.progressWeights),
         // WP6.3: the pinned known deltas are part of the team's contract, so the
         // status report carries them.
         known_deltas: (team.knownDeltas ?? []).map((delta) => ({
@@ -2883,6 +2885,7 @@ async function initializeProfileTeam(input: {
       ...profile.fallback === undefined ? {} : { fallback: profile.fallback },
       taskPlanning: profile.taskPlanning,
       ...profile.sharedInScope === undefined ? {} : { sharedInScope: profile.sharedInScope },
+      ...profile.progressWeights === undefined ? {} : { progressWeights: profile.progressWeights },
       ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },
     },
     ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },
@@ -3126,6 +3129,57 @@ function applyPinnedDeltaEvidence<T extends { status: string; evidence?: string 
   })
 }
 
+/**
+ * The wire shape of the plan progress inside the status payload. The payload is
+ * snake_case like the rest of the tool output, while the snapshot route keeps
+ * the camelCase shape the panel consumes.
+ */
+function progressPayload(
+  tasks: readonly TeamTask[],
+  weights: 'equal' | Record<string, number> | undefined,
+): {
+  percent: number
+  mode: string
+  percent_by_kind: number
+  percent_equal: number
+  completed: number
+  total: number
+  running: number
+  blocked: number
+  failed: number
+  waived: number
+  superseded: number
+  cancelled: number
+} {
+  const progress = planProgress(tasks, weights === undefined ? {} : { weights })
+  return {
+    percent: progress.percent,
+    mode: progress.mode,
+    percent_by_kind: progress.percentByKind,
+    percent_equal: progress.percentEqual,
+    completed: progress.completed,
+    total: progress.total,
+    running: progress.running,
+    blocked: progress.blocked,
+    failed: progress.failed,
+    waived: progress.waived,
+    superseded: progress.superseded,
+    cancelled: progress.cancelled,
+  }
+}
+
+/**
+ * The checkbox glyph of one task status, used by the text report (WP8/S16).
+ * The panel draws the same four states, so a reader can follow one language
+ * across the tool output and the GUI.
+ */
+function taskCheckGlyph(status: string): string {
+  if (status === 'completed') return '[x]'
+  if (status === 'failed' || status === 'cancelled' || status === 'superseded') return '[!]'
+  if (status === 'claimed' || status === 'in_progress' || status === 'awaiting_scope_review') return '[~]'
+  return '[ ]'
+}
+
 /** Render the status snapshot as compact text for the model. */
 function renderStatus(value: JsonValue): string {
   const listed = value as { teams?: { team_id: string; name: string; phase: string; halted: boolean; tasks: { total: number; done: number }; members: number; activeWorkers: number; role: string }[]; note?: string }
@@ -3156,6 +3210,7 @@ function renderStatus(value: JsonValue): string {
       spawn_error?: string
     }[]
     tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
+    progress?: { percent: number; mode: string; percent_by_kind: number; percent_equal: number; completed: number; total: number; running: number; blocked: number; failed: number; waived: number; superseded: number; cancelled: number }
     known_deltas?: { id: string; check: string; expected: string; reason: string; pinned_by: string }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
@@ -3190,6 +3245,13 @@ function renderStatus(value: JsonValue): string {
       const failure = member.spawn_error === undefined ? '' : `\n      start failed: ${member.spawn_error.slice(0, 400)}`
       return `  - ${member.name} [${member.role}] ${member.status}/${member.activity}${route}${effort}${failure}`
     }),
+    // WP8/S16: one percentage before the task list, so a captain reading the
+    // report sees the same number the panel shows.
+    ...team.progress === undefined ? [] : [
+      `Progress: ${String(team.progress.percent)}% (${String(team.progress.completed)}/${String(team.progress.total)};`
+      + ` running ${String(team.progress.running)}, blocked ${String(team.progress.blocked)},`
+      + ` failed ${String(team.progress.failed)}, waived ${String(team.progress.waived)})`,
+    ],
     `Tasks (${team.tasks.length}):`,
     ...team.tasks.map((task) => {
       const deps = task.dependencies.length > 0 ? ` (deps: ${task.dependencies.join(',')})` : ''
@@ -3205,7 +3267,7 @@ function renderStatus(value: JsonValue): string {
       // WP2/S08: how many times the captain has amended this contract. A task
       // working against a revised brief must be visible as such.
       const revised = task.revisions === undefined || task.revisions === 0 ? '' : ` revised ×${task.revisions}`
-      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
+      return `  - ${taskCheckGlyph(task.status)} ${task.id} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
     }),
     ...team.coverage === undefined || team.coverage.length === 0 ? [] : [
       'Coverage:',

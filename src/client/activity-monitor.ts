@@ -24,7 +24,7 @@ export interface ActivityTask {
   readonly subject: string
   readonly description?: string
   readonly status: string
-  readonly state: 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled'
+  readonly state: 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled' | 'superseded'
   readonly assignee: string
   readonly model?: string
   readonly dependencies: readonly string[]
@@ -34,12 +34,43 @@ export interface ActivityTask {
   readonly verdict?: string
   readonly attempt?: number
   readonly reviewedTaskId?: string
+  /** Reported `waived` criteria / commands (WP1, shown in the checklist). */
+  readonly waived?: number
+  /** The task that replaced this one (WP3, shown as `→ tN` in the checklist). */
+  readonly supersededBy?: string
 }
 
 /** One captain-inbox preview row. */
 export interface ActivityMessage {
   readonly from: string
   readonly content: string
+}
+
+/** One phase row of the host progress payload (WP8). */
+export interface ActivityProgressPhase {
+  readonly phaseId: string
+  readonly title?: string
+  readonly completed: number
+  readonly total: number
+  readonly percentByKind: number
+  readonly percentEqual: number
+}
+
+/** Plan progress of one team, as the host computes it (WP8). */
+export interface ActivityProgress {
+  readonly mode: 'byKind' | 'equal'
+  readonly percent: number
+  readonly percentByKind: number
+  readonly percentEqual: number
+  readonly completed: number
+  readonly total: number
+  readonly running: number
+  readonly blocked: number
+  readonly failed: number
+  readonly waived: number
+  readonly superseded: number
+  readonly cancelled: number
+  readonly byPhase: readonly ActivityProgressPhase[]
 }
 
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */
@@ -54,6 +85,8 @@ export interface ActivityTeam {
   readonly halted?: boolean
   readonly members: readonly ActivityMember[]
   readonly tasks: readonly ActivityTask[]
+  /** Absent on snapshots written before WP8 and on rebuilt legacy cards. */
+  readonly progress?: ActivityProgress
   readonly messageCount: number
   readonly captainInbox: readonly ActivityMessage[]
 }

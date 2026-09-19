@@ -1795,6 +1795,39 @@ console.log('quality-gates TDD — M. profile lint hints (WP6.1)')
     JSON.stringify(nested),
   )
 
+  // WP8/S16: `taskPlanning.weights` picks the progress weighting — the string
+  // `equal` or a per-kind table of positive numbers, nothing else.
+  const weighted = api.lintProfileKeys?.({
+    material: {
+      members: [{ name: 'a', role: 'engineer' }],
+      taskPlanning: { mode: 'captain', weights: { implementation: 5, review: 0.5 } },
+    },
+    even: {
+      members: [{ name: 'a', role: 'engineer' }],
+      taskPlanning: { mode: 'seed', weights: 'equal' },
+    },
+  })
+  check(
+    'tdd.profiles.progress-weights-accept-a-table-and-the-equal-switch',
+    weighted?.[0]?.ok === true && weighted?.[1]?.ok === true,
+    JSON.stringify(weighted),
+  )
+  // The key lint stops at the key structure by design (a bad *value* still fails
+  // `agent_teams_create`, not `doctor --profiles`), so an unknown key is what it
+  // must catch here; the value rules are asserted through `resolveTeamProfile`
+  // in `scripts/verify.mjs`.
+  const strayWeightsKey = api.lintProfileKeys?.({
+    material: {
+      members: [{ name: 'a', role: 'engineer' }],
+      taskPlanning: { weight: { review: 2 } },
+    },
+  })
+  check(
+    'tdd.profiles.a-misspelled-weights-key-names-its-scope',
+    strayWeightsKey?.[0]?.ok === false && /taskPlanning\.weight is unknown/.test(strayWeightsKey[0].error),
+    JSON.stringify(strayWeightsKey),
+  )
+
   // doctor.mjs --profiles: the same rules through the published script.
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-prof-'))
   try {

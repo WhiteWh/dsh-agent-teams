@@ -24,7 +24,7 @@ const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'c
 const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
-const TASK_PLANNING_KEYS = ['mode', 'sharedInScope'] as const
+const TASK_PLANNING_KEYS = ['mode', 'sharedInScope', 'weights'] as const
 
 /**
  * Where each nested key set lives inside a profile body. Used for two things:
@@ -163,6 +163,8 @@ export interface NormalizedTeamProfile {
   taskPlanning: 'captain' | 'seed'
   /** Paths every implementation/repair task of this profile inherits (WP4/S10). */
   sharedInScope?: string[]
+  /** Progress weighting frozen into the team, from `taskPlanning.weights` (WP8/S16). */
+  progressWeights?: 'equal' | Record<string, number>
   members: NormalizedProfileMember[]
   tasks: NormalizedProfileTask[]
   reviewPolicy?: import('./types.ts').ReviewPolicy
@@ -333,6 +335,12 @@ export function lintProfileKeys(
       }
       const reviewPolicy = raw['reviewPolicy']
       if (reviewPolicy !== undefined) assertProfileKeys(asRecord(reviewPolicy, `${path}.reviewPolicy`), REVIEW_POLICY_SCOPE, `${path}.reviewPolicy`)
+      // The object form of `taskPlanning` is a nested scope too, and it is the
+      // one a reader edits by hand (`sharedInScope`, and since WP8 `weights`).
+      const taskPlanning = raw['taskPlanning']
+      if (taskPlanning !== undefined && typeof taskPlanning === 'object' && taskPlanning !== null && !Array.isArray(taskPlanning)) {
+        assertProfileKeys(asRecord(taskPlanning, `${path}.taskPlanning`), TASK_PLANNING_SCOPE, `${path}.taskPlanning`)
+      }
       const fallback = raw['fallback']
       if (fallback !== undefined) assertProfileKeys(asRecord(fallback, `${path}.fallback`), FALLBACK_SCOPE, `${path}.fallback`)
       return { name: entry.name, ok: true }
@@ -398,21 +406,30 @@ export function resolveProfileTaskPlanning(config: TeamProfileConfig | undefined
 }
 
 /**
- * The two accepted shapes of `taskPlanning`: the original string
- * (`"captain"`/`"seed"`) and the object form that carries the shared scope
- * (`{ mode, sharedInScope }`).
+ * The accepted shapes of `taskPlanning`: the original string
+ * (`"captain"`/`"seed"`) and the object form that carries the shared scope and
+ * the progress weights (`{ mode, sharedInScope, weights }`).
  */
-function normalizePlanningShape(value: unknown): { mode: 'captain' | 'seed'; sharedInScope?: string[] } {
+function normalizePlanningShape(value: unknown): {
+  mode: 'captain' | 'seed'
+  sharedInScope?: string[]
+  weights?: 'equal' | Record<string, number>
+} {
   if (value === 'captain') return { mode: 'captain' }
   if (value === 'seed') return { mode: 'seed' }
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     const record = value as Record<string, unknown>
     const mode = record['mode'] === 'captain' ? 'captain' : 'seed'
+    const weights = normalizeProgressWeights(record['weights'], 'taskPlanning.weights')
     const shared = record['sharedInScope']
     if (Array.isArray(shared) && shared.length > 0) {
-      return { mode, sharedInScope: shared.filter((item): item is string => typeof item === 'string') }
+      return {
+        mode,
+        sharedInScope: shared.filter((item): item is string => typeof item === 'string'),
+        ...weights === undefined ? {} : { weights },
+      }
     }
-    return { mode }
+    return { mode, ...weights === undefined ? {} : { weights } }
   }
   return { mode: 'seed' }
 }
@@ -425,6 +442,17 @@ function normalizePlanningShape(value: unknown): { mode: 'captain' | 'seed'; sha
  */
 export function resolveProfileSharedInScope(config: TeamProfileConfig | undefined): string[] | undefined {
   return normalizePlanningShape(config?.taskPlanning).sharedInScope
+}
+
+/**
+ * The frozen progress weighting of a profile, from `taskPlanning.weights`
+ * (WP8/S16): `'equal'` makes the equal count the team default, a table replaces
+ * single kind weights, `undefined` keeps the built-in kind table.
+ */
+export function resolveProfileProgressWeights(
+  config: TeamProfileConfig | undefined,
+): 'equal' | Record<string, number> | undefined {
+  return normalizePlanningShape(config?.taskPlanning).weights
 }
 
 function countLabel(count: number, noun: string): string {
@@ -535,6 +563,7 @@ function normalizeListedProfile(
       fallback,
       taskPlanning: planning.mode,
       ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
+      ...planning.weights === undefined ? {} : { progressWeights: planning.weights },
       reviewPolicy,
       members,
       tasks: [],
@@ -588,6 +617,7 @@ function normalizeListedProfile(
     fallback,
     taskPlanning: planning.mode,
     ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
+    ...planning.weights === undefined ? {} : { progressWeights: planning.weights },
     reviewPolicy,
     members,
     tasks: planning.mode === 'captain' ? [] : tasks,
@@ -597,11 +627,11 @@ function normalizeListedProfile(
 function normalizeTaskPlanning(
   value: unknown,
   path: string,
-): { mode: 'captain' | 'seed'; sharedInScope?: string[] } {
+): { mode: 'captain' | 'seed'; sharedInScope?: string[]; weights?: 'equal' | Record<string, number> } {
   if (value === undefined) return { mode: 'seed' }
   if (value === 'captain' || value === 'seed') return { mode: value }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${path} must be "captain", "seed", or an object with mode/sharedInScope`)
+    throw new Error(`${path} must be "captain", "seed", or an object with mode/sharedInScope/weights`)
   }
   const raw = asRecord(value, path)
   assertProfileKeys(raw, TASK_PLANNING_SCOPE, path)
@@ -609,8 +639,12 @@ function normalizeTaskPlanning(
   if (mode !== undefined && mode !== 'captain' && mode !== 'seed') {
     throw new Error(`${path}.mode must be "captain" or "seed"`)
   }
+  const resolvedMode = mode === 'captain' ? 'captain' as const : 'seed' as const
+  const weights = normalizeProgressWeights(raw['weights'], `${path}.weights`)
   const shared = raw['sharedInScope']
-  if (shared === undefined) return { mode: mode === 'captain' ? 'captain' : 'seed' }
+  if (shared === undefined) {
+    return { mode: resolvedMode, ...weights === undefined ? {} : { weights } }
+  }
   if (!Array.isArray(shared) || shared.length === 0) {
     throw new Error(`${path}.sharedInScope must be a non-empty array of workspace-relative paths`)
   }
@@ -623,7 +657,35 @@ function normalizeTaskPlanning(
     }
     return item
   })
-  return { mode: mode === 'captain' ? 'captain' : 'seed', sharedInScope: paths }
+  return { mode: resolvedMode, sharedInScope: paths, ...weights === undefined ? {} : { weights } }
+}
+
+/**
+ * `taskPlanning.weights` (WP8/S16): `'equal'` or a per-kind table of positive
+ * numbers. The keys are free-form so a project may weight a custom kind, while
+ * the built-in defaults cover the seven kinds the gates know.
+ */
+function normalizeProgressWeights(
+  value: unknown,
+  path: string,
+): 'equal' | Record<string, number> | undefined {
+  if (value === undefined) return undefined
+  if (value === 'equal') return 'equal'
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${path} must be "equal" or an object of positive per-kind weights`)
+  }
+  const raw = asRecord(value, path)
+  const table: Record<string, number> = {}
+  for (const [kind, weight] of Object.entries(raw)) {
+    if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
+      throw new Error(`${path}.${kind} must be a positive number`)
+    }
+    table[kind] = weight
+  }
+  if (Object.keys(table).length === 0) {
+    throw new Error(`${path} must name at least one kind, or be "equal"`)
+  }
+  return table
 }
 
 function normalizeReviewPolicy(value: unknown, path: string): import('./types.ts').ReviewPolicy | undefined {

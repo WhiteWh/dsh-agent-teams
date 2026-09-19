@@ -153,6 +153,25 @@ With `taskPlanning: captain` the profile no longer assumes a project directory, 
 
 `reviewPolicy.requiredReviewers` is enforced: Delivery stays blocked with `no passing review from the required reviewer "<entry>" (reviewPolicy.requiredReviewers)` until each listed entry has a completed `review` with `verdict=pass` from a member whose name equals the entry or whose role contains it (`correctness` matches a `correctness-reviewer`). A review the captain owns satisfies nobody. An absent list changes nothing.
 
+### Plan progress and the task checklist
+
+Every team snapshot, the `agent_teams_status` report and the conversation card carry the **same** percentage, computed on the server (`src/progress.ts`) so the three surfaces cannot disagree:
+
+```
+Progress: 62% (8/13; running 2, blocked 1, failed 0, waived 1)
+```
+
+The rule is `Σ weight(completed) / Σ weight(total − cancelled − superseded)`: a cancelled task and a task replaced by `agent_teams_supersede_task` are not work the team still owes, so they leave the denominator instead of counting as failure, and a plan with nothing left in the denominator reports 0 rather than inventing 100. Two weightings are computed together and both numbers travel in the payload:
+
+| Mode | Weight of a task | Where |
+| --- | --- | --- |
+| `byKind` (default) | `implementation` 3, `repair` 2, `requirements`/`verification`/`review`/`integration`/`work` 1 | the built-in table |
+| `equal` | every task 1 | `taskPlanning.weights: 'equal'` |
+
+`taskPlanning.weights` accepts `'equal'` or a per-kind table (`{ implementation: 5, review: 0.5 }`), is frozen into the team when it is created, and only picks the **default**; the panel's progress block switches between the two modes for the reader and remembers that choice per browser. A bad table fails `agent_teams_create` with the key that owns it (`profiles.<name>.taskPlanning.weights.review must be a positive number`), and the nested `taskPlanning` scope is checked by `doctor.mjs --profiles` as well.
+
+The panel draws the percentage as a proportional bar above the equal-share segments, one row per phase when the plan has more than one (declared phases, otherwise the DAG levels), and the text report marks every task with a checkbox — `[x]` completed, `[~]` in flight, `[ ]` not started, `[!]` failed/cancelled/superseded. A collapsible **task checklist** under the dependency views lists every task in phase-then-depth order (status glyph, id, subject, kind/round, assignee, status, waivers, `→ tN` for a superseded task); clicking a row pins that node in the dependency tree. The conversation card shows the same percentage as a mini bar under the team name.
+
 The pre-execution plan review reads Harness's model catalog directly: member models and reasoning levels use the same Provider/model metadata as the main input area, so hand-written routes are no longer required. "Return to chat and revise" marks the staged draft as awaiting feedback, cancels the still-running planning turn, and asks the Captain through plugin context to ask once about the direction of the change; after the user answers, the Captain must update that same draft atomically through one `agent_teams_edit_plan` call and must not create another team. "Discard this plan" needs a second confirmation, then archives the draft, cancels the current turn and preserves model context that forbids automatic recreation; only "Confirm and run the team" creates members and schedules tasks, without an extra meaningless start confirmation.
 
 While a long task runs, a stop button appears to the right of the specific team title. Clicking it and confirming again in the dialog cancels the Captain's current turn, interrupts every member, cancels unfinished tasks and stops further scheduling; the entry point no longer occupies the chat input area. Stopping does not delete the team, and a later user message may explicitly request `agent_teams_resume`. Cancelled/failed tasks keep their terminal state in the archive.

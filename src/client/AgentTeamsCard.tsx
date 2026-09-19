@@ -19,6 +19,7 @@ import {
   subscribeActivitySnapshots,
 } from './activity-monitor.ts'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
+import { planProgress } from './activity-model.ts'
 import { LEAD_ART, memberArtUrl } from './artwork.ts'
 import css from './AgentTeamsCard.module.css'
 
@@ -71,6 +72,7 @@ export function AgentTeamsCard({ node, openMember, sessionId, t }: AgentTeamsCar
     teamName: snapshot?.name ?? data.teamName,
     members: snapshot?.members.map((member) => ({ id: member.id, name: member.name, role: member.role })) ?? data.members,
   }), [data, owner, snapshot])
+  const progress = useMemo(() => planProgress(snapshot ?? { tasks: [] }), [snapshot])
   return (
     <section className={css.root} data-agent-teams-card data-team-id={resolved.teamId}>
       <header className={css.head}>
@@ -87,6 +89,18 @@ export function AgentTeamsCard({ node, openMember, sessionId, t }: AgentTeamsCar
           {t('activity.panelButton')}
         </button>
       </header>
+      {/* WP8: the same percentage the panel and `agent_teams_status` report, so
+          progress is visible without opening the panel. */}
+      {snapshot !== undefined && snapshot.tasks.length > 0 && (
+        <span className={css.cardProgress} data-card-progress={progress.percent} title={t('progress.title')}>
+          <span className={css.cardProgressBar}>
+            <span className={css.cardProgressFill} style={{ width: `${String(progress.percent)}%` }} />
+          </span>
+          <span className={css.cardProgressLabel}>
+            {t('progress.percent', { percent: progress.percent, completed: progress.completed, total: progress.total })}
+          </span>
+        </span>
+      )}
       {resolved.members.length > 0 && (
         <div className={css.members}>
           {resolved.members.map((member) => (
