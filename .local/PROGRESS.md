@@ -75,7 +75,7 @@ the pre-step count, and FAIL must stay 0.
 | S07 | docs + release 0.1.21 | done | 74fc749 | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; t5-replay 7/7; scheduler fix in 0108c81 |
 | F4 | artwork cache revision (hotfix release 0.1.22) | done | | verify 219 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; mutation-tested route check; plan releases below shift by one |
 | S08 | WP2 amend_task extensions + retry from failed | done | | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
-| S09 | WP3 superseded + atomic dependency redirect | todo | | needs S01 |
+| S09 | WP3 superseded + atomic dependency redirect | done | | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | todo | | needs S03 |
 | S11 | WP6.3 known-delta registry | todo | | needs S03 |
 | S12 | WP6.4 requiredReviewers enforced | todo | | |
@@ -172,6 +172,68 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S09 — WP3: `superseded` and the atomic redirect (done)
+
+Planned test labels (WP3 of the plan): `tdd.supersede.failed-to-superseded`,
+`tdd.supersede.redirects-pending-dependents`, `tdd.supersede.retargets-review`,
+`tdd.supersede.delivery-ignores-superseded`,
+`tdd.delivery.failed-paths-not-double-reported`, a supersede in the middle of a
+running DAG in `stress-verify.mjs`, and a backwards-compatible read of a
+`team.json` without `supersededBy` in `verify.mjs`.
+
+- **Rule (`src/state.ts`, `src/types.ts`):** new terminal status `superseded` and
+  the field `TeamTask.supersededBy`. `TASK_TRANSITIONS` gains the transitions
+  into it from every non-completed status and keeps `superseded` itself terminal.
+  `unsatisfiedDependencies` resolves a supersession chain recursively (with cycle
+  protection): a dependency on a replaced task is satisfied by the replacement's
+  fate, so history that was never rewritten cannot fence a lane forever.
+  `applySupersession(team, oldId, newId)` is the pure operation: it marks the old
+  task `superseded`, drops its capability and `changedPaths` (keeping `output`),
+  redirects every non-terminal dependent's `dependencies`, retargets every
+  non-terminal `reviewedTaskId`/`sourceTaskId`, and refuses a replacement that
+  transitively depends on the task it replaces (that would build a cycle).
+- **Shared status sets (`src/types.ts`):** `DEAD_TASK_STATUSES`
+  (`cancelled`/`superseded`), `OPEN_TASK_STATUSES`, `SETTLED_TASK_STATUSES`, so the
+  server and the panel stop spelling out their own `completed || failed ||
+  cancelled` chains.
+- **Delivery (`src/quality-gates.ts`):** `superseded` is excluded from blockers
+  exactly like `cancelled` (the non-quality loop, the "all work was cancelled"
+  rule, the quality loop) and `unconfirmedWaivers` skips dead work — a replaced or
+  cancelled task keeps its waivers as history without blocking delivery forever.
+- **Tool (`src/tools.ts`):** new captain-only `agent_teams_supersede_task`
+  (`task_id`, `reason`, `replacement`, plus the create_task fields for the inline
+  path). One locked operation: create-or-resolve the replacement, apply
+  `applySupersession`, write, revoke the previous owner's activation, emit
+  `agent-teams/task-superseded`, kick the scheduler. `TEAM_TOOL_NAMES` grows to 15;
+  `capabilities.test.mjs` pins the new count.
+- **UI:** `VisualTaskState`/`taskTone` gain `superseded`, the panel draws it in its
+  own faded-striped grey (not the error colour) with the `task.status.superseded`
+  label in both locales, the progress summary reports it separately in the final
+  line, and a client-side `settledTask()` replaces the literal status chains.
+- **RED first:** the tdd group failed on the new matrix and on
+  `tdd.supersede.delivery-ignores-superseded` (`w1 (work) is not completed`);
+  lifecycle and stress had no scenario yet.
+- **GREEN:** `quality-gates-tdd` 115 PASS / 0 FAIL; `verify.mjs` 232 PASS / 0 FAIL
+  (two new checks: the captain-only tool with its atomic redirect, and the reader
+  accepting a superseded task with or without `supersededBy`); lifecycle
+  `all lifecycle checks passed` with six new supersede checks (replace in place,
+  same team/lane, dependents + reviews follow, the old capability is refused, the
+  dependent still waits, completing the replacement unblocks it); stress
+  `all complex stress checks passed` with three new mid-graph checks.
+- **Deviation from the plan, recorded:** the plan asks for the supersede scenario
+  in the middle of the **31-node** graph. That graph ends with every task completed
+  and the suite asserts the exact final counts (38 tasks, all completed), and a
+  completed task is immutable by design, so the scenario runs on its own
+  three-node chain inside `stress-verify.mjs` instead (`Supersede Matrix`). It
+  proves the same scheduler property — a supersede mid-graph rewires the leaf and
+  the scheduler drives it once the replacement completes — without weakening the
+  existing assertions.
+- **Honest test adaptations:** the earlier `sweeper`/`kappa` variants failed
+  because a member whose only task is blocked is never spawned (no session to
+  claim with) and because the scheduler may claim the replacement before the test
+  looks at it; the checks now wait for the real spawn and assert "not terminal"
+  instead of a status that races the scheduler.
 
 ### S08 — WP2: the whole contract is amendable, and a failed lane retries (done)
 

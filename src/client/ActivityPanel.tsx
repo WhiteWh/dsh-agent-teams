@@ -47,6 +47,7 @@ import {
   phaseBoardLayout,
   queueOverview,
   relatedTaskIds,
+  settledTask,
   taskModelLabel,
   teamIsActive,
   usesParallelTaskGrid,
@@ -162,6 +163,7 @@ const TASK_STATUS_LABEL: Record<string, AgentTeamsLocaleKey> = {
   completed: 'task.status.completed',
   failed: 'task.status.failed',
   cancelled: 'task.status.cancelled',
+  superseded: 'task.status.superseded',
 }
 
 function taskStatusLabel(status: string, t: AgentTeamsTranslate): string {
@@ -187,6 +189,8 @@ function taskTitle(task: ActivityTask, model: string): string {
 function taskTone(state: ActivityTask['state'], status: string): string {
   if (status === 'failed') return 'failed'
   if (status === 'cancelled') return 'cancelled'
+  // A replaced lane is dead, not red: it gets its own grey tone (WP3).
+  if (status === 'superseded') return 'superseded'
   return state
 }
 
@@ -281,19 +285,21 @@ function compactTaskLabel(subject: string): string {
 function taskSummary(team: ActivityTeam, t: AgentTeamsTranslate, discarded = false): string {
   const completed = team.tasks.filter((task) => task.status === 'completed')
   const cancelled = team.tasks.filter((task) => task.status === 'cancelled')
+  const superseded = team.tasks.filter((task) => task.status === 'superseded')
   const running = team.tasks.filter((task) => task.state === 'running')
   const blocked = team.tasks.filter((task) => task.state === 'blocked')
-  const ready = team.tasks.filter((task) => task.state === 'open' && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled')
+  const ready = team.tasks.filter((task) => task.state === 'open' && !settledTask(task.status))
   const failed = team.tasks.filter((task) => task.status === 'failed')
   if (discarded) return t('task.summary.discarded', { count: team.tasks.length })
   if (team.tasks.length === 0) return t('task.summary.waitingBreakdown')
   if (team.phase === 'staged') return t('task.summary.staged', { count: team.tasks.length })
   if (completed.length === team.tasks.length) return t('task.summary.allDelivered', { count: completed.length })
-  if (completed.length + cancelled.length + failed.length === team.tasks.length) {
+  if (completed.length + cancelled.length + failed.length + superseded.length === team.tasks.length) {
     return t('task.summary.ended', {
       completed: completed.length,
       cancelled: cancelled.length,
       failed: failed.length,
+      superseded: superseded.length,
     })
   }
   if (failed.length > 0 && running.length === 0 && ready.length === 0 && blocked.length === 0) {
@@ -315,9 +321,7 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
   const running = discarded ? 0 : team.tasks.filter((task) => task.state === 'running').length
   const blocked = discarded ? 0 : team.tasks.filter((task) => task.state === 'blocked').length
   const completed = discarded ? 0 : team.tasks.filter((task) => task.status === 'completed').length
-  const settled = !discarded && team.tasks.length > 0 && team.tasks.every((task) => (
-    task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
-  ))
+  const settled = !discarded && team.tasks.length > 0 && team.tasks.every((task) => settledTask(task.status))
   const summaryTone = discarded ? 'discarded' : blocked > 0 ? 'warning' : settled ? 'completed' : 'running'
   return (
     <section className={css.progressOverview} aria-label={t('progress.aria')} data-progress-summary>
@@ -796,18 +800,13 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
   const stopped = !historic && team.halted === true
   const busyCount = team.members.filter((member) => member.activity === 'working').length
   const assignedCount = team.tasks.filter((task) => task.assignee !== '' && task.assignee !== CAPTAIN_ASSIGNEE).length
-  const captainOwned = team.tasks.filter((task) => task.assignee === CAPTAIN_ASSIGNEE
-    && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled')
+  const captainOwned = team.tasks.filter((task) => task.assignee === CAPTAIN_ASSIGNEE && !settledTask(task.status))
   const captainBusy = captainOwned.length > 0
   const captainTaskIds = formatTaskIds(captainOwned.map((task) => task.id), t)
   const completedCount = team.tasks.filter((task) => task.status === 'completed').length
   const allCompleted = team.tasks.length > 0 && completedCount === team.tasks.length
-  const allSettled = team.tasks.length > 0 && team.tasks.every((task) => (
-    task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
-  ))
-  const unfinishedCount = team.tasks.filter((task) => (
-    task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled'
-  )).length
+  const allSettled = team.tasks.length > 0 && team.tasks.every((task) => settledTask(task.status))
+  const unfinishedCount = team.tasks.filter((task) => !settledTask(task.status)).length
   const canStop = !historic && team.phase === 'running' && team.halted !== true && teamIsActive(team)
   const stopTeam = async (): Promise<void> => {
     if (stopping) return
@@ -977,9 +976,7 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                         ? t('member.status.stopped')
                         : team.phase === 'staged'
                           ? t('member.status.staged')
-                      : historic && owned.length > 0 && owned.every((task) => (
-                        task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
-                      ))
+                      : historic && owned.length > 0 && owned.every((task) => settledTask(task.status))
                         ? t('member.status.settled')
                       : memberStatusText(member, team.tasks, t)}</span>
                   </span>

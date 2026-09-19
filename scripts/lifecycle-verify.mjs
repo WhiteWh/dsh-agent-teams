@@ -934,6 +934,96 @@ try {
       && (amendCompleted.revisions ?? []).length >= 1)
   await call('agent_teams_delete', {})
 
+  // ── WP3/S09: a lane that will not finish is replaced in place ──
+  // A red task used to stay red forever, its dependents waited on an id nobody
+  // would complete, and a review kept judging the dead task. Supersession swaps
+  // the whole live graph onto the replacement in one call.
+  await call('agent_teams_create', { name: 'Supersede Lane', description: 'replace a red lane' })
+  await call('agent_teams_add_member', { name: 'sweeper', role: 'implementer' })
+  await call('agent_teams_add_member', { name: 'judge', role: 'reviewer' })
+  const supersedeTeam = async () => readTeam(stateRoot, 'supersede-lane')
+  const supersedeTask = async id => (await supersedeTeam())?.tasks.find(candidate => candidate.id === id)
+  const doomed = await call('agent_teams_create_task', { subject: 'doomed lane', assignee: 'sweeper' })
+  // The member session exists only after the first assigned task spawns it.
+  const sweeperMember = liveAgents.get((await supersedeTeam()).members.find(m => m.name === 'sweeper').id)
+  const dependent = await call('agent_teams_create_task', {
+    subject: 'downstream of the doomed lane', assignee: 'sweeper', dependencies: [doomed.task_id],
+  })
+  const doomedReview = await call('agent_teams_create_task', {
+    subject: 'review the doomed lane',
+    assignee: 'judge',
+    kind: 'review',
+    objective: 'judge the lane',
+    acceptance: ['no high findings'],
+    reviewedTaskId: doomed.task_id,
+  })
+  const doomedClaim = await call('agent_teams_claim_task', { task_id: doomed.task_id }, sweeperMember)
+  await call('agent_teams_update_task', {
+    task_id: doomed.task_id, status: 'in_progress', attempt_id: doomedClaim.attempt_id,
+  }, sweeperMember)
+  await call('agent_teams_update_task', {
+    task_id: doomed.task_id,
+    status: 'failed',
+    attempt_id: doomedClaim.attempt_id,
+    output: 'the lane cannot be completed as written',
+  }, sweeperMember)
+  const replaced = await call('agent_teams_supersede_task', {
+    task_id: doomed.task_id,
+    reason: 'the lane is dead; the replacement carries the same scope',
+    subject: 'replacement lane',
+    assignee: 'sweeper',
+  })
+  const afterSupersede = await supersedeTask(doomed.task_id)
+  const rewiredDependent = await supersedeTask(dependent.task_id)
+  const rewiredReview = await supersedeTask(doomedReview.task_id)
+  check('a red lane is replaced in place, with a link to its replacement',
+    afterSupersede?.status === 'superseded'
+      && afterSupersede.supersededBy === replaced.superseded_by
+      && afterSupersede.attemptId === undefined
+      && replaced.status === 'superseded')
+  const inlineReplacement = await supersedeTask(replaced.superseded_by)
+  check('the replacement lands in the same team and lane',
+    inlineReplacement !== undefined
+      && inlineReplacement.subject === 'replacement lane'
+      && inlineReplacement.assignee === 'sweeper'
+      // The scheduler may already have dispatched it to the idle member, so the
+      // claimable-status assertion is "not terminal", not "pending".
+      && (inlineReplacement.status === 'pending' || inlineReplacement.status === 'claimed'))
+  check('dependents and reviews follow the replacement atomically',
+    rewiredDependent?.dependencies.includes(replaced.superseded_by) === true
+      && rewiredDependent.dependencies.includes(doomed.task_id) === false
+      && rewiredReview?.reviewedTaskId === replaced.superseded_by
+      && replaced.rewired.includes(dependent.task_id)
+      && replaced.rewired.includes(doomedReview.task_id))
+  let staleAttemptRefused = false
+  try {
+    await call('agent_teams_update_task', {
+      task_id: doomed.task_id, status: 'in_progress', attempt_id: doomedClaim.attempt_id,
+    }, sweeperMember)
+  } catch {
+    staleAttemptRefused = true
+  }
+  check('the replaced lane refuses its old capability', staleAttemptRefused)
+  let dependentBlocked = false
+  try {
+    await call('agent_teams_claim_task', { task_id: dependent.task_id }, sweeperMember)
+  } catch (error) {
+    dependentBlocked = /busy|not claimable|dependencies/.test(String(error))
+  }
+  check('the redirected dependent still waits for the replacement', dependentBlocked)
+  const replacementClaim = await call('agent_teams_claim_task', { task_id: replaced.superseded_by }, sweeperMember)
+  await call('agent_teams_update_task', {
+    task_id: replaced.superseded_by, status: 'in_progress', attempt_id: replacementClaim.attempt_id,
+  }, sweeperMember)
+  await call('agent_teams_update_task', {
+    task_id: replaced.superseded_by, status: 'completed', attempt_id: replacementClaim.attempt_id, output: 'replacement shipped',
+  }, sweeperMember)
+  const dependentAfterReplacement = await supersedeTask(dependent.task_id)
+  check('completing the replacement unblocks the redirected dependent',
+    dependentAfterReplacement?.status === 'pending'
+      && (await supersedeTeam())?.tasks.some(task => task.id === dependent.task_id && task.dependencies.includes(replaced.superseded_by)))
+  await call('agent_teams_delete', {})
+
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })
   const addedAlpha = await call('agent_teams_add_member', { name: 'alpha', role: 'slow implementer' })
   const addedBeta = await call('agent_teams_add_member', { name: 'beta', role: 'researcher' })

@@ -618,6 +618,9 @@ export function waiversConfirmed(team: TeamState, task: TeamTask): boolean {
 /** The ids of every task whose waivers still need a reviewer's confirmation. */
 export function unconfirmedWaivers(team: TeamState): string[] {
   return team.tasks
+    // Dead work cannot be confirmed by anyone: a cancelled or superseded task
+    // keeps its history (and its waivers) without blocking delivery forever.
+    .filter((task) => !DEAD_TASK_STATUSES.includes(task.status))
     .filter((task) => taskHasWaivers(task) && !waiversConfirmed(team, task))
     .map((task) => task.id)
 }
@@ -1100,6 +1103,9 @@ export function buildCoverageMatrix(goalItems: readonly string[], tasks: readonl
   })
 }
 
+/** Statuses that mean "this work will never finish": dead, but not a failure. */
+const DEAD_TASK_STATUSES: readonly TaskStatus[] = ['cancelled', 'superseded']
+
 export function canDeclareDelivery(team: TeamState): DeliveryResult {
   const blockers: string[] = []
   if (team.phase === 'staged') blockers.push('team plan is awaiting approval')
@@ -1107,9 +1113,9 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
   if (team.escalated === true) blockers.push('team requires escalation resolution')
   if (team.tasks.length === 0) blockers.push('team has no completed work')
   for (const item of team.tasks.filter(item => !isQualityKind(taskKindOf(item)))) {
-    if (item.status !== 'completed' && item.status !== 'cancelled') blockers.push(`${item.id} (${taskKindOf(item)}) is not completed`)
+    if (item.status !== 'completed' && !DEAD_TASK_STATUSES.includes(item.status)) blockers.push(`${item.id} (${taskKindOf(item)}) is not completed`)
   }
-  if (team.tasks.length > 0 && team.tasks.every(item => item.status === 'cancelled')) blockers.push('all work was cancelled')
+  if (team.tasks.length > 0 && team.tasks.every(item => DEAD_TASK_STATUSES.includes(item.status))) blockers.push('all work was cancelled')
   const quality = team.tasks.filter((item) => isQualityKind(taskKindOf(item)))
   const implementations = quality.filter((item) => taskKindOf(item) === 'implementation' || taskKindOf(item) === 'repair')
   const reviews = quality.filter((item) => taskKindOf(item) === 'review')
@@ -1140,7 +1146,7 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
       if (!repaired) blockers.push(`${item.id} failed without a follow-up repair`)
       continue
     }
-    if (item.status === 'cancelled') continue
+    if (DEAD_TASK_STATUSES.includes(item.status)) continue
     blockers.push(`${item.id} (${kind}) is not completed`)
   }
 

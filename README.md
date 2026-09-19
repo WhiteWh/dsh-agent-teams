@@ -18,7 +18,7 @@
 
 `dsh-agent-teams` turns the current DeepSeek Harness session into a captain that can assemble durable sub-agents, split a goal into dependency-aware tasks, and coordinate work through direct messages.
 
-Ask in natural language. The plugin provides the team protocol, 14 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
+Ask in natural language. The plugin provides the team protocol, 15 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
 
 <p align="center">
   <img src="./assets/ui.png" width="100%" alt="DeepSeek Harness conversation with the AgentTeams live activity panel, members, tasks, dependencies, and reports">
@@ -47,12 +47,12 @@ unchanged, and no existing assertion was weakened.
 | **One task-status table** | The transition table lives once, in `src/state.ts`; the completion gate reads it instead of keeping a copy that can drift. | `src/state.ts`, `src/quality-gates.ts` |
 | **Scheduler attempt integrity** | A member's own fresh attempt is no longer mistaken for a lost owner and re-claimed underneath it (which used to drop `in_progress` back to `claimed` and make the member's next `update_task` fail as stale), and fresh ready work now outranks re-claiming an attempt the member already holds. | `src/scheduler.ts` |
 | **Revisioned panel artwork** | Artwork URLs carry a revision derived from the packaged bytes, so redrawing a pack changes the URL instead of leaving browsers on the previously cached image; the host route reads the path only, and a stale revision fails the build. | `src/client/artwork.ts`, `src/artwork.ts`, `scripts/art-revision.mjs` |
+| **Amendable contract, retryable lane** | `amend_task` covers the whole contract (`deliverables`, `nonGoals`, `reviewedTaskId`, `subject`, `description`) and the brief of a `work` task; a `failed` task is amendable, and the shared transition table legalizes the `failed → pending` retry `reassign_task` always performed. `force` overrides the post-review freeze and marks the passing verdict `stale`. | `src/quality-gates.ts`, `src/state.ts`, `src/tools.ts` |
+| **Replace a lane that will not finish** | `agent_teams_supersede_task` swaps a red or abandoned task for an existing one or one created in the same call, redirects non-terminal dependents and reviews, revokes the old capability, and records `supersededBy`; a dependency on the replaced task is satisfied by its replacement, recursively. The panel draws it in its own grey tone. | `src/tools.ts`, `src/state.ts`, `src/quality-gates.ts` |
 
-Remaining plan work is tracked locally and lands in later releases: contract
-amendment extensions and `retry` from `failed` (0.1.23), `superseded` with an
-atomic dependency redirect (0.1.23), post-hoc path acceptance and
-`awaiting_scope_review` (0.1.23), the known-delta registry (0.1.23),
-`requiredReviewers` enforcement (0.1.23), mandatory `team_id` addressing
+Remaining plan work is tracked locally and lands in later releases: post-hoc path
+acceptance and `awaiting_scope_review` (0.1.23), the known-delta registry
+(0.1.23), `requiredReviewers` enforcement (0.1.23), mandatory `team_id` addressing
 (0.1.24), plan progress and the task checklist (0.2.0), and live-team replanning
 (0.2.0).
 

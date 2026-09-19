@@ -247,9 +247,18 @@ export function compactDagLayout<T extends RelationshipTask>(tasks: readonly T[]
   }
 }
 
+/**
+ * Whether a task is settled: done, red, or dead (cancelled, or replaced by
+ * another task). A superseded task will never finish, so every projection that
+ * asks "is this lane over" must treat it like the other terminal statuses.
+ */
+export function settledTask(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'superseded'
+}
+
 /** Whether a task has already finished (either way). */
 function isTerminal(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled'
+  return settledTask(status)
 }
 
 /** Natural-id ordering used by every projection below. */

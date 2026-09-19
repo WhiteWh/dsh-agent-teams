@@ -16,9 +16,28 @@ export type TaskStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
+  /** Replaced by another task (`supersededBy`); terminal, and not a failure. */
+  | 'superseded'
 
 /** Statuses after which a task can no longer be claimed or worked on. */
-export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled']
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled', 'superseded']
+
+/**
+ * Terminal statuses that mean "this work will never finish", as opposed to
+ * `completed` (done) or `failed` (red, but evidence of a real attempt). Dead work
+ * keeps its history without blocking delivery, and the scheduler never
+ * dispatches it.
+ */
+export const DEAD_TASK_STATUSES: readonly TaskStatus[] = ['cancelled', 'superseded']
+
+/** Statuses in which a task can still change (nothing terminal is in here). */
+export const OPEN_TASK_STATUSES: readonly TaskStatus[] = ['pending', 'claimed', 'in_progress']
+
+/**
+ * Statuses that mean "this task is settled": finished, red, dead. The panel and
+ * the progress summary treat all four the same way — the work is not pending.
+ */
+export const SETTLED_TASK_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled', 'superseded']
 
 /** Structured quality-gate kind. Absent / unknown values are treated as `work`. */
 export type TaskKind =
@@ -204,6 +223,12 @@ export interface TeamTask {
   coverageOf?: string[]
   /** Captain-only contract amendments, oldest first (see amendTaskContract). */
   revisions?: TaskRevision[]
+  /**
+   * The task that replaced this one, set when the status became `superseded`.
+   * A dependency on a superseded task counts as satisfied once its replacement
+   * is satisfied, recursively (see `unsatisfiedDependencies`).
+   */
+  supersededBy?: string
   createdAt: number
   updatedAt: number
 }

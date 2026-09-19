@@ -17,7 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
@@ -145,9 +145,30 @@ export function sanitizeKey(name: string): string {
  * @param dependencies - task ids the candidate depends on.
  * @returns the ids that are still unsatisfied, empty when claimable.
  */
+/**
+ * Unfinished prerequisites of one task.
+ *
+ * A dependency is satisfied when the task is `completed`, or when it was
+ * `superseded` and its replacement is satisfied — recursively, with cycle
+ * protection. The redirect keeps the live graph readable, but a historical
+ * dependency on a replaced task must not fence its descendants forever; a
+ * `superseded` task with no recorded replacement never satisfies anything.
+ * @param tasks - every task of the team.
+ * @param dependencies - the dependency ids to test.
+ * @returns the ids that are still unsatisfied.
+ */
 export function unsatisfiedDependencies(tasks: TeamTask[], dependencies: string[]): string[] {
   const byId = new Map(tasks.map((task) => [task.id, task]))
-  return dependencies.filter((id) => byId.get(id)?.status !== 'completed')
+  const satisfied = (id: string, seen: ReadonlySet<string>): boolean => {
+    const task = byId.get(id)
+    if (task === undefined) return false
+    if (task.status === 'completed') return true
+    if (task.status !== 'superseded') return false
+    const next = task.supersededBy
+    if (next === undefined || seen.has(next)) return false
+    return satisfied(next, new Set([...seen, next]))
+  }
+  return dependencies.filter((id) => !satisfied(id, new Set([id])))
 }
 
 /**
@@ -156,15 +177,19 @@ export function unsatisfiedDependencies(tasks: TeamTask[], dependencies: string[
  * `failed -> pending` is the retry: `agent_teams_reassign_task` has always
  * produced it through {@link invalidateTaskAttempt}, so leaving it out of the
  * table made the table lie about the behaviour the tools have (WP2/S08).
- * `completed` and `cancelled` stay terminal.
+ * `superseded` is reachable from every non-completed status (WP3/S09): the
+ * captain replaces a red or abandoned lane with a new task instead of leaving a
+ * `failed` row and permanently pending descendants.
+ * `completed` and `cancelled` stay terminal otherwise.
  */
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
-  pending: ['claimed', 'cancelled'],
-  claimed: ['in_progress', 'failed', 'cancelled'],
-  in_progress: ['completed', 'failed', 'cancelled'],
+  pending: ['claimed', 'cancelled', 'superseded'],
+  claimed: ['in_progress', 'failed', 'cancelled', 'superseded'],
+  in_progress: ['completed', 'failed', 'cancelled', 'superseded'],
   completed: [],
-  failed: ['pending'],
-  cancelled: [],
+  failed: ['pending', 'superseded'],
+  cancelled: ['superseded'],
+  superseded: [],
 }
 
 /**
@@ -213,6 +238,102 @@ export function cancelUnfinishedTask(task: TeamTask, output?: string): void {
   task.reassigning = false
   if (output !== undefined) task.output = output
   task.updatedAt = Date.now()
+}
+
+/** Outcome of {@link applySupersession}. */
+export interface SupersedeTaskResult {
+  readonly ok: boolean
+  readonly error?: string
+  /** Every task the operation changed, oldest first (the replaced one included). */
+  readonly touched?: readonly string[]
+  /** The member that was working on the replaced task, when it was still live. */
+  readonly previousAssignee?: string
+}
+
+/**
+ * Replace one task with another, in place and in one step (WP3/S09).
+ *
+ * The captain's only way out of a red lane used to be takeover plus cancel: the
+ * `failed` row stayed, descendants waited forever on a task nobody would finish,
+ * and a review kept pointing at the dead id. This rule does the whole rewiring
+ * on the team record:
+ *
+ * 1. the replaced task becomes `superseded` with `supersededBy`, its capability
+ *    and `changedPaths` are dropped (nothing can complete or audit it any more),
+ *    while its `output` stays as history;
+ * 2. every non-terminal task that depended on it now depends on the replacement;
+ * 3. every non-terminal review/repair contract that pointed at it
+ *    (`reviewedTaskId` / `sourceTaskId`) is retargeted to the replacement.
+ *
+ * A replacement that itself depends on the task it replaces is refused: rewiring
+ * would build a dependency cycle, and `unsatisfiedDependencies` can only resolve
+ * a supersession chain that is acyclic.
+ * @param team - the team record, mutated in place.
+ * @param oldId - the task being replaced.
+ * @param newId - the task that replaces it.
+ * @returns the touched ids, or the reason the pair cannot be superseded.
+ */
+export function applySupersession(team: TeamState, oldId: string, newId: string): SupersedeTaskResult {
+  const old = team.tasks.find((task) => task.id === oldId)
+  if (old === undefined) return { ok: false, error: `task "${oldId}" does not exist` }
+  const replacement = team.tasks.find((task) => task.id === newId)
+  if (replacement === undefined) return { ok: false, error: `task "${newId}" does not exist` }
+  if (old.id === replacement.id) return { ok: false, error: `task "${oldId}" cannot replace itself` }
+  if (old.status === 'completed') {
+    return { ok: false, error: `completed task ${old.id} cannot be superseded; it is immutable` }
+  }
+  if (old.status === 'superseded') {
+    return { ok: false, error: `task ${old.id} is already superseded by ${old.supersededBy ?? 'an unknown task'}` }
+  }
+  const dependsOn = (from: string, target: string, seen = new Set<string>()): boolean => {
+    if (from === target) return true
+    if (seen.has(from)) return false
+    seen.add(from)
+    const task = team.tasks.find((candidate) => candidate.id === from)
+    return task === undefined ? false : task.dependencies.some((id) => dependsOn(id, target, seen))
+  }
+  if (dependsOn(replacement.id, old.id)) {
+    return {
+      ok: false,
+      error: `replacement ${replacement.id} depends on ${old.id}; a supersession cannot build a dependency cycle`,
+    }
+  }
+  const now = Date.now()
+  const touched: string[] = [old.id]
+  const previousAssignee = old.assignee !== undefined && old.status !== 'pending' ? old.assignee : undefined
+  old.status = 'superseded'
+  old.supersededBy = replacement.id
+  old.attemptId = undefined
+  old.handoffId = undefined
+  old.handoffFromMemberId = undefined
+  old.reassigning = false
+  old.changedPaths = undefined
+  old.updatedAt = now
+  for (const task of team.tasks) {
+    if (task.id === old.id || task.id === replacement.id) continue
+    if (!OPEN_TASK_STATUSES.includes(task.status)) continue
+    let changed = false
+    if (task.dependencies.includes(old.id)) {
+      task.dependencies = task.dependencies.map((id) => (id === old.id ? replacement.id : id))
+      changed = true
+    }
+    if (task.reviewedTaskId === old.id) {
+      task.reviewedTaskId = replacement.id
+      changed = true
+    }
+    if (task.sourceTaskId === old.id) {
+      task.sourceTaskId = replacement.id
+      changed = true
+    }
+    if (!changed) continue
+    task.updatedAt = now
+    touched.push(task.id)
+  }
+  return {
+    ok: true,
+    touched,
+    ...previousAssignee === undefined ? {} : { previousAssignee },
+  }
 }
 
 export function invalidateTaskAttempt(
@@ -823,7 +944,8 @@ export function isTeamTask(value: unknown): value is TeamTask {
       || value['status'] === 'in_progress'
       || value['status'] === 'completed'
       || value['status'] === 'failed'
-      || value['status'] === 'cancelled')
+      || value['status'] === 'cancelled'
+      || value['status'] === 'superseded')
     && isOptionalString(value['assignee'])
     && Array.isArray(value['dependencies'])
     && value['dependencies'].every((dependency) => typeof dependency === 'string')
@@ -833,6 +955,7 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && isOptionalString(value['attemptId'])
     && isOptionalString(value['handoffId'])
     && isOptionalString(value['handoffFromMemberId'])
+    && isOptionalString(value['supersededBy'])
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])
@@ -1020,12 +1143,12 @@ export async function listArchivedTeamIds(stateRoot: string): Promise<string[]> 
 // ── activity snapshot (server-side, like the Claude Code desktop watcher) ──
 
 /** Visual task state for the activity panel. */
-export type VisualTaskState = 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type VisualTaskState = 'blocked' | 'open' | 'running' | 'completed' | 'failed' | 'cancelled' | 'superseded'
 
 /**
  * The visual state of one task: `running` while in_progress, `completed`
- * when done, `failed`/`cancelled` when terminal without success, `blocked`
- * while any dependency is unfinished, else `open`.
+ * when done, `failed`/`cancelled`/`superseded` when terminal without success,
+ * `blocked` while any dependency is unfinished, else `open`.
  */
 export function taskVisualState(
   status: string,
@@ -1035,11 +1158,12 @@ export function taskVisualState(
   if (status === 'completed') return 'completed'
   if (status === 'failed') return 'failed'
   if (status === 'cancelled') return 'cancelled'
+  if (status === 'superseded') return 'superseded'
   if (status === 'in_progress') return 'running'
   const byId = new Map(tasks.map((task) => [task.id, task]))
   const openDependency = dependencies.some((dependencyId) => {
     const dependency = byId.get(dependencyId)
-    return dependency !== undefined && dependency.status !== 'completed'
+    return dependency !== undefined && dependency.status !== 'completed' && dependency.status !== 'superseded'
   })
   return openDependency ? 'blocked' : 'open'
 }

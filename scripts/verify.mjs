@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { artworkRevision, committedArtworkRevision } from './art-revision.mjs'
 import { serveArtwork } from '../lib/artwork.js'
+import { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from '../lib/tool-names.js'
 import {
   CAPTAIN_KEY,
   acceptanceCriterionText,
@@ -27,6 +28,7 @@ import {
   findTeamByCaptain,
   findTeamByParticipant,
   isAcceptanceCriterion,
+  isTeamTask,
   readMailbox,
   readTeam,
   removeTeamDir,
@@ -215,6 +217,7 @@ const hostSource = await readFile(new URL('../src/index.ts', import.meta.url), '
 const toolsSource = await readFile(new URL('../src/tools.ts', import.meta.url), 'utf8')
 const gatesSource = await readFile(new URL('../src/quality-gates.ts', import.meta.url), 'utf8')
 const localesSource = await readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
+const activityModelSource = await readFile(new URL('../src/client/activity-model.ts', import.meta.url), 'utf8')
 const localeKeys = Object.keys(agentTeamsZh).sort()
 const englishLocaleKeys = Object.keys(agentTeamsEn).sort()
 const placeholders = value => [...value.matchAll(/\{(\w+)\}/gu)].map(match => match[1]).sort()
@@ -334,6 +337,36 @@ check(
     'a running team accepts dependency and assignee edits for pending and failed tasks',
     toolsSource.includes("? task.status === 'pending' && (task.attempt ?? 0) === 0")
       && toolsSource.includes(": task.status === 'pending' || task.status === 'failed'"),
+  )
+}
+// WP3/S09: one captain-only tool replaces a lane that will not finish, and the
+// reader stays compatible with every team.json written before that field existed.
+{
+  const supersedeBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_supersede_task'"),
+    toolsSource.indexOf("name: 'agent_teams_claim_task'"),
+  )
+  check(
+    'supersede_task is captain-only and redirects the graph atomically',
+    supersedeBlock.includes('applySupersession(fresh, replaced.id, replacementId)')
+      && supersedeBlock.includes('validateCreateTask(fresh, {')
+      && supersedeBlock.includes('await writeTeam(stateRoot, fresh)')
+      && supersedeBlock.includes('stopTeamMemberActivations')
+      && supersedeBlock.includes('await scheduler.kickTeam')
+      && TEAM_TOOL_NAMES.includes('agent_teams_supersede_task')
+      && !MEMBER_TOOL_NAMES.includes('agent_teams_supersede_task'),
+    `team tools: ${String(TEAM_TOOL_NAMES.length)}, member tools: ${String(MEMBER_TOOL_NAMES.length)}`,
+  )
+  check(
+    'the panel and the reader accept a superseded task, with or without its replacement link',
+    isTeamTask({ id: 't1', subject: 'x', status: 'superseded', dependencies: [], createdAt: 0, updatedAt: 0 })
+      && isTeamTask({ id: 't1', subject: 'x', status: 'superseded', supersededBy: 't2', dependencies: [], createdAt: 0, updatedAt: 0 })
+      && !isTeamTask({ id: 't1', subject: 'x', status: 'obsolete', dependencies: [], createdAt: 0, updatedAt: 0 })
+      && localesSource.includes("'task.status.superseded'")
+      && activityPanelSource.includes("superseded: 'task.status.superseded'")
+      && activityPanelSource.includes("if (status === 'superseded') return 'superseded'")
+      && activityPanelCss.includes("[data-state='superseded']")
+      && activityModelSource.includes('export function settledTask'),
   )
 }
 check(

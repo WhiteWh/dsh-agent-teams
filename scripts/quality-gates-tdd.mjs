@@ -94,6 +94,9 @@ function loadStateApi() {
     waiversConfirmed: state.waiversConfirmed,
     unconfirmedWaivers: state.unconfirmedWaivers,
     lintProfileKeys: state.lintProfileKeys,
+    applySupersession: state.applySupersession,
+    unsatisfiedDependencies: state.unsatisfiedDependencies,
+    transitionError: state.transitionError,
   }
 }
 
@@ -1252,21 +1255,22 @@ console.log('quality-gates TDD — I. one task-status transition table')
 {
   const stateModule = require('../lib/state.js')
   const gatesModule = require('../lib/quality-gates.js')
-  const statuses = ['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled']
+  const statuses = ['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled', 'superseded']
   // The normative matrix. `state.ts` is the single owner of the table; every
   // other module must read the same object instead of keeping a copy, or a new
   // status would have to be added twice and the two copies would drift.
   const expected = {
-    pending: ['claimed', 'cancelled'],
-    claimed: ['in_progress', 'failed', 'cancelled'],
-    in_progress: ['completed', 'failed', 'cancelled'],
+    pending: ['claimed', 'cancelled', 'superseded'],
+    claimed: ['in_progress', 'failed', 'cancelled', 'superseded'],
+    in_progress: ['completed', 'failed', 'cancelled', 'superseded'],
     completed: [],
     // WP2/S08 legalized the retry: `reassign_task` already moved a failed task
     // back to `pending` through `invalidateTaskAttempt`, bypassing this table, so
-    // the table disagreed with the behaviour the tools actually have. The
-    // `superseded` target lands with WP3/S09.
-    failed: ['pending'],
-    cancelled: [],
+    // the table disagreed with the behaviour the tools actually have.
+    // WP3/S09 adds `superseded` for every non-completed status.
+    failed: ['pending', 'superseded'],
+    cancelled: ['superseded'],
+    superseded: [],
   }
 
   const table = stateModule.TASK_TRANSITIONS
@@ -1824,6 +1828,134 @@ console.log('quality-gates TDD — I. contradictory contract (#173)')
     'tdd.scope.contradictory-contract-rejection-explains-itself',
     result?.ok !== true && /inScope[\s\S]*outOfScope/i.test(String(result?.error ?? '')),
     String(result?.error ?? ''),
+  )
+}
+
+console.log('quality-gates TDD — N. superseded lanes (WP3)')
+
+{
+  // Feedback §3: removing a red lane meant takeover plus cancel. The `failed` row
+  // stayed, descendants waited on a task nobody would ever finish, and a review
+  // kept pointing at the dead id — so the captain could not get a red lane out of
+  // the way without leaving the graph broken. Supersession replaces the task in
+  // place: one status change plus an atomic redirect of the live graph.
+  const failed = task({
+    ...implContract(),
+    id: 't1',
+    status: 'failed',
+    assignee: 'implementer',
+    attempt: 2,
+    attemptId: 'attempt-2',
+    changedPaths: ['src/wrong-lane.ts'],
+    output: 'the lane cannot finish',
+  })
+  const replacement = task({
+    ...implContract(),
+    id: 't2',
+    status: 'pending',
+    attempt: 0,
+    attemptId: undefined,
+    assignee: 'implementer',
+    dependencies: [],
+  })
+  const dependent = task({ id: 't3', subject: 'integration', status: 'pending', attempt: 0, attemptId: undefined, dependencies: ['t1'] })
+  const claimedDependent = task({ id: 't4', subject: 'claimed dependent', status: 'claimed', dependencies: ['t1'] })
+  const completedDependent = task({
+    id: 't5', subject: 'already done', status: 'completed', dependencies: ['t1'],
+    acceptanceResults: [], commandsRun: [],
+  })
+  const review = task({
+    id: 't6', subject: 'review the lane', kind: 'review', status: 'pending', attempt: 0, attemptId: undefined,
+    reviewedTaskId: 't1', objective: 'review', acceptance: ['no high findings'],
+  })
+  const repair = task({
+    id: 't7', subject: 'repair the lane', kind: 'repair', status: 'in_progress', sourceTaskId: 't1',
+    objective: 'repair', inScope: ['src/'], acceptance: ['green'], verify: ['pnpm test'],
+  })
+  const completedReview = task({
+    id: 't8', subject: 'old review', kind: 'review', status: 'completed', verdict: 'pass',
+    reviewedTaskId: 't1', objective: 'review', acceptance: ['no high findings'],
+  })
+  const board = team({ tasks: [failed, replacement, dependent, claimedDependent, completedDependent, review, repair, completedReview], taskSeq: 8 })
+  const superseded = api.applySupersession?.(board, 't1', 't2')
+  check(
+    'tdd.supersede.failed-to-superseded',
+    superseded?.ok === true
+      && failed.status === 'superseded'
+      && failed.supersededBy === 't2'
+      && failed.attemptId === undefined
+      && failed.changedPaths === undefined
+      && failed.output === 'the lane cannot finish'
+      && api.transitionError?.('failed', 'superseded') === undefined
+      && api.transitionError?.('completed', 'superseded') !== undefined
+      && superseded?.touched?.includes('t1') === true,
+    JSON.stringify({ ok: superseded?.ok, error: superseded?.error, status: failed.status }),
+  )
+  check(
+    'tdd.supersede.redirects-pending-dependents',
+    dependent.dependencies.join(',') === 't2'
+      && claimedDependent.dependencies.join(',') === 't2'
+      && completedDependent.dependencies.join(',') === 't1'
+      && superseded?.touched?.includes('t3') === true
+      && superseded?.touched?.includes('t4') === true,
+    JSON.stringify({ t3: dependent.dependencies, t4: claimedDependent.dependencies, t5: completedDependent.dependencies }),
+  )
+  check(
+    'tdd.supersede.retargets-review',
+    review.reviewedTaskId === 't2'
+      && repair.sourceTaskId === 't2'
+      && completedReview.reviewedTaskId === 't1',
+    JSON.stringify({ review: review.reviewedTaskId, repair: repair.sourceTaskId, completed: completedReview.reviewedTaskId }),
+  )
+  // A dependency that points at a replaced task is satisfied by the replacement's
+  // fate, recursively: the redirect keeps the live graph readable, and the rule
+  // covers the history that was never rewritten.
+  check(
+    'tdd.supersede.chain-satisfies-dependencies',
+    api.unsatisfiedDependencies?.(board.tasks, ['t1'])?.join(',') === 't1'
+      && (replacement.status = 'completed', api.unsatisfiedDependencies?.(board.tasks, ['t1'])?.length === 0)
+      && api.unsatisfiedDependencies?.(board.tasks, ['t9'])?.join(',') === 't9',
+    JSON.stringify(api.unsatisfiedDependencies?.(board.tasks, ['t1'])),
+  )
+  const deliveredReplacement = task({
+    ...implContract(), id: 'r1', kind: 'implementation', status: 'completed', dependencies: [],
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: implContract().acceptance.map((criterion) => ({ criterion, status: 'passed' })),
+    commandsRun: implContract().verify.map((command) => ({ command, status: 'passed' })),
+  })
+  const supersededWork = task({ id: 'w1', subject: 'dead lane', kind: 'work', status: 'superseded', supersededBy: 'r1', dependencies: [] })
+  const passingReview = task({ id: 'r2', kind: 'review', status: 'completed', verdict: 'pass', reviewedTaskId: 'r1', objective: 'review', acceptance: ['no high findings'] })
+  const delivery = api.canDeclareDelivery?.(team({ tasks: [deliveredReplacement, supersededWork, passingReview], taskSeq: 2 }))
+  check(
+    'tdd.supersede.delivery-ignores-superseded',
+    delivery?.ok === true,
+    JSON.stringify(delivery?.blockers),
+  )
+  // A failed lane's paths are history, not an audit finding: the path audit only
+  // follows completed work, so replacing a lane cannot double-report its paths.
+  const failedWithPaths = task({
+    ...implContract(), id: 'f1', status: 'failed', changedPaths: ['src/never-audited.ts'],
+  })
+  const failedReport = api.canDeclareDelivery?.(team({ tasks: [deliveredReplacement, failedWithPaths, passingReview], taskSeq: 3 }))
+  check(
+    'tdd.delivery.failed-paths-not-double-reported',
+    (failedReport?.blockers ?? []).every((blocker) => !blocker.includes('src/never-audited.ts')),
+    JSON.stringify(failedReport?.blockers),
+  )
+  const cyclic = team({
+    tasks: [
+      task({ ...implContract(), id: 'c1', status: 'failed' }),
+      task({ ...implContract(), id: 'c2', status: 'pending', attempt: 0, attemptId: undefined, dependencies: ['c1'] }),
+    ],
+    taskSeq: 2,
+  })
+  const refused = api.applySupersession?.(cyclic, 'c1', 'c2')
+  check(
+    'tdd.supersede.refuses-a-replacement-that-depends-on-the-old',
+    refused?.ok === false
+      && cyclic.tasks[0].status === 'failed'
+      && cyclic.tasks[1].dependencies.join(',') === 'c1',
+    JSON.stringify({ ok: refused?.ok, error: refused?.error }),
   )
 }
 

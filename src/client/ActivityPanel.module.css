@@ -694,6 +694,17 @@
   opacity: 0.55;
 }
 
+/* A replaced lane (WP3): dead, but not red — it reads as a faded striped mark
+   rather than the error colour, because the captain already dealt with it. */
+.progressSegments > span[data-state='superseded'] {
+  opacity: 0.4;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--dsw-alias-border-l3) 0 2px,
+    transparent 2px 4px
+  );
+}
+
 .progressLegend {
   display: flex;
   gap: 10px;
@@ -1076,6 +1087,13 @@
 .assignmentChip[data-state='cancelled'] {
   color: var(--dsw-alias-label-tertiary);
   text-decoration: line-through;
+}
+
+/* A replaced task chip keeps its id readable and marks the replacement link in
+   the tooltip; it is dead work, not a failure, so no error colour. */
+.assignmentChip[data-state='superseded'] {
+  color: var(--dsw-alias-label-tertiary);
+  border-style: dashed;
 }
 
 .unreadPill {

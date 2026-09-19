@@ -8,7 +8,7 @@ This document holds the detailed usage material for `dsh-agent-teams`: how it wo
 
 | DSH capability | How AgentTeams uses it |
 |---|---|
-| `ctx.tools` registry | registers the 14 business tools; restricts which tools a model can see by session identity |
+| `ctx.tools` registry | registers the 15 business tools; restricts which tools a model can see by session identity |
 | `ctx.subagents.startContinuable()` | creates a member: a durable, continuable subagent carrying a member persona |
 | `ctx.subagents.followup()` | wakes the recipient member (the message joins its next turn) |
 | the durable team member table + `ctx.agents` | the former stores durable member identity, the latter provides real `running / idle / ready` activity (no reliance on a volatile subagent directory projection) |
@@ -55,7 +55,8 @@ Old `kind=work` tasks can still be completed with free text. Quality kinds (`req
 | `agent_teams_reassign_task` | atomically retry/transfer a task; `assignee=captain` means a safe captain takeover |
 | `agent_teams_claim_task` | claim a task (dependency-checked; a captain may claim on behalf of a member, a member may only claim its own or an unassigned task) |
 | `agent_teams_update_task` | advance a task while presenting the current `attempt_id`; for quality kinds an illegal completed is rejected by verdict / acceptanceResults / commandsRun / changedPaths |
-| `agent_teams_amend_task` | captain-only: rewrite objective/acceptance/verify/inScope/outOfScope of a non-terminal quality task (when the contract itself makes honest completion impossible); writes a revisions ledger and freezes after a passing review. Not available to members |
+| `agent_teams_amend_task` | captain-only: rewrite the whole contract (objective/acceptance/verify/inScope/outOfScope/deliverables/nonGoals/reviewedTaskId) of a task that is pending, claimed, in_progress or failed — or the subject/description/deliverables of a `work` task — when the contract itself makes honest completion impossible; writes a revisions ledger, freezes after a passing review, and `force` overrides that freeze by marking the passing verdict `stale`. Not available to members |
+| `agent_teams_supersede_task` | captain-only: replace a task that will not finish (failed or abandoned) with an existing task or one created in the same call; the replaced task becomes `superseded`, non-terminal dependents are redirected to the replacement, non-terminal reviews/repairs are retargeted, and its capability is revoked. A completed task cannot be superseded |
 | `agent_teams_send_message` | any member → any member/captain: the message lands directly in the recipient's mailbox and wakes it (no captain relay; an impersonated `from` is rejected) |
 | `agent_teams_status` | the whole team: kind/round/verdict, coverage matrix, escalated, halt/resume state |
 | `agent_teams_resume` | explicitly resume a halted team; a non-empty reason is required; cancelled tasks are not recreated |

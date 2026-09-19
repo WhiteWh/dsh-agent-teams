@@ -13,7 +13,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerAgentTeamsTools } from '../lib/tools.js'
-import { readArchivedTeam, readTeam, readUnreadMailbox } from '../lib/state.js'
+import { readArchivedTeam, readTeam, readUnreadMailbox, unsatisfiedDependencies } from '../lib/state.js'
 
 const workspace = await mkdtemp(join(tmpdir(), 'dsh-agent-teams-stress-'))
 const stateRoot = join(workspace, '.agent-teams')
@@ -537,6 +537,68 @@ try {
       .filter(child => child.kind === 'child'
         && child.mode === 'continuable'
         && child.label.startsWith('agent-teams:')).length === 8)
+
+  // ── WP3/S09: a supersede in the middle of a live graph ──────────────────
+  // The 31-node graph above ends with every task completed, and a completed task
+  // is immutable by design, so the replacement scenario runs on its own deeper
+  // chain: the middle lane fails, the captain replaces it inline, and the
+  // scheduler must keep the graph advancing instead of leaving the leaf fenced
+  // behind a task that will never finish.
+  const chainTeamId = 'supersede-matrix'
+  const chainState = () => readTeam(stateRoot, chainTeamId)
+  const chainTask = async id => (await chainState())?.tasks.find(candidate => candidate.id === id)
+  const chainMember = async name => {
+    const record = (await chainState())?.members.find(member => member.name === name)
+    return record === undefined ? undefined : runtime.liveAgents.get(record.id)
+  }
+  await call('agent_teams_create', { name: 'Supersede Matrix', description: 'replace a middle lane under load' })
+  await call('agent_teams_add_member', { name: 'iota', role: 'chain builder' })
+  const root = await call('agent_teams_create_task', { subject: 'root lane', assignee: 'iota' })
+  const middle = await call('agent_teams_create_task', { subject: 'middle lane', assignee: 'iota', dependencies: [root.task_id] })
+  const leaf = await call('agent_teams_create_task', { subject: 'leaf lane', assignee: 'iota', dependencies: [middle.task_id] })
+  // The member session appears when the scheduler dispatches the first assigned
+  // task, so wait for the real spawn instead of assuming it happened inline.
+  const waitForChainMember = async name => {
+    for (let round = 0; round < 100; round += 1) {
+      const agent = await chainMember(name)
+      if (agent !== undefined) return agent
+      await call('agent_teams_status', {})
+      await settle()
+    }
+    throw new Error(`member ${name} was never spawned in the supersede matrix`)
+  }
+  const iota = await waitForChainMember('iota')
+  const rootClaim = await call('agent_teams_claim_task', { task_id: root.task_id }, iota)
+  await call('agent_teams_update_task', { task_id: root.task_id, status: 'in_progress', attempt_id: rootClaim.attempt_id }, iota)
+  await call('agent_teams_update_task', { task_id: root.task_id, status: 'completed', attempt_id: rootClaim.attempt_id, output: 'root done' }, iota)
+  const middleClaim = await call('agent_teams_claim_task', { task_id: middle.task_id }, iota)
+  await call('agent_teams_update_task', { task_id: middle.task_id, status: 'in_progress', attempt_id: middleClaim.attempt_id }, iota)
+  await call('agent_teams_update_task', { task_id: middle.task_id, status: 'failed', attempt_id: middleClaim.attempt_id, output: 'middle lane is red' }, iota)
+  check('the leaf waits while the middle lane is unresolved',
+    (await chainTask(leaf.task_id))?.status === 'pending'
+      && unsatisfiedDependencies((await chainState()).tasks, [middle.task_id]).length === 1)
+  const swap = await call('agent_teams_supersede_task', {
+    task_id: middle.task_id,
+    reason: 'the middle lane is red; the replacement keeps the same contract',
+    subject: 'middle lane (replacement)',
+    assignee: 'iota',
+  })
+  const leafAfterSwap = await chainTask(leaf.task_id)
+  check('a mid-graph supersede rewires the leaf onto the replacement',
+    (await chainTask(middle.task_id))?.status === 'superseded'
+      && leafAfterSwap?.dependencies.includes(swap.superseded_by) === true
+      && leafAfterSwap.dependencies.includes(middle.task_id) === false
+      && unsatisfiedDependencies((await chainState()).tasks, [middle.task_id]).length === 1)
+  const replacementClaim = await call('agent_teams_claim_task', { task_id: swap.superseded_by }, iota)
+  await call('agent_teams_update_task', { task_id: swap.superseded_by, status: 'in_progress', attempt_id: replacementClaim.attempt_id }, iota)
+  await call('agent_teams_update_task', { task_id: swap.superseded_by, status: 'completed', attempt_id: replacementClaim.attempt_id, output: 'replacement done' }, iota)
+  await call('agent_teams_status', {})
+  await settle()
+  check('the scheduler advances the leaf once the replacement completes',
+    unsatisfiedDependencies((await chainState()).tasks, [leafAfterSwap.dependencies[0]]).length === 0
+      && (await chainTask(swap.superseded_by))?.status === 'completed'
+      && (await chainTask(leaf.task_id))?.status !== 'failed')
+  await call('agent_teams_delete', {})
 } finally {
   await rm(workspace, { recursive: true, force: true })
 }

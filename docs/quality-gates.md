@@ -137,6 +137,39 @@ that edit belongs to the replan operation with explicit attempt invalidation.
 values + reason + field list), and `agent_teams_status` prints `revised ×N` on a task whose
 contract was amended.
 
+### 1.5 Added in v0.1.22: `superseded` — replacing a lane that will not finish
+
+Feedback §3: a red lane could only be removed by takeover plus cancel. The `failed` row
+stayed in the graph, descendants waited forever on a task nobody would complete, and a
+review kept pointing at the dead id.
+
+`agent_teams_supersede_task({ task_id, reason, replacement? , <create_task fields>? })` is
+captain-only and does the whole replacement in one locked operation:
+
+1. the replaced task becomes `superseded`, gains `supersededBy`, loses its capability
+   (`attemptId`/`handoffId`) and its `changedPaths`; its `output` stays as history;
+2. every **non-terminal** task that depended on it now depends on the replacement;
+3. every **non-terminal** `review`/`repair` contract that pointed at it
+   (`reviewedTaskId` / `sourceTaskId`) is retargeted to the replacement;
+4. the replacement is either an existing task id (`replacement`) or a task created inside
+   the same call, inheriting `kind`, `round`, `sourceTaskId`, `coverageOf` and, by default,
+   the replaced task's `dependencies`.
+
+Refused: superseding a `completed` task (immutable), superseding a task that is already
+`superseded`, and a replacement that (transitively) depends on the task it replaces —
+that would build a dependency cycle the redirect cannot represent.
+
+A dependency on a superseded task counts as satisfied once **its replacement** is
+satisfied, recursively (`unsatisfiedDependencies`): the redirect keeps the live graph
+readable, and the rule covers the history that was never rewritten. A superseded task with
+no recorded replacement never satisfies anything.
+
+Delivery treats `superseded` exactly like `cancelled` (`DEAD_TASK_STATUSES` in
+`src/types.ts`): it is not a blocker, it cannot be confirmed by a review, and its paths are
+never audited (the path loop follows `completed` work only). The scheduler never dispatches
+it, and the panel draws it in its own grey tone with the `task.status.superseded` label
+instead of the error colour — a replaced lane is dealt with, not failed.
+
 ## 2. Allowed / not allowed
 
 ### 2.1 Allowed

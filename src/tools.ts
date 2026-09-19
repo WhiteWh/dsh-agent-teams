@@ -55,6 +55,7 @@ import {
   normalizeBlankOptionalTaskFields,
   taskHasWaivers,
   taskKindOf,
+  applySupersession,
   waiversConfirmed,
 } from './state.ts'
 import type { ContractAmendmentInput } from './state.ts'
@@ -1494,6 +1495,169 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         status: task.status,
         attempt: task.attempt ?? 0,
         ...task.attemptId === undefined ? {} : { attempt_id: task.attemptId },
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_supersede_task',
+    description: 'Captain-only atomic replacement of one task that will not finish (failed, abandoned, or pointed at the wrong contract). The replaced task becomes `superseded` with a link to its replacement, its capability and changedPaths are dropped, every non-terminal dependent now depends on the replacement, and every non-terminal review/repair contract that pointed at it is retargeted. The replacement is either an existing task id (`replacement`) or a task created in the same call from the create_task fields (subject required); an inline replacement inherits kind, round, sourceTaskId, coverageOf and, by default, the replaced task\'s dependencies. A completed task cannot be superseded, and a replacement that depends on the task it replaces is refused (dependency cycle).',
+    parameters: {
+      task_id: { type: 'string', required: true, description: 'The task to replace.' },
+      reason: { type: 'string', required: true, description: 'Why the lane is being replaced; recorded in the event and the result.' },
+      replacement: { type: 'string', description: 'Id of an existing task that replaces this one. Omit to create the replacement in this same call from the fields below.' },
+      subject: { type: 'string', description: 'Title of the inline replacement (required when `replacement` is omitted).' },
+      description: { type: 'string', description: 'What the replacement has to do, in detail.' },
+      assignee: { type: 'string', description: 'Member name for the inline replacement; omission puts it in the shared pool.' },
+      kind: { type: 'string', enum: ['work', 'requirements', 'implementation', 'verification', 'review', 'repair', 'integration'], description: 'Kind of the inline replacement; inherits the replaced task\'s kind when omitted.' },
+      round: { type: 'number', description: '1-based review / requirements / repair round for the inline replacement.' },
+      objective: { type: 'string', description: 'Objective of the inline replacement (required for quality kinds).' },
+      inScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative POSIX paths the replacement may change.' },
+      outOfScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative POSIX paths the replacement must not change.' },
+      acceptance: { type: 'array', items: { type: 'string' }, description: 'Acceptance criteria of the inline replacement.' },
+      verify: { type: 'array', items: { type: 'string' }, description: 'Verification commands of the inline replacement.' },
+      deliverables: { type: 'array', items: { type: 'string' }, description: 'Expected deliverables of the inline replacement.' },
+      nonGoals: { type: 'array', items: { type: 'string' }, description: 'Explicit non-goals of the inline replacement.' },
+      reviewedTaskId: { type: 'string', description: 'Reviewed source task for an inline review/repair replacement.' },
+      sourceTaskId: { type: 'string', description: 'Source implementation/artifact for an inline repair replacement.' },
+      dependencies: { type: 'array', items: { type: 'string' }, description: 'Dependencies of the inline replacement; defaults to the replaced task\'s dependencies.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          task_id: { type: 'string', required: true },
+          status: { type: 'string', required: true },
+          superseded_by: { type: 'string', required: true },
+          replacement_status: { type: 'string', required: true },
+          rewired: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Task ${value.task_id} is now ${value.status}, replaced by ${value.superseded_by} (status ${value.replacement_status}).`
+          + (value.rewired === '' ? '' : ` Redirected: ${value.rewired}.`),
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(workspace, config, captain)
+      const inline = normalizeBlankOptionalTaskFields(args)
+      const result = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        const replaced = requireTask(fresh, args.task_id)
+        const explicitReplacement = trimmedOptional(args.replacement)
+        if (explicitReplacement !== undefined && explicitReplacement === replaced.id) {
+          throw new Error(`task ${replaced.id} cannot replace itself`)
+        }
+        if (explicitReplacement !== undefined && !fresh.tasks.some((task) => task.id === explicitReplacement)) {
+          throw new Error(`replacement task "${explicitReplacement}" does not exist`)
+        }
+        const inlineSubject = trimmedOptional(args.subject)
+        if (explicitReplacement === undefined && inlineSubject === undefined) {
+          throw new Error('supersede_task needs either `replacement` (an existing task id) or a non-empty `subject` for the inline replacement')
+        }
+        const inheritedSource = trimmedOptional(args.sourceTaskId) ?? replaced.sourceTaskId
+        const inheritedReview = trimmedOptional(args.reviewedTaskId) ?? replaced.reviewedTaskId
+        const dependencies = (args.dependencies ?? replaced.dependencies).filter((id: string) => id !== replaced.id)
+        let replacementId = explicitReplacement
+        if (replacementId === undefined && inlineSubject !== undefined) {
+          const kind = args.kind ?? taskKindOf(replaced)
+          const gate = validateCreateTask(fresh, {
+            subject: inlineSubject,
+            description: inline.description,
+            assignee: inline.assignee,
+            dependencies,
+            kind,
+            round: args.round ?? replaced.round,
+            objective: inline.objective,
+            inScope: inline.inScope,
+            outOfScope: inline.outOfScope,
+            acceptance: inline.acceptance,
+            verify: inline.verify,
+            deliverables: inline.deliverables,
+            nonGoals: inline.nonGoals,
+            reviewedTaskId: inheritedReview,
+            sourceTaskId: inheritedSource,
+            sourceFindingIds: replaced.sourceFindingIds,
+            coverageOf: replaced.coverageOf,
+            nextTaskId: `t${fresh.taskSeq + 1}`,
+          })
+          if (!gate.ok) throw new Error(gate.error ?? 'the inline replacement was rejected by the quality gates')
+          const created = `t${fresh.taskSeq + 1}`
+          fresh.taskSeq += 1
+          const now = Date.now()
+          fresh.tasks.push({
+            id: created,
+            subject: inlineSubject,
+            description: inline.description,
+            status: 'pending',
+            assignee: inline.assignee,
+            dependencies,
+            attempt: 0,
+            createdAt: now,
+            updatedAt: now,
+            kind,
+            ...(args.round ?? replaced.round) === undefined ? {} : { round: args.round ?? replaced.round },
+            ...inline.objective === undefined ? {} : { objective: inline.objective },
+            ...inline.inScope === undefined ? {} : { inScope: inline.inScope },
+            ...inline.outOfScope === undefined ? {} : { outOfScope: inline.outOfScope },
+            ...inline.acceptance === undefined ? {} : { acceptance: inline.acceptance },
+            ...inline.verify === undefined ? {} : { verify: inline.verify },
+            ...inline.deliverables === undefined ? {} : { deliverables: inline.deliverables },
+            ...inline.nonGoals === undefined ? {} : { nonGoals: inline.nonGoals },
+            ...inheritedReview === undefined ? {} : { reviewedTaskId: inheritedReview },
+            ...inheritedSource === undefined ? {} : { sourceTaskId: inheritedSource },
+            ...replaced.sourceFindingIds === undefined ? {} : { sourceFindingIds: replaced.sourceFindingIds },
+            ...replaced.coverageOf === undefined ? {} : { coverageOf: replaced.coverageOf },
+          })
+          replacementId = created
+        }
+        if (replacementId === undefined) throw new Error('supersede_task could not resolve a replacement task')
+        const applied = applySupersession(fresh, replaced.id, replacementId)
+        if (!applied.ok || applied.touched === undefined) {
+          throw new Error(applied.error ?? 'supersede_task was rejected')
+        }
+        await writeTeam(stateRoot, fresh)
+        const replacement = requireTask(fresh, replacementId)
+        return {
+          taskId: replaced.id,
+          supersededBy: replacementId,
+          replacementStatus: replacement.status,
+          rewired: applied.touched.filter((id) => id !== replaced.id),
+          previousAssignee: applied.previousAssignee,
+        }
+      })
+      // The replaced owner must stop: its capability is gone and its lane is not
+      // coming back. Quiescence follows the reassign_task pattern, and the kick
+      // afterwards lets the redirected descendants dispatch.
+      const previousMember = result.previousAssignee === undefined
+        ? undefined
+        : (await readTeam(stateRoot, team.id))?.members.find((member) => member.name === result.previousAssignee && member.status !== 'removed')
+      if (previousMember !== undefined) {
+        try {
+          await stopTeamMemberActivations(ctx, captain, [{ ...previousMember, stopping: true }], exec.signal)
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-teams: superseded owner ${previousMember.name} did not settle: ${String(error)}`)
+        }
+      }
+      appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, captain.session), 'agent-teams/task-superseded', {
+        teamId: team.id,
+        taskId: result.taskId,
+        replacement: result.supersededBy,
+        reason: args.reason,
+        rewired: result.rewired,
+      })
+      await scheduler.kickTeam(workspace, team.id, captain)
+      return {
+        task_id: result.taskId,
+        status: 'superseded',
+        superseded_by: result.supersededBy,
+        replacement_status: result.replacementStatus,
+        rewired: result.rewired.join(', '),
       }
     },
   }))

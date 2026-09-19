@@ -66,6 +66,19 @@ export interface AgentTeamsTaskAmendedData {
   readonly fields: readonly string[]
   /** Why the previous contract was wrong. */
   readonly reason: string
+  /** Reviews whose passing verdict a forced amendment invalidated. */
+  readonly staledReviews?: readonly string[]
+}
+
+/** Records one captain-only replacement of a task that will not finish. */
+export interface AgentTeamsTaskSupersededData {
+  readonly teamId: string
+  readonly taskId: string
+  /** The task that replaced it. */
+  readonly replacement: string
+  readonly reason: string
+  /** Non-terminal tasks whose dependencies or contracts were redirected. */
+  readonly rewired: readonly string[]
 }
 
 /** Records a human halt from the captain chat. */
@@ -135,6 +148,11 @@ declare module '@deepseek-ai/dsh-session/types' {
      */
     'agent-teams/task-amended': AgentTeamsTaskAmendedData
     /**
+     * Records one captain-only replacement of a task that will not finish.
+     * @param data - team identity, replaced task id, replacement id, reason, redirected ids.
+     */
+    'agent-teams/task-superseded': AgentTeamsTaskSupersededData
+    /**
      * Records one mailbox message.
      * @param data - team identity, sender, recipient, and content.
      */
@@ -170,6 +188,7 @@ export type AgentTeamsEventType =
   | 'agent-teams/task-created'
   | 'agent-teams/task-updated'
   | 'agent-teams/task-amended'
+  | 'agent-teams/task-superseded'
   | 'agent-teams/message-sent'
   | 'agent-teams/team-halted'
   | 'agent-teams/team-resumed'
