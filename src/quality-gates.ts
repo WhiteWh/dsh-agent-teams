@@ -13,6 +13,7 @@ import {
   type AcceptanceResult,
   type CommandResult,
   type FindingSeverity,
+  type KnownDelta,
   type ReviewFinding,
   type ReviewPolicy,
   type ReviewVerdict,
@@ -750,8 +751,99 @@ function unresolvedFindings(task: TeamTask): ReviewFinding[] {
   return (task.findings ?? []).filter((finding) => finding.resolved !== true)
 }
 
-/** Result of {@link acceptTaskPaths}. */
-export interface AcceptPathsResult {
+/** Whether one durable known-delta entry is well-formed (WP6.3). */
+export function isKnownDelta(value: unknown): value is KnownDelta {
+  if (!isRecord(value)) return false
+  return nonemptyString(value['id'])
+    && nonemptyString(value['check'])
+    && nonemptyString(value['expected'])
+    && nonemptyString(value['reason'])
+    && nonemptyString(value['pinnedBy'])
+    && typeof value['at'] === 'number'
+    && Number.isFinite(value['at'])
+}
+
+/** The pinned delta whose `check` matches a command or criterion text. */
+export function pinnedDeltaFor(deltas: readonly KnownDelta[] | undefined, text: string): KnownDelta | undefined {
+  const needle = text.trim()
+  if (needle === '' || deltas === undefined) return undefined
+  return deltas.find((delta) => delta.check.trim() === needle)
+    // A command string may carry arguments around the pinned check (for example
+    // `pnpm run lint -- --quiet`), so a containment match is the second chance.
+    ?? deltas.find((delta) => needle.includes(delta.check.trim()))
+}
+
+/**
+ * The evidence a pinned delta supplies for a waiver of one check (WP6.3), or
+ * undefined when nothing is pinned for that command/criterion.
+ */
+export function pinnedWaiverEvidence(deltas: readonly KnownDelta[] | undefined, text: string): string | undefined {
+  const delta = pinnedDeltaFor(deltas, text)
+  return delta === undefined
+    ? undefined
+    : `pinned delta ${delta.id}: ${delta.reason} (expected: ${delta.expected})`
+}
+
+/** Outcome of {@link pinKnownDelta} / {@link unpinKnownDelta}. */
+export interface KnownDeltaMutation {
+  ok: boolean
+  error?: string
+  deltas?: KnownDelta[]
+  delta?: KnownDelta
+}
+
+/**
+ * Pin one known delta (WP6.3). `check` is the identity: a second pin for the same
+ * check is refused and names the existing entry, because two reasons for one red
+ * check would make the auto evidence ambiguous and hide a stale pin.
+ */
+export function pinKnownDelta(
+  deltas: readonly KnownDelta[] | undefined,
+  input: { id?: string; check: string; expected: string; reason: string; pinnedBy: string; at?: number },
+): KnownDeltaMutation {
+  const check = input.check.trim()
+  const expected = input.expected.trim()
+  const reason = input.reason.trim()
+  if (check === '') return { ok: false, error: 'pin_delta requires a non-empty check' }
+  if (expected === '') return { ok: false, error: 'pin_delta requires a non-empty expected value (what green would look like)' }
+  if (reason === '') return { ok: false, error: 'pin_delta requires a non-empty reason' }
+  if (input.pinnedBy.trim() === '') return { ok: false, error: 'pin_delta requires a non-empty author identity' }
+  const existing = (deltas ?? []).find((delta) => delta.check.trim() === check)
+  if (existing !== undefined) {
+    return { ok: false, error: `check "${check}" is already pinned as ${existing.id}; unpin it first or amend the entry` }
+  }
+  const id = (input.id ?? check).trim()
+  if (id === '') return { ok: false, error: 'pin_delta requires a non-empty id' }
+  if ((deltas ?? []).some((delta) => delta.id === id)) {
+    return { ok: false, error: `delta id "${id}" is already in use` }
+  }
+  const delta: KnownDelta = {
+    id,
+    check,
+    expected,
+    reason,
+    pinnedBy: input.pinnedBy.trim(),
+    at: input.at ?? Date.now(),
+  }
+  return { ok: true, delta, deltas: [...(deltas ?? []), delta] }
+}
+
+/** Remove one known delta by id (WP6.3). */
+export function unpinKnownDelta(deltas: readonly KnownDelta[] | undefined, id: string): KnownDeltaMutation {
+  const key = id.trim()
+  if (key === '') return { ok: false, error: 'unpin_delta requires a non-empty id' }
+  const current = deltas ?? []
+  const delta = current.find((entry) => entry.id === key)
+  if (delta === undefined) {
+    return {
+      ok: false,
+      error: `no known delta with id "${key}"${current.length === 0 ? ' (none are pinned)' : `; pinned: ${current.map((entry) => entry.id).join(', ')}`}`,
+    }
+  }
+  return { ok: true, delta, deltas: current.filter((entry) => entry.id !== key) }
+}
+
+/** Result of {@link acceptTaskPaths}. */export interface AcceptPathsResult {
   ok: boolean
   error?: string
   task?: TeamTask

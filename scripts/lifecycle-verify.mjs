@@ -1079,6 +1079,84 @@ try {
       && typeof delivery.team_name === 'string')
   await call('agent_teams_delete', {})
 
+  // ── WP6.3: a pinned known delta supplies the waiver evidence ──
+  await call('agent_teams_create', { name: 'Known Delta', description: 'waive a pinned baseline' })
+  await call('agent_teams_add_member', { name: 'linting', role: 'implementer' })
+  const deltaState = () => readTeam(stateRoot, 'known-delta')
+  const deltaTask = async id => (await deltaState())?.tasks.find(candidate => candidate.id === id)
+  const pinned = await call('agent_teams_pin_delta', {
+    id: 'lint-baseline',
+    check: 'pnpm run lint',
+    expected: 'exit 0',
+    reason: 'the lint baseline is red on HEAD in files outside every lane',
+  })
+  check('a known delta is pinned once and listed in the status payload',
+    pinned.delta_id === 'lint-baseline'
+      && pinned.pinned === 1
+      && (await deltaState())?.knownDeltas?.[0]?.check === 'pnpm run lint')
+  let duplicateRefused = false
+  try {
+    await call('agent_teams_pin_delta', { check: 'pnpm run lint', expected: 'exit 0', reason: 'again' })
+  } catch (error) {
+    duplicateRefused = /already pinned/.test(String(error))
+  }
+  check('a second pin for the same check is refused and names the existing entry', duplicateRefused)
+  const lintTask = await call('agent_teams_create_task', {
+    subject: 'ship the linter fix',
+    assignee: 'linting',
+    kind: 'implementation',
+    objective: 'Ship the linter fix',
+    inScope: ['src/lint.ts'],
+    acceptance: ['the linter fix works'],
+    verify: ['pnpm run lint'],
+  })
+  const linter = liveAgents.get((await deltaState()).members.find(m => m.name === 'linting').id)
+  const lintClaim = await call('agent_teams_claim_task', { task_id: lintTask.task_id }, linter)
+  await call('agent_teams_update_task', { task_id: lintTask.task_id, status: 'in_progress', attempt_id: lintClaim.attempt_id }, linter)
+  await call('agent_teams_update_task', {
+    task_id: lintTask.task_id,
+    status: 'completed',
+    attempt_id: lintClaim.attempt_id,
+    output: 'fix shipped; the repo-wide lint baseline is still red outside this lane',
+    changedPaths: ['src/lint.ts'],
+    acceptanceResults: [{ criterion: 'the linter fix works', status: 'passed' }],
+    // No evidence: the pinned delta supplies it (WP6.3).
+    commandsRun: [{ command: 'pnpm run lint', status: 'waived' }],
+  }, linter)
+  const linted = await deltaTask(lintTask.task_id)
+  check('a pinned check waives without the lane writing its own evidence',
+    linted?.status === 'completed'
+      && String(linted.commandsRun?.[0]?.evidence ?? '').includes('pinned delta lint-baseline')
+      && linted.hasWaivers === true)
+  let unpinnedWaiverRefused = false
+  const otherTask = await call('agent_teams_create_task', {
+    subject: 'ship the parser fix',
+    assignee: 'linting',
+    kind: 'implementation',
+    objective: 'Ship the parser fix',
+    inScope: ['src/parser2.ts'],
+    acceptance: ['the parser fix works'],
+    verify: ['pnpm test'],
+  })
+  const otherClaim = await call('agent_teams_claim_task', { task_id: otherTask.task_id }, linter)
+  await call('agent_teams_update_task', { task_id: otherTask.task_id, status: 'in_progress', attempt_id: otherClaim.attempt_id }, linter)
+  try {
+    await call('agent_teams_update_task', {
+      task_id: otherTask.task_id,
+      status: 'completed',
+      attempt_id: otherClaim.attempt_id,
+      changedPaths: ['src/parser2.ts'],
+      acceptanceResults: [{ criterion: 'the parser fix works', status: 'passed' }],
+      commandsRun: [{ command: 'pnpm test', status: 'waived' }],
+    }, linter)
+  } catch (error) {
+    unpinnedWaiverRefused = /evidence/.test(String(error))
+  }
+  check('an unpinned check still demands its own evidence', unpinnedWaiverRefused)
+  check('the status report carries the registry',
+    (await call('agent_teams_status', {})).known_deltas?.[0]?.id === 'lint-baseline')
+  await call('agent_teams_delete', {})
+
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })
   const addedAlpha = await call('agent_teams_add_member', { name: 'alpha', role: 'slow implementer' })
   const addedBeta = await call('agent_teams_add_member', { name: 'beta', role: 'researcher' })

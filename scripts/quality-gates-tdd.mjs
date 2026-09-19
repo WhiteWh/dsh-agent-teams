@@ -98,6 +98,11 @@ function loadStateApi() {
     unsatisfiedDependencies: state.unsatisfiedDependencies,
     transitionError: state.transitionError,
     acceptTaskPaths: state.acceptTaskPaths,
+    isKnownDelta: state.isKnownDelta,
+    pinKnownDelta: state.pinKnownDelta,
+    unpinKnownDelta: state.unpinKnownDelta,
+    pinnedWaiverEvidence: state.pinnedWaiverEvidence,
+    isTeamTask: state.isTeamTask,
   }
 }
 
@@ -2090,6 +2095,60 @@ console.log('quality-gates TDD — O. post-hoc scope acceptance (WP4)')
       && /frozen/.test(String(frozenAccept?.error ?? ''))
       && api.acceptTaskPaths?.(reviewed, reviewed.tasks[0], ['src/other.ts'], 'captain', 'the review judged the old scope', true)?.ok === true,
     String(frozenAccept?.error ?? ''),
+  )
+}
+
+console.log('quality-gates TDD — P. known deltas (WP6.3)')
+
+{
+  // Feedback §6.3: a check that is red on HEAD for a reason outside the lane kept
+  // forcing an ad-hoc waiver reason. The captain pins the delta once, and a
+  // verification task whose command matches it can waive with the pinned evidence.
+  const pin = api.pinKnownDelta?.(undefined, {
+    id: 'style-lint',
+    check: 'pnpm run lint',
+    expected: 'exit 0',
+    reason: 'the lint baseline is red on HEAD for files outside this lane',
+    pinnedBy: 'captain',
+  })
+  check(
+    'tdd.delta.pin-registers-and-dedupes',
+    pin?.ok === true
+      && pin.deltas.length === 1
+      && pin.delta.id === 'style-lint'
+      && pin.delta.at > 0
+      && api.pinKnownDelta?.(pin.deltas, {
+        check: 'pnpm run lint', expected: 'exit 0', reason: 'again', pinnedBy: 'captain',
+      })?.ok === false,
+    JSON.stringify({ ok: pin?.ok, error: pin?.error, deltas: pin?.deltas }),
+  )
+  const evidence = api.pinnedWaiverEvidence?.(pin?.deltas, 'pnpm run lint')
+  check(
+    'tdd.delta.pinned-check-supplies-waiver-evidence',
+    typeof evidence === 'string'
+      && evidence.includes('pinned delta style-lint')
+      && api.pinnedWaiverEvidence?.(pin?.deltas, 'pnpm test') === undefined,
+    String(evidence),
+  )
+  check(
+    'tdd.delta.unpinned-check-still-requires-evidence',
+    api.pinnedWaiverEvidence?.(undefined, 'pnpm run lint') === undefined
+      && api.pinnedWaiverEvidence?.([], 'pnpm run lint') === undefined,
+  )
+  const unpinned = api.unpinKnownDelta?.(pin?.deltas, 'style-lint')
+  check(
+    'tdd.delta.unpin-removes',
+    unpinned?.ok === true
+      && unpinned.deltas.length === 0
+      && api.unpinKnownDelta?.(pin?.deltas, 'missing')?.ok === false,
+    JSON.stringify({ ok: unpinned?.ok, error: unpinned?.error }),
+  )
+  check(
+    'tdd.delta.durable-state-accepts-known-deltas',
+    api.isKnownDelta?.(pin?.delta) === true
+      && api.isKnownDelta?.({ id: 'x', check: '', expected: 'y', reason: 'z', pinnedBy: 'captain', at: 1 }) === false
+      && api.isKnownDelta?.({ id: 'x', check: 'c', expected: 'y', reason: 'z', pinnedBy: '', at: 1 }) === false
+      && api.isTeamTask?.({ id: 't1', subject: 'x', status: 'pending', dependencies: [], createdAt: 0, updatedAt: 0 }) === true,
   )
 }
 

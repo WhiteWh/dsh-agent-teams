@@ -81,6 +81,25 @@ export interface AgentTeamsTaskSupersededData {
   readonly rewired: readonly string[]
 }
 
+/** Records one captain-only scope acceptance (post-hoc path acceptance). */
+export interface AgentTeamsPathsAcceptedData {
+  readonly teamId: string
+  readonly taskId: string
+  /** The paths added to the task's inScope. */
+  readonly paths: readonly string[]
+  readonly reason: string
+}
+
+/** Records one change to the pinned known-delta registry. */
+export interface AgentTeamsDeltaPinnedData {
+  readonly teamId: string
+  readonly deltaId: string
+  readonly check: string
+  /** `pinned` or `unpinned`. */
+  readonly action: 'pinned' | 'unpinned'
+  readonly reason: string
+}
+
 /** Records a human halt from the captain chat. */
 export interface AgentTeamsTeamHaltedData {
   readonly teamId: string
@@ -153,6 +172,16 @@ declare module '@deepseek-ai/dsh-session/types' {
      */
     'agent-teams/task-superseded': AgentTeamsTaskSupersededData
     /**
+     * Records one captain-only post-hoc scope acceptance.
+     * @param data - team identity, task id, accepted paths, reason.
+     */
+    'agent-teams/paths-accepted': AgentTeamsPathsAcceptedData
+    /**
+     * Records one change to the pinned known-delta registry.
+     * @param data - team identity, delta id, check text, action, reason.
+     */
+    'agent-teams/delta-pinned': AgentTeamsDeltaPinnedData
+    /**
      * Records one mailbox message.
      * @param data - team identity, sender, recipient, and content.
      */
@@ -189,6 +218,8 @@ export type AgentTeamsEventType =
   | 'agent-teams/task-updated'
   | 'agent-teams/task-amended'
   | 'agent-teams/task-superseded'
+  | 'agent-teams/paths-accepted'
+  | 'agent-teams/delta-pinned'
   | 'agent-teams/message-sent'
   | 'agent-teams/team-halted'
   | 'agent-teams/team-resumed'

@@ -536,6 +536,29 @@ then either
 `review`/`requirements` verdict has passed judgment on it; after that the contract is
 frozen and `force: true` with the same mandatory `reason` is required.
 
+**Known deltas (`pin_delta` / `unpin_delta`).** A check that is red in this workspace for
+a reason outside the lane — a repo-wide lint baseline, a flaky external service — forces
+every lane to invent the same waiver reason by hand. The captain pins it once:
+
+```
+agent_teams_pin_delta({ id?, check, expected, reason })
+agent_teams_unpin_delta({ id, reason? })
+```
+
+- `check` is the identity: the command or acceptance-criterion text as the lane will report
+  it. A second pin for the same check is refused and names the existing entry, so the
+  automatic evidence can never be ambiguous or hide a stale pin.
+- The entry is `{ id, check, expected, reason, pinnedBy, at }` on `TeamState.knownDeltas`
+  (optional: a team created before the registry simply has none).
+- A `waived` command or criterion that carries **no** evidence is filled from the pinned
+  entry as `pinned delta <id>: <reason> (expected: <expected>)` — matching is by exact text
+  first, then by containment, so `pnpm run lint -- --quiet` still matches a pin on
+  `pnpm run lint`. An unpinned waiver without its own evidence stays rejected.
+- Delivery keeps the WP1 rule: the task is flagged `hasWaivers` and stays blocked until a
+  `review` task confirms the waiver with `waiverConfirmation`.
+- `agent_teams_status` prints a `Known deltas` section (id, check, expected, reason,
+  author), and the status payload carries the same list.
+
 A path that is listed in `inScope` **and** matches `outOfScope` stays a hard failure: that
 is a contradictory contract, not a scope decision, and the rejection says so.
 

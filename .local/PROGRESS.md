@@ -77,7 +77,7 @@ the pre-step count, and FAIL must stay 0.
 | S08 | WP2 amend_task extensions + retry from failed | done | | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
 | S09 | WP3 superseded + atomic dependency redirect | done | | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
-| S11 | WP6.3 known-delta registry | todo | | needs S03 |
+| S11 | WP6.3 known-delta registry | done | | verify 237 PASS/0 FAIL; qg-tdd 126 PASS/0 FAIL; lifecycle +5 checks |
 | S12 | WP6.4 requiredReviewers enforced | todo | | |
 | S13 | docs + release 0.1.23 | todo | | 0.1.22 was taken by the F4 hotfix |
 | S14 | WP11 phase 1 team_id addressing | todo | | needs S09; D5: team_id mandatory except create and bare status; D6 minimal guard |
@@ -172,6 +172,44 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S11 — WP6.3: the known-delta registry (done)
+
+Scope (plan §6.3): `TeamState.knownDeltas: { id, check, expected, reason, pinnedBy, at }[]`,
+captain-only `pin_delta`/`unpin_delta`, automatic waiver evidence for a pinned check,
+and a `Known deltas` section in `agent_teams_status`.
+
+- **Types/rules:** `KnownDelta` in `src/types.ts`, `TeamState.knownDeltas?` (optional, so
+  every `team.json` written before this step still loads — the reader validates the array
+  element-by-element when present). `src/quality-gates.ts` gains `isKnownDelta`,
+  `pinnedDeltaFor`, `pinnedWaiverEvidence`, `pinKnownDelta`, `unpinKnownDelta`; `state.ts`
+  re-exports them and uses `isKnownDelta` in the durable team validator.
+- **Identity rule:** `check` is the key. A second pin for the same check is refused with
+  the existing id, because two reasons for one red check would make the automatic evidence
+  ambiguous and hide a stale pin. `unpin` names the pinned ids when the id is unknown.
+- **Auto evidence:** `update_task` parses results in a deferred-evidence mode, fills a
+  `waived` item with no evidence from the pinned entry (`pinned delta <id>: <reason>
+  (expected: …)`, exact check text first, containment second so `pnpm run lint -- --quiet`
+  still matches), and only then rejects a waiver that still has no reason — the rejection
+  now points at `pin_delta`. The WP1 chain is untouched: the task is flagged `hasWaivers`
+  and delivery stays blocked until a review confirms it.
+- **Tools:** captain-only `agent_teams_pin_delta` / `agent_teams_unpin_delta` (tools are now
+  18), new session event `agent-teams/delta-pinned` carrying the action, and the status
+  payload/`renderStatus` gained the registry.
+- **RED first:** the new `P. known deltas` group (5 labels) had no implementation; the
+  capability suite still pinned 16 tools.
+- **GREEN:** `quality-gates-tdd` 126 PASS / 0 FAIL; `verify.mjs` 237 PASS / 0 FAIL (two new
+  checks: the captain-only registry that feeds the status report; the pin-supplied evidence
+  path plus the durable delta shape); lifecycle `all lifecycle checks passed` with five new
+  checks (pin once and see it in the payload, duplicate refused by name, a pinned check
+  waives without written evidence, an unpinned check still demands it, the status report
+  carries the registry).
+- **Build trap hit:** the first `pnpm build` failed on a missing `isKnownDelta` import, and
+  because `clean-build` had already deleted `lib/` while `tsc` emitted the host files despite
+  the error, the tdd suite ran green against a partially rebuilt `lib/` (the client bundle
+  was missing). Re-ran the build after the import fix and treated the suite result as
+  invalid until the build exited 0 — worth remembering before trusting a suite right after a
+  failed build.
 
 ### S10 — WP4: honest scope reports, `accept_paths`, `sharedInScope` (done)
 

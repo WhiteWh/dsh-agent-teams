@@ -4,6 +4,7 @@ export const TEAM_TOOL_NAMES = [
   'agent_teams_add_member', 'agent_teams_remove_member', 'agent_teams_create_task',
   'agent_teams_reassign_task', 'agent_teams_claim_task', 'agent_teams_update_task',
   'agent_teams_amend_task', 'agent_teams_supersede_task', 'agent_teams_accept_paths',
+  'agent_teams_pin_delta', 'agent_teams_unpin_delta',
   'agent_teams_send_message', 'agent_teams_status', 'agent_teams_resume', 'agent_teams_delete',
 ] as const
 

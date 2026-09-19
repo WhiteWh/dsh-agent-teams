@@ -57,6 +57,9 @@ import {
   taskKindOf,
   applySupersession,
   acceptTaskPaths,
+  pinKnownDelta,
+  unpinKnownDelta,
+  pinnedWaiverEvidence,
   waiversConfirmed,
 } from './state.ts'
 import type { ContractAmendmentInput } from './state.ts'
@@ -73,7 +76,7 @@ import {
   validateMemberLlmSelections,
   type MemberRuntimeConfig,
 } from './members.ts'
-import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
+import { TERMINAL_TASK_STATUSES, type KnownDelta, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler } from './scheduler.ts'
 import { installMailboxAdmission, mailboxPrompt } from './mailbox.ts'
 import { resolveTeamProfile } from './profiles.ts'
@@ -1918,8 +1921,23 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // would brick the whole team state (issue #105 class).
         const input = normalizeBlankOptionalTaskFields(args)
         const findings = parseFindings(args.findings)
-        const acceptanceResults = parseAcceptanceResults(args.acceptanceResults)
-        const commandsRun = parseCommandResults(args.commandsRun)
+        // WP6.3: a check pinned in the known-delta registry supplies the evidence
+        // for a `waived` result, so the lane does not have to invent a reason for a
+        // check that is red for a reason outside its control.
+        const acceptanceWithPins = applyPinnedDeltaEvidence(
+          fresh.knownDeltas,
+          parseAcceptanceResults(args.acceptanceResults, true),
+          (item) => item.criterion,
+          'acceptanceResults',
+        )
+        const commandsWithPins = applyPinnedDeltaEvidence(
+          fresh.knownDeltas,
+          parseCommandResults(args.commandsRun, true),
+          (item) => item.command,
+          'commandsRun',
+        )
+        const acceptanceResults = acceptanceWithPins
+        const commandsRun = commandsWithPins
         const waiverConfirmation = parseWaiverConfirmation(args.waiverConfirmation)
         if (waiverConfirmation !== undefined && taskKindOf(task) !== 'review') {
           throw new Error('waiverConfirmation is review-only: only a kind=review task confirms the waivers of the task it judges')
@@ -2000,6 +2018,110 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       })
       await scheduler.kickTeam(workspace, team.id, team.captainSessionId === caller.id ? caller : undefined)
       return updated
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_pin_delta',
+    description: 'Captain-only registry of checks that are red in this workspace for a reason outside the lane that runs them. Pin one entry per check (command or acceptance criterion text) once; afterwards a verification task whose commandsRun names that check may submit status="waived" without writing its own evidence — the plugin fills in "pinned delta <id>: <reason>". A duplicate pin for the same check is refused and names the existing entry, so the auto evidence can never be ambiguous or hide a stale pin. The registry is shown in agent_teams_status.',
+    parameters: {
+      id: { type: 'string', description: 'Stable delta id used by unpin_delta and in the auto evidence. Defaults to the check text.' },
+      check: { type: 'string', required: true, description: 'The command or criterion text this delta explains, for example "pnpm run lint".' },
+      expected: { type: 'string', required: true, description: 'What a green run would show, for example "exit 0".' },
+      reason: { type: 'string', required: true, description: 'Why the check is red here; recorded as the waiver evidence.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          delta_id: { type: 'string', required: true },
+          check: { type: 'string', required: true },
+          pinned: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Pinned known delta ${value.delta_id} for "${value.check}"; ${value.pinned} delta(s) on record.`,
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(workspace, config, captain)
+      const pinned = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        const result = pinKnownDelta(fresh.knownDeltas, {
+          ...args.id === undefined ? {} : { id: args.id },
+          check: args.check,
+          expected: args.expected,
+          reason: args.reason,
+          pinnedBy: CAPTAIN_KEY,
+        })
+        if (!result.ok || result.delta === undefined || result.deltas === undefined) {
+          throw new Error(result.error ?? 'pin_delta rejected')
+        }
+        fresh.knownDeltas = [...result.deltas]
+        await writeTeam(stateRoot, fresh)
+        return { delta: result.delta, count: result.deltas.length }
+      })
+      appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, captain.session), 'agent-teams/delta-pinned', {
+        teamId: team.id,
+        deltaId: pinned.delta.id,
+        check: pinned.delta.check,
+        action: 'pinned',
+        reason: pinned.delta.reason,
+      })
+      return { delta_id: pinned.delta.id, check: pinned.delta.check, pinned: pinned.count }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_unpin_delta',
+    description: 'Captain-only: remove one entry from the known-delta registry by id. A check that is no longer red for an outside reason must be unpinned, otherwise a waived result citing it would look justified. The error names the pinned ids when the given one is unknown.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Delta id to remove.' },
+      reason: { type: 'string', description: 'Why the delta no longer applies; recorded in the event.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          delta_id: { type: 'string', required: true },
+          check: { type: 'string', required: true },
+          remaining: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Unpinned known delta ${value.delta_id} ("${value.check}"); ${value.remaining} delta(s) on record.`,
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(workspace, config, captain)
+      const unpinned = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        const result = unpinKnownDelta(fresh.knownDeltas, args.id)
+        if (!result.ok || result.delta === undefined || result.deltas === undefined) {
+          throw new Error(result.error ?? 'unpin_delta rejected')
+        }
+        fresh.knownDeltas = result.deltas.length === 0 ? undefined : [...result.deltas]
+        await writeTeam(stateRoot, fresh)
+        return { delta: result.delta, count: result.deltas.length }
+      })
+      appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, captain.session), 'agent-teams/delta-pinned', {
+        teamId: team.id,
+        deltaId: unpinned.delta.id,
+        check: unpinned.delta.check,
+        action: 'unpinned',
+        reason: args.reason ?? '',
+      })
+      return { delta_id: unpinned.delta.id, check: unpinned.delta.check, remaining: unpinned.count }
     },
   }))
 
@@ -2440,6 +2562,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         viewer: identity.name,
         members,
         tasks,
+        // WP6.3: the pinned known deltas are part of the team's contract, so the
+        // status report carries them.
+        known_deltas: (team.knownDeltas ?? []).map((delta) => ({
+          id: delta.id,
+          check: delta.check,
+          expected: delta.expected,
+          reason: delta.reason,
+          pinned_by: delta.pinnedBy,
+        })),
         captain_inbox: captainInbox.slice(0, 10).map((message) => ({
           from: message.from,
           content: message.content,
@@ -2680,7 +2811,7 @@ function parseFindings(value: unknown): ReviewFinding[] | undefined {
   })
 }
 
-function parseAcceptanceResults(value: unknown): AcceptanceResult[] | undefined {
+function parseAcceptanceResults(value: unknown, deferWaiverEvidence = false): AcceptanceResult[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) throw new Error('acceptanceResults must be an array')
   return value.map((item, index) => {
@@ -2695,7 +2826,7 @@ function parseAcceptanceResults(value: unknown): AcceptanceResult[] | undefined 
       throw new Error(`acceptanceResults[${index}].status must be passed, failed or waived`)
     }
     const evidence = typeof raw['evidence'] === 'string' ? raw['evidence'] : undefined
-    if (raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
+    if (!deferWaiverEvidence && raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
       throw new Error(`acceptanceResults[${index}]: a waived criterion requires non-empty evidence naming the reason; a waiver without a reason is not accepted`)
     }
     return {
@@ -2706,7 +2837,7 @@ function parseAcceptanceResults(value: unknown): AcceptanceResult[] | undefined 
   })
 }
 
-function parseCommandResults(value: unknown): CommandResult[] | undefined {
+function parseCommandResults(value: unknown, deferWaiverEvidence = false): CommandResult[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) throw new Error('commandsRun must be an array')
   return value.map((item, index) => {
@@ -2721,7 +2852,7 @@ function parseCommandResults(value: unknown): CommandResult[] | undefined {
       throw new Error(`commandsRun[${index}].status must be passed, failed or waived`)
     }
     const evidence = typeof raw['evidence'] === 'string' ? raw['evidence'] : undefined
-    if (raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
+    if (!deferWaiverEvidence && raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
       throw new Error(`commandsRun[${index}]: a waived command requires non-empty evidence naming the reason; a waiver without a reason is not accepted`)
     }
     return {
@@ -2823,6 +2954,36 @@ function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
   }
 }
 
+/**
+ * Fill the evidence of `waived` results from the pinned known-delta registry
+ * (WP6.3), and reject a waiver that neither carries its own reason nor matches a
+ * pinned check. Runs inside the team lock, where the registry is authoritative.
+ * @param deltas - the team's pinned deltas, if any.
+ * @param items - parsed acceptance or command results.
+ * @param text - how to read the check text out of one item.
+ * @param field - field name used in the rejection message.
+ * @returns the results, with pinned evidence filled in.
+ */
+function applyPinnedDeltaEvidence<T extends { status: string; evidence?: string }>(
+  deltas: readonly KnownDelta[] | undefined,
+  items: T[] | undefined,
+  text: (item: T) => string,
+  field: string,
+): T[] | undefined {
+  if (items === undefined) return undefined
+  return items.map((item, index) => {
+    if (item.status !== 'waived' || (item.evidence ?? '').trim() !== '') return item
+    const pinned = pinnedWaiverEvidence(deltas, text(item))
+    if (pinned === undefined) {
+      throw new Error(
+        `${field}[${String(index)}]: a waived item requires non-empty evidence naming the reason;`
+        + ' a waiver without a reason is not accepted (pin a known delta if the check is red for an outside reason)',
+      )
+    }
+    return { ...item, evidence: pinned }
+  })
+}
+
 /** Render the status snapshot as compact text for the model. */
 function renderStatus(value: JsonValue): string {
   const team = value as {
@@ -2841,6 +3002,7 @@ function renderStatus(value: JsonValue): string {
       spawn_error?: string
     }[]
     tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
+    known_deltas?: { id: string; check: string; expected: string; reason: string; pinned_by: string }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
     member_inboxes: Record<string, { count: number; latest: string }>
@@ -2897,6 +3059,14 @@ function renderStatus(value: JsonValue): string {
     ],
     ...team.delivery === undefined ? [] : [
       `Delivery: ${team.delivery.ok ? 'ok' : `blocked (${team.delivery.blockers.join('; ')})`}`,
+    ],
+    // WP6.3: a pinned delta explains why a check is red here; the report names
+    // them so a waiver citing one is auditable without opening team.json.
+    ...(team.known_deltas ?? []).length === 0 ? [] : [
+      `Known deltas (${String((team.known_deltas ?? []).length)}):`,
+      ...(team.known_deltas ?? []).map((delta) => (
+        `  - ${delta.id}: ${delta.check} (expected ${delta.expected}) — ${delta.reason} [${delta.pinned_by}]`
+      )),
     ],
     `Captain inbox (${team.captain_inbox.length}):`,
     ...team.captain_inbox.map((message) => `  - [${message.from}] ${message.content}`),

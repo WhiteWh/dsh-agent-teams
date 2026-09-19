@@ -28,6 +28,7 @@ import {
   findTeamByCaptain,
   findTeamByParticipant,
   isAcceptanceCriterion,
+  isKnownDelta,
   isTeamTask,
   readMailbox,
   readTeam,
@@ -217,6 +218,7 @@ const hostSource = await readFile(new URL('../src/index.ts', import.meta.url), '
 const toolsSource = await readFile(new URL('../src/tools.ts', import.meta.url), 'utf8')
 const gatesSource = await readFile(new URL('../src/quality-gates.ts', import.meta.url), 'utf8')
 const localesSource = await readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
+const stateSource = await readFile(new URL('../src/state.ts', import.meta.url), 'utf8')
 const activityModelSource = await readFile(new URL('../src/client/activity-model.ts', import.meta.url), 'utf8')
 const localeKeys = Object.keys(agentTeamsZh).sort()
 const englishLocaleKeys = Object.keys(agentTeamsEn).sort()
@@ -404,6 +406,39 @@ check(
       && gatesSource.includes('function subtractScope(')
       && toolsSource.includes('...shared === undefined ? {} : { sharedInScope: shared }'),
     JSON.stringify(sharedProfile ?? null),
+  )
+}
+// WP6.3: the captain pins a check that is red for an outside reason once, and a
+// verification lane can then waive it without inventing its own justification.
+{
+  const pinBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_pin_delta'"),
+    toolsSource.indexOf("name: 'agent_teams_accept_paths'"),
+  )
+  check(
+    'the known-delta registry is captain-only and feeds the status report',
+    pinBlock.includes('pinKnownDelta(fresh.knownDeltas, {')
+      && pinBlock.includes('unpinKnownDelta(fresh.knownDeltas, args.id)')
+      && pinBlock.includes("'agent-teams/delta-pinned'")
+      && TEAM_TOOL_NAMES.includes('agent_teams_pin_delta')
+      && TEAM_TOOL_NAMES.includes('agent_teams_unpin_delta')
+      && !MEMBER_TOOL_NAMES.includes('agent_teams_pin_delta')
+      && !MEMBER_TOOL_NAMES.includes('agent_teams_unpin_delta')
+      && toolsSource.includes('known_deltas: (team.knownDeltas ?? [])')
+      && toolsSource.includes('Known deltas ('),
+    `team tools: ${String(TEAM_TOOL_NAMES.length)}`,
+  )
+  check(
+    'a pinned check supplies the evidence a waiver would otherwise have to write',
+    toolsSource.includes('applyPinnedDeltaEvidence(')
+      && toolsSource.includes('parseAcceptanceResults(args.acceptanceResults, true)')
+      && toolsSource.includes('parseCommandResults(args.commandsRun, true)')
+      && toolsSource.includes('pin a known delta if the check is red for an outside reason')
+      && gatesSource.includes('export function pinnedWaiverEvidence(')
+      && gatesSource.includes('pinned delta ${delta.id}')
+      && stateSource.includes("value['knownDeltas'] === undefined")
+      && isKnownDelta({ id: 'style-lint', check: 'pnpm run lint', expected: 'exit 0', reason: 'red on HEAD', pinnedBy: 'captain', at: 1 })
+      && !isKnownDelta({ id: 'style-lint', check: '', expected: 'exit 0', reason: 'red', pinnedBy: 'captain', at: 1 }),
   )
 }
 check(

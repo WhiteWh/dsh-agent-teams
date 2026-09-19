@@ -18,7 +18,7 @@
 
 `dsh-agent-teams` turns the current DeepSeek Harness session into a captain that can assemble durable sub-agents, split a goal into dependency-aware tasks, and coordinate work through direct messages.
 
-Ask in natural language. The plugin provides the team protocol, 16 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
+Ask in natural language. The plugin provides the team protocol, 18 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
 
 <p align="center">
   <img src="./assets/ui.png" width="100%" alt="DeepSeek Harness conversation with the AgentTeams live activity panel, members, tasks, dependencies, and reports">
@@ -50,9 +50,10 @@ unchanged, and no existing assertion was weakened.
 | **Amendable contract, retryable lane** | `amend_task` covers the whole contract (`deliverables`, `nonGoals`, `reviewedTaskId`, `subject`, `description`) and the brief of a `work` task; a `failed` task is amendable, and the shared transition table legalizes the `failed → pending` retry `reassign_task` always performed. `force` overrides the post-review freeze and marks the passing verdict `stale`. | `src/quality-gates.ts`, `src/state.ts`, `src/tools.ts` |
 | **Replace a lane that will not finish** | `agent_teams_supersede_task` swaps a red or abandoned task for an existing one or one created in the same call, redirects non-terminal dependents and reviews, revokes the old capability, and records `supersededBy`; a dependency on the replaced task is satisfied by its replacement, recursively. The panel draws it in its own grey tone. | `src/tools.ts`, `src/state.ts`, `src/quality-gates.ts` |
 | **Honest scope reports** | A completion that lists a path outside `inScope` is no longer refused: the task is held in `awaiting_scope_review` with its evidence, and the captain either accepts the paths (`agent_teams_accept_paths`, additive, also post-hoc on a completed task until a review freezes it) or reassigns/supersedes. A profile may declare `taskPlanning.sharedInScope` — paths every implementation/repair lane inherits and the overlap check ignores. | `src/quality-gates.ts`, `src/tools.ts`, `src/profiles.ts` |
+| **Known deltas** | `agent_teams_pin_delta` registers a check that is red here for a reason outside the lane; a `waived` result for that check then gets its evidence filled in as `pinned delta <id>: <reason>` instead of every lane inventing one. One entry per check, removable with `unpin_delta`, printed in the `agent_teams_status` report. | `src/quality-gates.ts`, `src/tools.ts` |
 
-Remaining plan work is tracked locally and lands in later releases: the known-delta
-registry (0.1.23), `requiredReviewers` enforcement (0.1.23), mandatory `team_id`
+Remaining plan work is tracked locally and lands in later releases:
+`requiredReviewers` enforcement (0.1.23), mandatory `team_id`
 addressing (0.1.24), plan progress and the task checklist (0.2.0), and live-team
 replanning (0.2.0).
 

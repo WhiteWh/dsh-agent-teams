@@ -8,7 +8,7 @@ This document holds the detailed usage material for `dsh-agent-teams`: how it wo
 
 | DSH capability | How AgentTeams uses it |
 |---|---|
-| `ctx.tools` registry | registers the 16 business tools; restricts which tools a model can see by session identity |
+| `ctx.tools` registry | registers the 18 business tools; restricts which tools a model can see by session identity |
 | `ctx.subagents.startContinuable()` | creates a member: a durable, continuable subagent carrying a member persona |
 | `ctx.subagents.followup()` | wakes the recipient member (the message joins its next turn) |
 | the durable team member table + `ctx.agents` | the former stores durable member identity, the latter provides real `running / idle / ready` activity (no reliance on a volatile subagent directory projection) |
@@ -58,6 +58,8 @@ Old `kind=work` tasks can still be completed with free text. Quality kinds (`req
 | `agent_teams_amend_task` | captain-only: rewrite the whole contract (objective/acceptance/verify/inScope/outOfScope/deliverables/nonGoals/reviewedTaskId) of a task that is pending, claimed, in_progress or failed — or the subject/description/deliverables of a `work` task — when the contract itself makes honest completion impossible; writes a revisions ledger, freezes after a passing review, and `force` overrides that freeze by marking the passing verdict `stale`. Not available to members |
 | `agent_teams_supersede_task` | captain-only: replace a task that will not finish (failed or abandoned) with an existing task or one created in the same call; the replaced task becomes `superseded`, non-terminal dependents are redirected to the replacement, non-terminal reviews/repairs are retargeted, and its capability is revoked. A completed task cannot be superseded |
 | `agent_teams_accept_paths` | captain-only: ADD workspace-relative paths to a task's `inScope` (additive, unlike the full replacement in `amend_task`); completes a task held in `awaiting_scope_review`, works post-hoc on a completed task until a review verdict freezes the contract (`force` overrides), and records a revision |
+| `agent_teams_pin_delta` | captain-only: register a check that is red here for a reason outside the lane (`check`, `expected`, `reason`); afterwards a `waived` result for that check gets its evidence filled in automatically as `pinned delta <id>: <reason>`. One entry per check; a duplicate names the existing id |
+| `agent_teams_unpin_delta` | captain-only: remove one registry entry by id (the error lists the pinned ids when the id is unknown) |
 | `agent_teams_send_message` | any member → any member/captain: the message lands directly in the recipient's mailbox and wakes it (no captain relay; an impersonated `from` is rejected) |
 | `agent_teams_status` | the whole team: kind/round/verdict, coverage matrix, escalated, halt/resume state |
 | `agent_teams_resume` | explicitly resume a halted team; a non-empty reason is required; cancelled tasks are not recreated |

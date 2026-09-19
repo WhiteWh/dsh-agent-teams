@@ -18,12 +18,16 @@ import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
-import { hasValidQualityTaskFields, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
+import { hasValidQualityTaskFields, isKnownDelta, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
   acceptanceCriterionText,
   acceptTaskPaths,
   amendTaskContract,
+  isKnownDelta,
+  pinKnownDelta,
+  unpinKnownDelta,
+  pinnedWaiverEvidence,
   buildCoverageMatrix,
   canDeclareDelivery,
   classifyChangedPath,
@@ -993,6 +997,8 @@ function isTeamState(value: unknown, expectedId: string): value is TeamState {
     && (value['halted'] === undefined || typeof value['halted'] === 'boolean')
     && (value['haltedAt'] === undefined || isFiniteNumber(value['haltedAt']))
     && (value['reviewPolicy'] === undefined || isReviewPolicy(value['reviewPolicy']))
+    && (value['knownDeltas'] === undefined
+      || (Array.isArray(value['knownDeltas']) && value['knownDeltas'].every(isKnownDelta)))
     && (value['escalated'] === undefined || typeof value['escalated'] === 'boolean')
   if (!validShape) return false
 

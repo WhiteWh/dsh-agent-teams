@@ -151,8 +151,30 @@ export interface ReviewPolicy {
   allowWaivers?: boolean
 }
 
-/** One captain-only contract amendment recorded on a quality task. */
-export interface TaskRevision {
+/**
+ * One known difference between this workspace and a check's expectation
+ * (WP6.3): a check that is red for a reason outside the lane's control.
+ *
+ * Pinning it once lets a verification task whose `commandsRun` names `check`
+ * submit `waived` with the pinned evidence instead of inventing a reason per
+ * lane, and it keeps the delta visible in `agent_teams_status`.
+ */
+export interface KnownDelta {
+  /** Stable id used by `pin_delta`/`unpin_delta` and by the auto evidence text. */
+  id: string
+  /** The command or criterion text this delta explains. */
+  check: string
+  /** What a green run would have to show. */
+  expected: string
+  /** Why the check is red here, in the captain's words. */
+  reason: string
+  /** Identity that pinned it (`captain`). */
+  pinnedBy: string
+  /** Epoch ms when it was pinned. */
+  at: number
+}
+
+/** One captain-only contract amendment recorded on a quality task. */export interface TaskRevision {
   /** Epoch ms when the amendment was applied. */
   at: number
   /** Identity that applied it (`captain`). */
@@ -337,6 +359,12 @@ export interface TeamState {
   tasks: TeamTask[]
   /** Monotonic task id counter. */
   taskSeq: number
+  /**
+   * Checks that are known to be red here for a reason outside the lanes that run
+   * them (WP6.3). Optional: teams created before the registry existed simply have
+   * none, and a waiver then needs its own evidence as before.
+   */
+  knownDeltas?: KnownDelta[]
   /**
    * Two-phase execution lifecycle. Missing means `running` for durable
    * compatibility with teams created before staging existed.
