@@ -1,265 +1,264 @@
-# Harness 兼容性与发布生命周期整治方案
+# Harness compatibility and release-lifecycle remediation plan
 
-审查日期：2026-09-05。本文是调查结果与实施方案，**不是已完成兼容修复或已经变更 npm 渠道的公告**。
+Audit date: 2026-09-05. This is an investigation result and an implementation plan, **not an announcement that a compatibility fix has landed or that an npm channel has changed**.
 
-审查对象：最近 30 个真正的 issue（排除 PR）、当前 25 个 open PR、当前远程 main、本地 Harness 源码、官方 npm 元数据、发布脚本及相关已发布包。
+Reviewed: the last 30 real issues (PRs excluded), the 25 open PRs, current remote main, the local Harness source, official npm metadata, the release scripts and the related published packages.
 
-附件：[30 个 Issue 逐条清单](./issues.md) · [25 个 PR 处置表](./pull-requests.md) · [Harness 发布与接口调查](./harness-releases.md) · [PR #130 复现记录](./pr-130-reproduction.md) · [插件官方 npm 快照](./plugin-npm-snapshot.json)。
+Attachments: [the 30-issue itemised list](./issues.md) · [the 25-PR disposition table](./pull-requests.md) · [Harness release and API investigation](./harness-releases.md) · [PR #130 reproduction record](./pr-130-reproduction.md) · [official plugin npm snapshot](./plugin-npm-snapshot.json).
+Supporting evidence: [official Harness npm snapshot](./harness-npm-snapshot.json) · [dependency-resolution experiment for an exact CLI](./dependency-resolution-evidence.json).
 
-补充证据：[Harness 官方 npm 快照](./harness-npm-snapshot.json) · [精确 CLI 的依赖解析实验](./dependency-resolution-evidence.json)。
+2026-09-06 addendum: [community upgrade-skill study](../upgrade-skill-study-2026-09-06/README.md). Nine maintenance skills were adopted; the audit, migration-scan and tarball-acceptance methods are reused first. That toolkit does not cover the core subagent API behind #130, so this plan's project regressions and release-channel gates are still required.
 
-2026-09-06 补充：[社区升级 skill 研究与接入](../upgrade-skill-study-2026-09-06/README.md)。已引入其 9 个维护 skill，后续优先复用审计、迁移扫描和 tarball 验收方法；该工具库未覆盖 #130 的核心 subagent API，仍需本方案的项目回归与发布渠道门禁。
+## 1. Recommended decisions
 
-## 1. 建议采用的决策
+1. **Ordinary users get a host+plugin pair we have accepted.** The plugin's `latest` channel means "recommended for ordinary users" and must not be entered merely because the plugin itself dropped an `-alpha` suffix.
+2. **The next main support line targets released Harness `0.1.2-rc.1`.** It is currently the default npm CLI version; the compatible plugin is promoted to our `latest` only after the full acceptance passes. No rc.1 plugin release package has passed this acceptance yet, so availability must not be announced early.
+3. **An Alpha development preview must be opted into.** New previews use the plugin's `next` channel with an explicit pre-release version; documentation names exact host and plugin versions and the accepted dependency lock. The historical `alpha` tag is kept but not followed by default installs.
+4. **Maintain release lines per host compatibility generation.** Do not patch the old `conversationEvents` and the new `uiConversation` back and forth over one default build; old hosts keep their historical companion version while the new mainline adapts to rc.1.
+5. **The acceptance unit is the full dependency closure and the actual profile.** The global CLI, the Desktop embedded core, local source, profile dependencies and frontend packages must be identified separately. `dsh --version` alone does not prove compatibility.
+6. **Merge one centralised adapter, handle business defects separately.** The overlapping parts of #119/#124/#130 are reviewed together; task scheduling, Windows timing, memory and authentication each keep their own acceptance item.
 
-1. **普通用户使用我们验收过的宿主与插件组合。** 插件 `latest` 代表普通用户推荐通道，不能只因为插件自身去掉了 `-alpha` 就进入该通道。
-2. **下一条主支持线瞄准已发布的 Harness `0.1.2-rc.1`。** 它目前是上游 CLI 的默认 npm 版本；完成整套验收之后，才将兼容插件提升为我们的 `latest`。目前还没有经过本次验收的 rc.1 插件发行包，不能提前宣布可用。
-3. **Alpha 开发预览必须主动选择。** 新预览统一使用插件 `next` 渠道及明确的预发布版本号；文档默认给出宿主、插件的精确版本和已验收的依赖锁。已有 `alpha` 标签作为历史渠道保留，不让默认安装追随它。
-4. **按宿主兼容代际维护发布线。** 不把旧版 `conversationEvents` 与新版 `uiConversation` 的补丁来回覆盖同一个默认构建；旧宿主保留历史配套版本，新主线集中适配 rc.1。
-5. **完整依赖闭包和实际 profile 是验收单位。** 全局 CLI、Desktop 内置核心、本地源码、profile 依赖和前端包必须分别识别。仅输出 `dsh --version` 不足以证明兼容。
-6. **合并一个集中适配方案，分开处理业务缺陷。** #119/#124/#130 的重叠部分统一评审；任务调度、Windows 时序、内存和鉴权分别保留验收项。
+Upstream is in a fast-moving pre-release phase, so no promise can be made that the plugin works after an arbitrary future API removal. What can be institutionalised away: development versions reaching the default channel, unintentional mixing, verifying only against mocks, repeatedly patching the same problem in opposite directions, and treating "merged" as "users have the fix".
 
-上游处于快速变化的预发布阶段，无法承诺未来任意删改 API 后插件仍然工作。可以制度化消除的是：默认渠道引入开发版本、无意识混装、只在 mock 上验证、同一问题反复相反修补，以及“已合并”被误当作“用户已经拿到修复”。
+## 2. Current facts and "what to use now"
 
-## 2. 当前事实与“现在用什么”
+### 2.1 Four version dimensions must not be conflated
 
-### 2.1 四类版本不能混为一谈
-
-| 维度 | 实际例子 | 含义 |
+| Dimension | Real example | Meaning |
 | --- | --- | --- |
-| Harness 核心 | `@deepseek-ai/dsh@0.1.2-rc.1` | 上游 CLI/核心发布版本 |
-| AgentTeams 插件 | `@nanmicoder/dsh-agent-teams@0.1.15` | 本仓库独立发布版本，不与宿主数字对应 |
-| npm 渠道 | `latest`、`next`、`alpha` | 可移动的版本指针，不是兼容性证明 |
-| Desktop 或源码 | Desktop 产品版本、Git commit/tag | Desktop 有内置核心；本地 checkout 可能比 npm 更早或更晚 |
+| Harness core | `@deepseek-ai/dsh@0.1.2-rc.1` | upstream CLI/core release version |
+| AgentTeams plugin | `@nanmicoder/dsh-agent-teams@0.1.15` | this repository's own release version, unrelated to the host number |
+| npm channel | `latest`, `next`, `alpha` | movable pointers, not proof of compatibility |
+| Desktop or source | Desktop product version, Git commit/tag | Desktop has an embedded core; a local checkout may be ahead of or behind npm |
 
-例如 `0.1.2-alpha.5` 指 Harness 的第 5 个 Alpha，不能简写成插件 `0.1.5`；`rc.1` 仍是候选版本，不是无后缀 GA。
+For example `0.1.2-alpha.5` means the 5th Alpha of Harness and must not be abbreviated to plugin `0.1.5`; `rc.1` is still a candidate, not an unsuffixed GA.
 
-### 2.2 官方 npm 快照
+### 2.2 Official npm snapshot
 
-| 包/来源 | 观测值 | 对默认安装的影响 |
+| Package/source | Observation | Effect on a default install |
 | --- | --- | --- |
-| `@deepseek-ai/dsh` | `latest = next = 0.1.2-rc.1`；`alpha = 0.1.2-alpha.5` | 当前普通 CLI 安装获得 rc.1 |
-| `@nanmicoder/dsh-agent-teams` | `latest = 0.1.15`；`alpha = 0.1.15-alpha.1` | 当前插件默认包只明确验收过 Alpha.2 |
-| 本地 Harness checkout | `d347e70390`，已合入 `0.1.3-alpha.1` 发布分支 | 不可用它替代 npm 已发布版本的验收 |
-| 上游 `0.1.3-alpha.1` | 有 GitHub release；本次查询尚无对应 npm 版本 | 暂不作为默认支持目标 |
+| `@deepseek-ai/dsh` | `latest = next = 0.1.2-rc.1`; `alpha = 0.1.2-alpha.5` | an ordinary CLI install currently gets rc.1 |
+| `@nanmicoder/dsh-agent-teams` | `latest = 0.1.15`; `alpha = 0.1.15-alpha.1` | the current default plugin package is only explicitly accepted on Alpha.2 |
+| local Harness checkout | `d347e70390`, already merged into the `0.1.3-alpha.1` release branch | cannot replace acceptance of the published npm version |
+| upstream `0.1.3-alpha.1` | a GitHub release exists; this query found no matching npm version | not a default support target yet |
 
-**目前“宿主 latest + 插件 latest”得到 rc.1 + 0.1.15，是已知不兼容的组合。** #127/#132 报告启动阶段 `registerContinuableSetup` 缺失，#131 则涉及后续消息投递 API。目前没有经本项目验收、可向普通用户推荐的 rc.1 插件发行包；这不等于穷尽证明所有历史版本都绝对不能运行。
+**Today "host latest + plugin latest" yields rc.1 + 0.1.15, a known-incompatible combination.** #127/#132 report a missing `registerContinuableSetup` at startup and #131 concerns the later message-delivery API. No rc.1 plugin release package has passed this project's acceptance, which is not an exhaustive proof that every historical version is unusable.
 
-官方分包标签也不整齐：`dsh-base`、`dsh-subagent`、`dsh-session`、`dsh-client-ui-conversation` 的 `latest` 在本次查询中仍指向 `0.0.1-rc.1`；`dsh-client-ui-chat` 的 `latest` 为 `0.1.2-alpha.2`，它们的 `next` 指向 rc.1。不能逐个安装所有分包的 `@latest` 来“对齐”。完整元数据与源码证据见 Harness 调查附件。
+Official sub-package tags are inconsistent: as of this query the `latest` of `dsh-base`, `dsh-subagent`, `dsh-session` and `dsh-client-ui-conversation` still points at `0.0.1-rc.1`, while `dsh-client-ui-chat`'s `latest` is `0.1.2-alpha.2`; their `next` points at rc.1. Installing every sub-package `@latest` is not a way to "align" them. Full metadata and source evidence are in the Harness investigation attachment.
 
-### 2.3 当下的使用建议
+### 2.3 Practical guidance today
 
-| 用户现状 | 当前应对 | 证据边界 |
+| User's situation | What to do now | Evidence boundary |
 | --- | --- | --- |
-| 已有正常运行的组合 | 保留实际宿主、profile 锁文件和精确插件版本，暂不独立升级任何一边 | 优先保持可复现的工作环境 |
-| 使用 `0.1.2-rc.1` | 等待统一适配的候选包验收；因启动失败需恢复宿主时，只停用该 profile 中的不兼容插件 | 不能声称旧插件 `0.1.14` 已兼容 rc.1 |
-| 已有验收过的 `0.1.2-alpha.2` 环境 | 可以显式固定插件 `0.1.15`；同时保留完整依赖锁 | 本仓库已有 macOS Web/API 历史验收，本次没有重做跨平台验收 |
-| Harness `0.1.0-rc.8` | 历史文档对应插件 `0.1.14`，精确固定 | 不推广为“所有旧 RC”通用 |
-| Harness `0.1.1-rc.2` | #107 维护者实测的历史组合为插件 `0.1.10`，安装使用 `--save-exact` | 是维护者在 macOS 上的历史验证，不是本次全量复测 |
-| Desktop 或不明源码版本 | 先诊断内置核心、实际加载路径与 profile | 更新全局 CLI 不会更新 Desktop 内置核心 |
+| an existing working combination | keep the actual host, the profile lockfile and the exact plugin version; upgrade neither side on its own | prioritise keeping a reproducible environment |
+| on `0.1.2-rc.1` | wait for the centrally adapted candidate to be accepted; if the host must be recovered after a startup failure, disable only the incompatible plugin in that profile | must not claim the old plugin `0.1.14` is rc.1-compatible |
+| an accepted `0.1.2-alpha.2` environment | may explicitly pin plugin `0.1.15` while keeping the full dependency lock | this repository has historical macOS Web/API acceptance; cross-platform acceptance was not redone |
+| Harness `0.1.0-rc.8` | historical documentation pairs it with plugin `0.1.14`; pin exactly | not generalised to "all old RCs" |
+| Harness `0.1.1-rc.2` | the maintainer-verified historical pair in #107 is plugin `0.1.10`, installed with `--save-exact` | a historical maintainer verification on macOS, not a full re-test here |
+| Desktop or an unknown source version | diagnose the embedded core, the actual loaded path and the profile first | updating the global CLI does not update the Desktop embedded core |
 
-不建议为解决默认渠道问题，把所有普通用户统一导向 Alpha.2；也不建议直接把插件 `latest` 指回 `0.1.14`，因为它仍不能与当前默认 rc.1 搭配。需要先产出并验证 rc.1 配套包。
+Redirecting every ordinary user to Alpha.2 is not recommended, and pointing the plugin `latest` back at `0.1.14` is not either, because it still does not work with the current default rc.1: an rc.1 companion package must be produced and verified first.
 
-历史锁版命令（仅适用于表中 rc.2 组合）：
+Historical pin command (valid only for the rc.2 combination in the table):
 
 ```sh
 dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.10
 ```
 
-精确版本字符串本身不是浮动范围；`^0.1.10` 才会允许更高兼容版本。市场或安装器主动改写声明，需要单独调查，不能归因于“裸版本也会自动升级”。
+An exact version string is not a floating range; only `^0.1.10` would allow a higher compatible version. A marketplace or installer rewriting the declaration needs its own investigation and must not be attributed to "a bare version upgrades automatically".
 
-## 3. 根因归并
+## 3. Root-cause consolidation
 
-| 根因 | 代表 issue | 统一处理方式 |
+| Root cause | Representative issues | Unified handling |
 | --- | --- | --- |
-| 新插件要求新 UI 服务，旧宿主仍提供旧服务 | #113、#128、#107 部分评论 | 旧宿主使用历史配套发布；安装前识别实际核心，不把 main 改回旧 API |
-| 旧插件要求 `conversationEvents`，新宿主已迁移 | #104、#100、#107 部分报告 | 使用对应的新代 UI 构建；不能仅修改等待服务名而不处理导入、类型和打包 |
-| 子代理重构移除旧 setup、消息投递与会话前缀接口 | #115、#120、#123、#127、#131、#132；#122 被作者关联到 #131 | 集中完成 rc.1 生命周期、投递、模型选择、ownEvents 与退休边界迁移 |
-| 发布渠道与版本选择让用户落入不支持组合 | #126、#107、#128 | 配套版本清单、发布门禁、精确锁版、安装前诊断 |
-| 业务/平台缺陷 | #125、#103、#117、#106、#108 等 | 独立复现和修复，进入同一验收矩阵；不将版本适配视作自动解决 |
+| a new plugin needs a new UI service while an old host still provides the old one | #113, #128, part of #107 | old hosts use the historical companion release; identify the actual core before installing and do not revert main to the old API |
+| an old plugin needs `conversationEvents` after the host migrated | #104, #100, part of #107 | use the matching new-generation UI build; renaming the awaited service alone does not handle imports, types and bundling |
+| the subagent refactor removed the old setup, message delivery and session-prefix APIs | #115, #120, #123, #127, #131, #132; #122 was linked by its author to #131 | migrate the rc.1 lifecycle, delivery, model selection, ownEvents and retirement boundaries centrally |
+| release channels and version choices drop users into unsupported combinations | #126, #107, #128 | companion-version list, release gates, exact pinning, pre-install diagnostics |
+| business/platform defects | #125, #103, #117, #106, #108 and others | reproduce and fix independently inside the same acceptance matrix; version adaptation is not treated as an automatic fix |
 
-最近 30 个 issue 中，21 个 open、9 个 closed；14 条主要与版本/渠道相关，另有 2 条启动症状证据不足；其余为 6 条业务/安全/调度、1 条 Windows 验证问题、5 条功能建议、2 条信息不足的报告。它们不是 30 种独立的版本故障。完整逐条表保留了重复、已关闭、缺少环境与真正业务问题；不能为了清理数量批量标记“升级即可”。
+Of the last 30 issues, 21 are open and 9 closed; 14 are mainly version/channel related, 2 report startup symptoms with insufficient evidence, and the rest are 6 business/security/scheduling items, 1 Windows verification question, 5 feature suggestions and 2 under-specified reports. They are not 30 independent version failures. The full itemised table keeps duplicates, closed items, missing environments and genuine business problems; do not batch-mark them "just upgrade" to clean up the count.
 
-子代理旧 setup/消息接口的移除发生在 **Alpha.4**，不是直到 rc.1 才发生；Alpha.5 和 rc.1 延续了这一重构。因此可以统一设计适配，但必须分别验证声明支持的精确宿主。
+The removal of the old subagent setup/message APIs happened in **Alpha.4**, not at rc.1; Alpha.5 and rc.1 continue that refactor. One adapter can therefore be designed centrally, but each host claimed as supported must be verified separately.
 
-## 4. 发布治理缺口
+## 4. Release-governance gaps
 
-### 4.1 发布通道曾在同一天改变政策
+### 4.1 The release channel changed policy within one day
 
-2026-08-31，`0865d88` 将 Alpha.2 适配发布为 `0.1.15-alpha.1@alpha`；约半小时后，`da2e2e4` 改成 `0.1.15@latest`，发布说明明确运行时代码没有变化。现有 README 也明确说默认通道跟随已适配的开发者预览版。
+On 2026-08-31 `0865d88` released the Alpha.2 adapter as `0.1.15-alpha.1@alpha`; about half an hour later `da2e2e4` changed it to `0.1.15@latest`, with release notes stating explicitly that the runtime code did not change. The README also states that the default channel follows the adapted developer preview.
 
-当前 `scripts/release-metadata.mjs` 只从**插件自身**版本号推导 tag：带 `alpha/beta/rc` 就分流，否则用 `latest`。它不检查宿主支持清单和实际验收，因此去掉插件后缀便可把仅适配 Alpha 的构建提升到默认渠道。
+The current `scripts/release-metadata.mjs` derives the tag from the **plugin's own** version alone: an `alpha/beta/rc` suffix diverts it, otherwise it uses `latest`. It does not consult the host support list or the actual acceptance, so removing a plugin suffix is enough to promote an Alpha-only build to the default channel.
 
-### 4.2 声明可安装不等于运行时兼容
+### 4.2 Declaring installability is not runtime compatibility
 
-当前 peer 使用 `^0.1.2-alpha.2`，并且标为 optional；仓库还设置 `strict-peer-dependencies=false`。实测 node-semver：
+The current peer range is `^0.1.2-alpha.2`, marked optional, and the repository sets `strict-peer-dependencies=false`. Measured with node-semver:
 
-| 版本 | 满足 `^0.1.2-alpha.2` |
+| Version | Satisfies `^0.1.2-alpha.2` |
 | --- | --- |
-| `0.1.2-alpha.2` | 是 |
-| `0.1.2-alpha.5` | 是 |
-| `0.1.2-rc.1` | 是 |
-| `0.1.2` / `0.1.3` | 是 |
-| `0.1.3-alpha.1` | 否 |
+| `0.1.2-alpha.2` | yes |
+| `0.1.2-alpha.5` | yes |
+| `0.1.2-rc.1` | yes |
+| `0.1.2` / `0.1.3` | yes |
+| `0.1.3-alpha.1` | no |
 
-因此不能拿 semver 满足范围当作 API 保证，也不能粗暴说“这个范围匹配所有预发布版本”。把 peer 改成 `>=0.1.0` 也不是解决办法：node-semver 默认不将 `0.1.2-rc.1` 视作满足这个范围。更重要的是，上游 Alpha.2 CLI 及 bundle 自身也带相似范围；单独固定 CLI 的包名版本，重新解析后仍可能得到变化的依赖闭包。
+So a satisfied semver range is not an API guarantee, and the range must not be described as matching every pre-release. Changing the peer to `>=0.1.0` is not a fix either: node-semver does not by default treat `0.1.2-rc.1` as satisfying that range. More importantly, the upstream Alpha.2 CLI and bundles carry similar ranges themselves, so pinning only the CLI package name can still produce a changed dependency closure on re-resolution.
 
-本次在隔离目录、官方 registry 完成了两次 `npm install --package-lock-only --ignore-scripts` 解析实验：精确请求 CLI `0.1.2-alpha.2`，最终锁文件包含 **208 个 rc.1 的 dsh 包与 7 个 Alpha.2 的 dsh 包**；base/agent/subagent/session/web-app 等核心已解析为 rc.1。精确请求 CLI rc.1 的实验则得到 **214 个 rc.1 的 dsh 包**。这证明当前重新解析可以发生代际混合；它是依赖解析证据，没有执行安装脚本、启动宿主或运行插件。不同包管理器、旧锁文件和 overrides 的结果需分别检查。
+Two `npm install --package-lock-only --ignore-scripts` experiments were run in an isolated directory against the official registry: requesting CLI `0.1.2-alpha.2` exactly produced a lockfile with **208 rc.1 dsh packages and 7 Alpha.2 dsh packages**, with base/agent/subagent/session/web-app already resolved to rc.1; requesting CLI rc.1 exactly produced **214 rc.1 dsh packages**. Re-resolution can therefore mix generations today. This is dependency-resolution evidence only — no install script ran, no host booted, no plugin executed. Other package managers, old lockfiles and overrides need separate checks.
 
-### 4.3 修复已进入 main，但尚未进入 npm
+### 4.3 The fix is in main but not yet on npm
 
-官方 npm 最新 `0.1.15` 发布于 `2026-08-31T05:23:05Z`。main=`232a338` 在发布提交 `da2e2e4` 后还有 8 个提交，包括 #109 的空字段处理、#110 的失败上报完善。不能因为合并了 PR，就通知用户安装当前 `latest` 一定包含修复。
+The official npm `0.1.15` was published at `2026-08-31T05:23:05Z`. main=`232a338` has 8 commits after the release commit `da2e2e4`, including the empty-field handling of #109 and the failure-reporting improvements of #110. Merging a PR does not justify telling a user that the current `latest` certainly contains the fix.
 
-### 4.4 当前 CI 在发布阶段才集中执行
+### 4.4 CI runs only at the release stage
 
-现有 `.github/workflows/publish.yml` 使用 Ubuntu + Node 24 + 单份 Alpha.2 lockfile，在打 tag 或手动发布时 build/verify。本次查询 25 个 open PR 的 GitHub checks 均为空。需要把同样的门槛前移到每个 PR，并增加实际宿主矩阵、Windows 与打包安装验收。
+The current `.github/workflows/publish.yml` uses Ubuntu + Node 24 + a single Alpha.2 lockfile and builds/verifies on a tag or a manual publish. As of this query the GitHub checks of all 25 open PRs were empty. The same gate must move to every PR, plus a real host matrix, Windows and packaged-install acceptance.
 
-## 5. 目标架构：小范围适配，明确拒绝未知组合
+## 5. Target architecture: a narrow adapter that explicitly rejects unknown combinations
 
-### 5.1 建立单一兼容清单
+### 5.1 One compatibility list
 
-新增项目自有 `compatibility.json`，由发布脚本、诊断工具、README 生成器与 CI 共同消费。这是建议新增的项目协议，**不是声称 Harness 已原生支持的 package.json 字段**。
+Add a project-owned `compatibility.json` consumed by the release scripts, the diagnostics tool, the README generator and CI. This is a proposed project protocol, **not** a claim that Harness natively supports such a package.json field.
 
-每个受支持组合至少记录：
+Each supported combination records at least:
 
-- 宿主来源：npm / Desktop 内置 / 源码；确切核心版本或 commit；
-- 关键运行时、bundle 和浏览器包的实际版本、必要完整性信息与 lockfile 摘要；
-- 插件版本、候选产物摘要、渠道；
-- transport、成员初始化、事件历史、模型选择、UI 注册、鉴权等能力契约；
-- 平台/Node 版本、自动化结果、真实模型与 Web 验收日期、已知限制；
-- 状态：`verified`、`preview`、`legacy`、`unsupported`，及维护期限。
+- host source: npm / Desktop embedded / source; the exact core version or commit;
+- the actual versions of the key runtime, bundle and browser packages, the necessary integrity information and the lockfile digest;
+- plugin version, candidate artifact digest, channel;
+- capability contracts for transport, member initialisation, event history, model selection, UI registration and authentication;
+- platform/Node version, automation result, real-model and Web acceptance date, known limitations;
+- status `verified` / `preview` / `legacy` / `unsupported`, plus the maintenance deadline.
 
-只收录明确验证的组合。旧代 UI 如不能与新版产物安全共存，应采用不同发布线/构建，不能依赖已经加载失败之后的 `if` 判断来补救静态导入。
+Only explicitly verified combinations are listed. When an older-generation UI cannot safely coexist with a newer artifact, it needs a separate release line/build; an `if` after a failed load cannot repair a static import.
 
-### 5.2 将版本差异集中到 `src/host-compat/`
+### 5.2 Concentrate version differences in `src/host-compat/`
 
-业务层只使用项目自己的接口；适配层负责版本和能力对应，不在 tools/scheduler/UI 各处复制探测：
+The business layer uses only project-owned interfaces; the adapter maps versions and capabilities instead of duplicating probes across tools/scheduler/UI:
 
-| 接缝 | 必须保留的行为 |
+| Seam | Behaviour that must be preserved |
 | --- | --- |
-| 成员创建与冷恢复 | 一次安装模型选择、fallback、最终失败处理；不能缺 hook 时直接 no-op |
-| 消息投递 | 区分独立队列回合与运行中 step-boundary 注入；保留发送者/插件来源和 AbortSignal |
-| 会话历史 | 使用目标版本规定的成员自有事件，不混入父会话的 inherited prefix |
-| 模型路线 | provider、model、reasoningEffort、fallback 后的 active route 均持久化并恢复 |
-| 退休/停止 | 覆盖我们使用的所有消息入口及原生后续入口；阻止退休成员复活，同时保留历史可读 |
-| Web 装载 | 服务声明、静态导入、模块 loader、事件注册与 UI 数据形状作为一个整体 |
-| 访问控制 | 使用实际宿主鉴权服务，缺少该能力时不给敏感路由放行 |
+| member creation and cold resume | one model-selection install, fallback and final-failure handling; never a silent no-op when a hook is missing |
+| message delivery | distinguish a standalone queue turn from a step-boundary injection while running; preserve the sender/plugin source and the AbortSignal |
+| session history | use the member-owned events specified by the target version; never mix in the parent session's inherited prefix |
+| model route | provider, model, reasoningEffort and the post-fallback active route are all persisted and restored |
+| retirement/stop | cover every message entry point we use and the native follow-up entries; prevent a retired member from reviving while keeping history readable |
+| Web mounting | service declaration, static imports, module loader, event registration and UI data shapes as one unit |
+| access control | use the actual host authentication service; never let a sensitive route through when that capability is missing |
 
-rc.1 的公开 `sendMessage` 与 internal 的 `queueHostSubagentPrompt` 具有不同投递语义，不应仅视为 `followup` 改名。若必须使用 internal 入口，限制在特定适配器、精确发布基线并加入实际包契约测试；向上游提出稳定插件接缝建议属于后续协作，不能假定我们能控制上游 API。
+rc.1's public `sendMessage` and the internal `queueHostSubagentPrompt` have different delivery semantics and must not be treated as a rename of `followup`. If the internal entry point must be used, confine it to a specific adapter with an exact release baseline and real package contract tests; proposing a stable plugin seam upstream is later collaboration and cannot assume control over the upstream API.
 
-### 5.3 兼容诊断与安全退出
+### 5.3 Compatibility diagnostics and a safe exit
 
-增加不依赖业务插件成功激活的 doctor/preflight 入口，输出：安装来源、实际服务进程/核心、CLI 与 profile 的区别、实际模块路径/版本、插件版本、关键 API 探测、匹配的受支持组合和可操作的修复方式。
+Add a doctor/preflight entry point that does not depend on the business plugin activating successfully, reporting: install source, actual service process/core, the CLI versus profile distinction, actual module paths/versions, plugin version, key API probes, the matching supported combination and an actionable fix.
 
-需要覆盖两个时点：
+Two moments must be covered:
 
-1. **导入与依赖注入之前**：发现包不存在、导出被删、必需服务代际不符；单纯在 `apply()` 里 try/catch 无法修复 import 错误或永远 pending 的客户端注入。
-2. **激活和业务调用之前**：检测关键能力，兼容时安装所有必需桥接；不兼容时停止 AgentTeams 创建/调度入口并给出明确诊断，保留用户状态。与宿主装载器配合时，应避免第三方插件失败拖垮整个 Desktop。
+1. **before import and dependency injection**: a missing package, a removed export or a mismatched required service generation; a try/catch inside `apply()` cannot fix an import error or a client injection that stays pending forever.
+2. **before activation and business calls**: probe the key capabilities, install every required bridge when compatible, and when incompatible stop the AgentTeams creation/scheduling entry points with a clear diagnostic while keeping user state. When working with the host loader, a third-party plugin failure must not take down the whole Desktop.
 
-版本字符串与能力检查结合使用：字符串不是完整证明；只看函数存在也不能证明签名和语义未变。诊断包只收集必要环境与版本，不包含凭据或完整对话内容。
+Combine version strings with capability checks: a string is not complete proof, and a function merely existing does not prove its signature and semantics are unchanged. The diagnostics package collects only the necessary environment and versions, never credentials or full conversation content.
 
-独立 doctor 并不会自动拦截市场、Desktop 或 `dsh plugin add` 的安装。安装前阻止混装，需要这些入口调用 preflight，或者先提供本项目经测试的受控安装入口；宿主/市场集成属于单列协作项。在其完成前只能保证诊断能力，不能宣称所有默认安装已被保护。
+A standalone doctor does not automatically intercept installs from a marketplace, Desktop or `dsh plugin add`. Preventing mixing before installation requires those entry points to call the preflight, or a controlled install entry point tested by this project; host/marketplace integration is a separate collaboration item. Until then only the diagnostic capability can be guaranteed, and no claim can be made that every default install is protected.
 
-## 6. 默认、预览和历史版本政策
+## 6. Default, preview and historical version policy
 
-| 通道/发布线 | 面向谁 | 进入条件 | 更新原则 |
+| Channel/line | Audience | Entry condition | Update principle |
 | --- | --- | --- | --- |
-| `latest` | 普通用户 | 支持当时明确选定的非 Alpha/Canary 上游推荐基线；实际包完整验收；无已知关键功能降级 | 上游变更先进入候选，不自动追 upstream master |
-| `next` | 主动试用新宿主的开发者 | 明确写出精确宿主、预发布插件版本和缺陷；基本自动化通过 | 显式安装，可频繁迭代，不影响默认用户 |
-| 历史精确版本 | 受旧 Desktop/宿主约束的用户 | 有对应历史组合记录 | 不自动升级；仅按维护期限决定是否回补关键修复 |
+| `latest` | ordinary users | targets the explicitly chosen non-Alpha/Canary upstream baseline of the moment; the actual package passed full acceptance; no known critical feature regression | upstream changes enter a candidate first; never automatically follow upstream master |
+| `next` | developers trying a new host deliberately | the exact host, pre-release plugin version and defects are stated; basic automation passes | explicit install, may iterate frequently, does not affect default users |
+| historical exact version | users constrained by an old Desktop/host | a corresponding historical pair record exists | no automatic upgrade; backports of critical fixes only within the maintenance window |
 
-rc.1 可以在充分验收后成为当前普通用户的推荐基线，文档仍明确它是上游 Release Candidate。不能把“没有 GA”解释成“只能永远留在旧版本”，也不能用普通用户通道的名称来掩盖实际成熟度。
+rc.1 may become the recommended baseline for ordinary users after sufficient acceptance, while the documentation still states that it is an upstream release candidate. "There is no GA" must not be interpreted as "stay on an old version forever", and the name of an ordinary-user channel must not disguise actual maturity.
 
-建议约束维护成本：长期只维护一个当前推荐宿主代际；切换代际后为上一条正式支持线保留 **30 天迁移窗口**，仅回补阻断运行、数据完整性和关键安全修复；预览仅验证指定快照。此处 30 天是建议政策，尚未对外承诺，不代表承诺支持每一个历史 Alpha。
+To bound maintenance cost: maintain one current recommended host generation long-term; after switching generations keep the previous supported line for a **30-day migration window** with backports limited to run-blocking, data-integrity and critical security fixes; a preview verifies only the named snapshot. The 30 days is a proposed policy, not yet a public commitment, and does not promise support for every historical Alpha.
 
-为避免再增加四五种含义相近的通道，后续预览统一用 `next`；插件自身可带 `-alpha.N` 或 `-rc.N` 表达成熟度，发布脚本改由显式 channel + 兼容清单共同决策，不再将后缀与 npm tag 一一硬绑定。历史 `alpha` tag 不删除、不偷偷重新解释。
+To avoid adding four or five more near-synonymous channels, future previews use `next` uniformly; the plugin may still carry `-alpha.N`/`-rc.N` to express maturity, and the release script decides from an explicit channel plus the compatibility list instead of hard-binding suffix to npm tag. The historical `alpha` tag is neither deleted nor silently reinterpreted.
 
-宿主最低基线或核心 API 发生不兼容变化时，在 0.x 阶段使用新的插件 minor 发布线。候选版本可以规划为 `0.2.0-rc.1@next`，验收后为 `0.2.0@latest`；这些是待实施版本示例，**尚未发布**。从预发布号改成正式号会重新产生 tarball，因此必须复验最终 `0.2.0` 包；不能用旧候选的摘要替正式包背书。发布流程应直接上传已验收的 tarball，并核对 registry 完整性。也可以让最终无后缀包先进入 `next` 做最后验收，再将同一产物提升为 `latest`，这一阶段不重打包。
+When the host minimum baseline or a core API breaks compatibility, use a new plugin minor line during 0.x. A candidate can be planned as `0.2.0-rc.1@next` and, after acceptance, `0.2.0@latest`; these are version examples to implement, **not yet released**. Changing from a pre-release number to a final one regenerates the tarball, so the final `0.2.0` package must be re-verified; an old candidate's digest cannot vouch for the final package. The release flow should upload the already-accepted tarball directly and check the registry integrity. Alternatively the final unsuffixed package can enter `next` for the last acceptance and then be promoted to `latest` on the same artifact, with no repack.
 
-发布门禁至少拒绝以下情况：
+The release gate must reject at least:
 
-- 仅支持 Alpha/Canary 的插件申请 `latest`；
-- 没有匹配实际产物摘要的验收记录；
-- 兼容清单与 package peers、README、打包产物声明不一致；
-- 关键生命周期能力被降为 no-op，却宣称完整兼容；
-- 当前 latest 支持线的发布指针将被旧维护线的 workflow 意外覆盖。
+- a plugin supporting only Alpha/Canary requesting `latest`;
+- an acceptance record whose digest does not match the actual artifact;
+- the compatibility list disagreeing with package peers, the README or the packaged artifact declarations;
+- a critical lifecycle capability degraded to a no-op while full compatibility is claimed;
+- a release pointer for the current `latest` line being unexpectedly overwritten by an older line's workflow.
 
-已有包不删除、不重发相同版本、不强制改用户 profile。调 npm tag 不能改变已经安装的版本或 lockfile，因此渠道纠正必须配套迁移说明和候选包验收。
+Existing packages are not deleted, the same version is not republished, and no user profile is force-changed. Moving an npm tag cannot change an already installed version or lockfile, so a channel correction needs migration documentation and candidate acceptance.
 
-## 7. 验证与合并标准
+## 7. Verification and merge standards
 
-### 7.1 三层测试
+### 7.1 Three test layers
 
-1. **业务单元/集成层**：任务 capability、attempt、并发 claim、staged 审批、终态不可覆盖、邮箱 lease/ack、调度限流和中断恢复。
-2. **实际发布包契约层**：加载真实 Cordis/SubagentRuntime/Session/Connection，验证接收对象、参数、事件时序和 cold resume；mock 只替代 LLM 或外部 IO，不能把被验证的宿主接口也全部伪造。
-3. **干净 profile 的产物验收**：安装打出的 tarball 和指定宿主依赖闭包，完成 Web/headless 启动、创建两个成员、消息往返、带依赖任务、失败上报、fallback、停止、退休和重启恢复。验证安装包，不只测试源码目录。
+1. **business unit/integration layer**: task capability, attempt, concurrent claim, staged approval, terminal-state immutability, mailbox lease/ack, scheduling limits and interruption recovery.
+2. **real release-package contract layer**: load the real Cordis/SubagentRuntime/Session/Connection and verify the received objects, arguments, event ordering and cold resume; a mock may replace only the LLM or external IO, never the host interfaces under test.
+3. **artifact acceptance in a clean profile**: install the produced tarball with the specified host dependency closure and complete Web/headless startup, two members, a message round trip, a dependent task, failure reporting, fallback, stop, retirement and restart recovery. Verify the installed package, not just the source directory.
 
-计划要求：当前主支持组合在 Linux/Windows 的 Node 24 上执行自动化，macOS 完成打包与 Web 验收；Desktop 作为独立表面，只有实际验收过的内置核心才列为支持。增加 Node 22.19+ 或更多版本前，应有相应验证记录，不由 engines 字符串推断。以上是待实施验收矩阵，不是已完成的测试声明。
+Planned requirements: the current main supported combination runs automation on Linux and Windows Node 24, with packaging and Web acceptance on macOS; Desktop is a separate surface, and only an actually accepted embedded core is listed as supported. Adding Node 22.19+ or more versions needs corresponding records and must not be inferred from the `engines` string. These are a matrix to implement, not a claim of completed tests.
 
-升级与降级单独验证：旧状态保留，未知字段/schema 有版本标记；不支持的降级先检测，不能覆盖用户 team/session 数据。#105 已经写入磁盘的非法空字段不能假定随新输入校验自动修好，应提供先检查、备份、预览变更再修复的针对性流程，并验证可恢复性。已退休成员不可被新的原生入口重新唤醒，历史 transcript 仍可打开。
+Upgrade and downgrade are verified separately: old state is retained, unknown fields/schemas carry a version marker, and an unsupported downgrade is detected first so user team/session data is never overwritten. The illegal empty fields #105 already wrote to disk cannot be assumed fixed by new input validation; provide a targeted flow that inspects, backs up and previews changes before repairing, and verifies recoverability. A retired member must not be re-woken by a new native entry point while its historical transcript stays openable.
 
-### 7.2 PR 门禁
+### 7.2 PR gates
 
-- 每个 PR 声明目标宿主线、受影响兼容清单行、是否新增 internal API、是否改变数据或消息语义。
-- `pull_request` 即触发检查；合并后的最终代码重新运行受影响矩阵，不能只复用各分支独立通过的结果。
-- 修宿主差异的 PR 先添加能在原代码上失败的契约用例，再验证兼容版本；版本无关的业务修复不要夹带降级所有依赖。
-- 仓库维护者配置 required checks 后，CI 才能作为合并硬门槛；只新增 workflow 不能保证分支保护已开启。
-- 不把改本地 `lib/` 的一次手工成功当作整个 PR 的产物验收。
+- Every PR declares its target host line, the affected compatibility-list rows, whether it adds an internal API and whether it changes data or message semantics.
+- Checks trigger on `pull_request`; the final merged code re-runs the affected matrix instead of reusing per-branch passes.
+- A PR fixing a host difference first adds a contract case that fails on the original code, then verifies the compatible version; a version-independent business fix must not smuggle in a downgrade of every dependency.
+- CI becomes a hard merge gate only after the maintainer configures required checks; adding a workflow does not enable branch protection.
+- One manual success from editing a local `lib/` is not artifact acceptance for the whole PR.
 
-## 8. 当前 PR 的收敛方式
+## 8. Converging the current PRs
 
-| PR 组 | 建议 | 原因与必须补齐的内容 |
+| PR group | Recommendation | Reason and what must be completed |
 | --- | --- | --- |
-| #119 / #124 / #130 | 整合为一个 rc.1 迁移 PR，保留贡献溯源 | #124 的同步 session-start/ownEvents 思路较完整；修其 internal 静态导入基线、退休消息入口、安装配置和文档；#119/#130 各有丢 this 的路径，#130 还有 no-op 回归 |
-| #112 / #93 | 不把相反的 UI API 修改先后合入 main | #112 会改回旧服务；#93 的主要迁移已由 main 完成，摘取剩余有价值文档/断言 |
-| #90 | 优先独立纳入 Windows 验证 | 小范围修复 build 路径检查，利于建立跨平台基线 |
-| #86 / #74 | 放进恢复/限流回归工作包 | 按当前 diff 校正描述，验证 parked attempt、冷恢复、最终错误与有界重试 |
-| #118 | 先拆分，暂不整体合并 | UI PR 夹带 postinstall，但目标脚本没有进入 npm files 白名单；自动链接本机宿主依赖还破坏可复现性 |
-| #48 | 不整体合并 | 实际改动放宽不存在的依赖 ID，可能永久 pending，并与当前 staged 审批语义冲突 |
-| #82 / #83 / #84 等显示小改 | 基线稳定后正常迭代 | 与 #118 面板重构重叠，集中验收避免覆盖 |
-| 头像、历史清理、侧栏、人格等 | 独立产品迭代 | 不进入此次兼容修复的最小范围；状态删除和历史迁移需单独审核 |
+| #119 / #124 / #130 | merge into one rc.1 migration PR with contributor provenance preserved | #124's synchronised session-start/ownEvents approach is the most complete; fix its internal static-import baseline, retirement message entries, install configuration and docs; #119/#130 each lose `this` on some path and #130 also has a no-op regression |
+| #112 / #93 | do not merge the opposite UI API changes into main one after the other | #112 would revert to the old service; #93's main migration is already done by main, so take the remaining valuable docs/assertions |
+| #90 | take it in first as an independent Windows verification | a small fix to the build-path check that helps establish a cross-platform baseline |
+| #86 / #74 | put into the recovery/rate-limit regression work package | correct the description against the current diff and verify the parked attempt, cold resume, final error and bounded retry |
+| #118 | split first, do not merge whole | the UI PR carries a postinstall whose target script is not in the npm `files` allowlist; auto-linking local host dependencies also breaks reproducibility |
+| #48 | do not merge whole | it actually loosens a nonexistent dependency id, can stay pending forever, and conflicts with the current staged-approval semantics |
+| #82 / #83 / #84 and similar display tweaks | normal iteration once the baseline is stable | they overlap the #118 panel refactor, so accept them together to avoid overwrites |
+| avatars, history cleanup, sidebar, personas | separate product iterations | outside the minimal scope of this compatibility fix; state deletion and history migration need separate review |
 
-这里只概括关键处置。全部 25 个 PR 的基线、当前真实 diff、风险和建议顺序见 [完整 PR 表](./pull-requests.md)。暂缓、已被替代、部分取用都需要按实际处理结果再通知贡献者，不在本次调查中直接关闭。
+Only key dispositions are summarised here. Baselines, current real diffs, risk and suggested order for all 25 PRs are in the [full PR table](./pull-requests.md). Deferred, superseded and partially adopted PRs must be communicated to their contributors according to the actual outcome and were not closed during this investigation.
 
-## 9. 实施顺序与完成条件
+## 9. Implementation order and completion conditions
 
-| 顺序 | 工作包 | 具体输出 | 完成条件 |
+| Order | Work package | Concrete output | Completion condition |
 | --- | --- | --- | --- |
-| P0-A | 安装与发布止血 | 主兼容清单、README 版本选择表、精确锁版、明确 rc.1 当前不可用与已知历史组合 | 默认文档不再诱导单独跟随任意 latest；现状与目标分开 |
-| P0-B | 依赖闭包与 PR/发布门禁 | 可重建宿主/profile lock、CI 矩阵、契约失败用例、兼容清单校验、产物验收与发布提升流程；纳入 #90 | 相同版本选择得到同一依赖闭包；修复前能稳定复现关键断点；每次 PR/最终合并必须过检查 |
-| P0-C | 统一 rc.1 适配 | 从当前 main 整合 #124 可复用实现、#130 投递桥经验及必要修正，处理消息/生命周期/ownEvents/UI/鉴权 | 实际 rc.1 包通过关键业务与冷恢复，#130 已复现回归被测试覆盖 |
-| P0-D | 早期诊断与安装保护 | doctor、版本不符的明确退出；单列受控安装入口及宿主/市场集成 | 不匹配有定位信息；只对已接入 preflight 的安装入口承诺拦截；不假装未知组合已受支持 |
-| P1-A | 候选分发与正式提升 | `next` 候选、各平台证据、实际迁移说明、最终普通用户发行包 | 通过验收后再改 latest；安装后的 registry/profile 再次核对 |
-| P1-B | Issue/PR 收敛 | 按实际修复版本填写处置表、重复 issue 引用统一记录、独立业务缺陷保留 | 每个按已修复关闭的 Bug 指向可安装的修复版本与对应宿主；重复、撤回、上游解决按真实原因结案 |
+| P0-A | stop the bleeding in install and release | the main compatibility list, a README version-selection table, exact pinning, an explicit statement that rc.1 is currently unusable, and the known historical pairs | the default documentation no longer lures users into following any `latest` on its own; current state and target state are separated |
+| P0-B | dependency closure and PR/release gates | a rebuildable host/profile lock, the CI matrix, failing contract cases, compatibility-list validation, artifact acceptance and the promotion flow; includes #90 | the same version choice yields the same dependency closure; the key breakpoints reproduce reliably before the fix; every PR and the final merge must pass |
+| P0-C | unified rc.1 adapter | integrate the reusable parts of #124, the delivery-bridge experience of #130 and the necessary corrections, handling messages/lifecycle/ownEvents/UI/auth | the real rc.1 package passes the key business and cold-resume checks, and the reproduced #130 regression is covered by tests |
+| P0-D | early diagnostics and install protection | doctor, an explicit exit on a version mismatch; a separate controlled install entry point plus host/marketplace integration | a mismatch carries locating information; interception is promised only for install entry points wired to the preflight; unknown combinations are never pretended to be supported |
+| P1-A | candidate distribution and final promotion | the `next` candidate, per-platform evidence, the actual migration notes, the final ordinary-user release package | `latest` changes only after acceptance; registry/profile are re-checked after installing |
+| P1-B | converging issues/PRs | fill the disposition table against the actual fixed version, record duplicate issue references, keep independent business defects | every bug closed as fixed points at an installable fixed version and its host; duplicates, withdrawals and upstream fixes are closed for their real reason |
 
-在 P0-B 至 P0-D 的本项目可控部分完成前不对外宣称 rc.1 已兼容；宿主/市场协作尚未接入的入口单独声明限制。不能只做 P0-A 的文档修订就结束。建议以上工作拆成少量边界清晰的 PR，按顺序集成，避免一个无法评审的大补丁。
+Do not claim rc.1 compatibility publicly before the parts of P0-B to P0-D this project controls are done; entry points not yet wired to host/marketplace collaboration get their limitation stated separately. Finishing only the P0-A documentation revision is not enough. Split the work into a few clearly bounded PRs and integrate them in order, rather than one unreviewable patch.
 
-GitHub 沟通和 npm 发布应以完成验收的具体产物为对象。本次调查没有发布包、移动 dist-tag、合并/关闭 PR、关闭 issue 或替用户升级宿主。
+GitHub communication and npm releases target a concrete accepted artifact. This investigation published no package, moved no dist-tag, merged/closed no PR, closed no issue and upgraded no user's host.
 
-## 10. Issue 完成状态必须区分
+## 10. Issue completion states must be distinguished
 
-建议跟踪 `needs-environment` → `reproduced` → `fixed-in-main` → `verified-in-release`，必要时再记录报告者确认。实现合并但尚未发布时，应给出预期版本，不能只回复“升级 latest”。
+Track `needs-environment` → `reproduced` → `fixed-in-main` → `verified-in-release`, recording reporter confirmation where useful. When an implementation is merged but unpublished, give the expected version instead of only replying "upgrade latest".
 
-Bug 模板收集宿主实际核心、Desktop 版本或源码 commit、运行方式、profile、已解析关键包版本、插件版本/来源、OS/架构/Node、完整脱敏错误和最小步骤。新旧 UI 缺服务报告必须记录准确服务名；`conversationEvents` 和 `uiConversation` 分别代表相反方向。
+The bug template collects the actual host core, the Desktop version or source commit, how it runs, the profile, the resolved key package versions, the plugin version/source, OS/arch/Node, the full redacted error and minimal steps. A missing-service report for an old or new UI must record the exact service name; `conversationEvents` and `uiConversation` represent opposite directions.
 
-跨源信息用以下证据等级：本次复现、历史维护者验收、用户报告、静态源码判断、待核实。重复 issue 可以归并根因，但独立环境验证项仍应保留。具体逐条处置见附件。
+Cross-source information uses these evidence levels: reproduced here, historical maintainer acceptance, user report, static source judgement, to be confirmed. Duplicate issues may be consolidated by root cause, but items verified in an independent environment stay separate. The itemised dispositions are in the attachments.
 
-## 11. 本次验证边界与来源
+## 11. Verification boundary and sources for this audit
 
-本次已经完成：GitHub issue/PR 与评论调查、官方 npm/已发布包/上游源码核验、现有发布策略审计、两次精确 CLI 的完整依赖解析实验，以及前轮 #130 的隔离测试。#130 原有 Alpha.2 的 typecheck/build/verify 全通过；真实 Alpha.2 Service 的定向测试复现了 `this` 丢失；切换为 rc.1 API 形状后，原生命周期测试的 3 个失败收尾断言失败。它们不是完整 rc.1 真机验收。
+Completed here: the GitHub issue/PR and comment investigation, verification against official npm/published packages/upstream source, the audit of the existing release policy, two full dependency-resolution experiments for an exact CLI, and an isolated re-test of #130. #130's original Alpha.2 typecheck/build/verify all passed; a targeted test against the real Alpha.2 Service reproduced the lost `this`; switching to the rc.1 API shape made 3 of the original lifecycle test's teardown assertions fail. That is not a full rc.1 on-device acceptance.
 
-主要来源：
+Main sources:
 
-- [默认渠道诉求 #126](https://github.com/NanmiCoder/dsh-agent-teams/issues/126)
-- [双向版本错配与精确锁版 #107](https://github.com/NanmiCoder/dsh-agent-teams/issues/107)
-- [旧宿主 UI 服务不匹配 #113](https://github.com/NanmiCoder/dsh-agent-teams/issues/113)
-- [Alpha.5 生命周期接口缺失 #120](https://github.com/NanmiCoder/dsh-agent-teams/issues/120)
-- [详细迁移线索 #123](https://github.com/NanmiCoder/dsh-agent-teams/issues/123)
-- [rc.1 启动问题 #127](https://github.com/NanmiCoder/dsh-agent-teams/issues/127)
-- [rc.1 多插件版本仍无法启动 #132](https://github.com/NanmiCoder/dsh-agent-teams/issues/132)
-- [发布政策变更 da2e2e4](https://github.com/NanmiCoder/dsh-agent-teams/commit/da2e2e49242c6ecd7e801a74dba0c8268a0a2f81)
-- [上游 rc.1 发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1)
-- [npm dist-tag 机制](https://docs.npmjs.com/adding-dist-tags-to-packages/)
-- [node-semver 预发布范围规则](https://github.com/npm/node-semver#prerelease-tags)
+- [default-channel request #126](https://github.com/NanmiCoder/dsh-agent-teams/issues/126)
+- [bidirectional version mismatch and exact pinning #107](https://github.com/NanmiCoder/dsh-agent-teams/issues/107)
+- [old-host UI service mismatch #113](https://github.com/NanmiCoder/dsh-agent-teams/issues/113)
+- [Alpha.5 missing lifecycle API #120](https://github.com/NanmiCoder/dsh-agent-teams/issues/120)
+- [detailed migration leads #123](https://github.com/NanmiCoder/dsh-agent-teams/issues/123)
+- [rc.1 startup problem #127](https://github.com/NanmiCoder/dsh-agent-teams/issues/127)
+- [rc.1 still failing to start with several plugin versions #132](https://github.com/NanmiCoder/dsh-agent-teams/issues/132)
+- [release-policy change da2e2e4](https://github.com/NanmiCoder/dsh-agent-teams/commit/da2e2e49242c6ecd7e801a74dba0c8268a0a2f81)
+- [upstream rc.1 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1)
+- [npm dist-tag mechanics](https://docs.npmjs.com/adding-dist-tags-to-packages/)
+- [node-semver pre-release range rules](https://github.com/npm/node-semver#prerelease-tags)
 
-详细 issue 清单、PR 处置表、Harness 发布调查和 #130 复现记录见同目录附件。本文的维护窗口、目录结构、通道和候选版本号属于拟采用方案，尚未成为生效的产品配置。
+The detailed issue list, PR disposition table, Harness release investigation and #130 reproduction record are in the attachments in this directory. The maintenance window, directory layout, channels and candidate version numbers here are a proposed plan and are not yet an effective product configuration.
