@@ -54,19 +54,19 @@ unchanged, and no existing assertion was weakened.
 | **Honest scope reports** | A completion that lists a path outside `inScope` is no longer refused: the task is held in `awaiting_scope_review` with its evidence, and the captain either accepts the paths (`agent_teams_accept_paths`, additive, also post-hoc on a completed task until a review freezes it) or reassigns/supersedes. A profile may declare `taskPlanning.sharedInScope` — paths every implementation/repair lane inherits and the overlap check ignores. | `src/quality-gates.ts`, `src/tools.ts`, `src/profiles.ts` |
 | **Known deltas** | `agent_teams_pin_delta` registers a check that is red here for a reason outside the lane; a `waived` result for that check then gets its evidence filled in as `pinned delta <id>: <reason>` instead of every lane inventing one. One entry per check, removable with `unpin_delta`, printed in the `agent_teams_status` report. | `src/quality-gates.ts`, `src/tools.ts` |
 | **Required reviewers enforced** | `reviewPolicy.requiredReviewers` now gates Delivery: every listed role alias or member name needs a completed review with `verdict=pass` from that reviewer, so a profile asking for a security review can no longer clear on a single correctness pass. A review the captain owns satisfies nobody, and an absent list changes nothing. | `src/quality-gates.ts` |
+| **Several teams per workspace** | Team identity is an argument again: every team-scoped tool takes `team_id`, a missing one is answered with the caller's teams instead of guessing, `status` without an id lists them, a member of exactly one team may still omit it, and a second team needs the explicit `new_team: true`. A state-based guard refuses a fifth live team or a ninth active worker. | `src/tools.ts`, `src/state.ts`, `src/index.ts` |
 
-Remaining plan work is tracked locally and lands in later releases: mandatory `team_id`
-addressing (0.1.24), plan progress and the task checklist (0.2.0), and live-team
-replanning (0.2.0).
+Remaining plan work is tracked locally and lands in later releases: plan progress and
+the task checklist (0.2.0) and live-team replanning (0.2.0).
 
 ### Verification
 
 | Layer | Result |
 | --- | --- |
 | `pnpm typecheck`, `pnpm build` | pass |
-| `scripts/verify.mjs` | 219 PASS / 0 FAIL (upstream baseline on this machine: 181) |
-| `scripts/quality-gates-tdd.mjs` | 106 PASS / 0 FAIL |
-| the remaining suites (`lifecycle`, `stress`, `web-routes`, `capabilities`, `harness-compat`, …) | all exit 0 |
+| `scripts/verify.mjs` | 240 PASS / 0 FAIL (upstream baseline on this machine: 181) |
+| `scripts/quality-gates-tdd.mjs` | 132 PASS / 0 FAIL |
+| the remaining suites (`lifecycle` 145 checks, `stress`, `web-routes`, `capabilities` 18/18, `harness-compat`, …) | all exit 0 |
 | `readme-version`, `release-metadata`, `verify-package`, `sync-skill --check` | pass |
 | replay of the reported `t5` incident on the real compiled tools | 7/7 |
 

@@ -4,7 +4,8 @@ AgentTeams keeps its original 14 business tools and removes `agent_teams_open`. 
 
 This change addresses two problems:
 
-- #146: when a team already exists, continue the current work and check state with `agent_teams_status` as needed, instead of recreating members and tasks. Even if the model calls create by mistake, the error guides it back to the existing team rather than telling it to end the old one first. The creation permission and the duplicate-team protection are both retained.
+- #146: when a team already exists, continue the current work and check state with `agent_teams_status` as needed, instead of recreating members and tasks. Even if the model calls create by mistake, the error guides it back to the existing team — naming the teams it already leads and the `new_team=true` flag that an explicit separate-team request needs — rather than telling it to end the old one first. The creation permission and the duplicate-team protection are both retained.
+- Multi-team addressing: the core rule asks the captain to remember the `team_id` returned by `create` and to pass it on every team-scoped call, and to call `agent_teams_status` with no argument when it has forgotten the id. A member of exactly one team needs no id at all: the plugin substitutes that team, so the member prompt is unchanged.
 - #138: a trimmed fixed instruction, plus only the team tools the captain/member identity needs. No initial-request bytes were saved by adding tools mid-flight or replacing the system prompt.
 
 | Session identity | Fixed team tools | Fixed system content |

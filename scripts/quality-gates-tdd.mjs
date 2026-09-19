@@ -1067,10 +1067,20 @@ console.log('quality-gates TDD — tool-level closed loop')
     profiles: {},
   })
   const exec = { agent: captain, signal: new AbortController().signal }
-  const call = (name, args, subject = captain) => {
+  // WP11 phase 1: the captain addresses one team per call, so the harness
+  // remembers the id `create` returned and passes it on like the model does.
+  let captainTeamId = ''
+  const call = async (name, args, subject = captain) => {
     const definition = definitions.get(name)
     if (!definition) throw new Error(`missing tool ${name}`)
-    return definition.execute(args, { agent: subject, signal: exec.signal })
+    const payload = { ...args }
+    if (payload.team_id === undefined && subject === captain && captainTeamId !== '') {
+      payload.team_id = captainTeamId
+    }
+    const result = await definition.execute(payload, { agent: subject, signal: exec.signal })
+    if (name === 'agent_teams_create' && subject === captain && typeof result?.team_id === 'string') captainTeamId = result.team_id
+    if (name === 'agent_teams_delete') captainTeamId = ''
+    return result
   }
 
   try {
@@ -1181,7 +1191,7 @@ console.log('quality-gates TDD — tool-level closed loop')
     const resumeTool = definitions.get('agent_teams_resume')
     check('tdd.resume.explicit-resume-clears-halt.tool-exists', resumeTool !== undefined)
     if (resumeTool) {
-      await resumeTool.execute({ reason: 'user asked to continue' }, exec)
+      await resumeTool.execute({ team_id: 'gates', reason: 'user asked to continue' }, exec)
       check(
         'tdd.resume.explicit-resume-clears-halt.tool',
         (await readTeam(join(workspace, '.agent-teams'), 'gates'))?.halted !== true,

@@ -25,8 +25,10 @@ import {
   appendMailbox,
   createMessage,
   createTeamDir,
-  findTeamByCaptain,
-  findTeamByParticipant,
+  findTeamsByCaptain,
+  findTeamsByParticipant,
+  listTeams,
+  describeTeamHandles,
   isAcceptanceCriterion,
   isKnownDelta,
   isTeamTask,
@@ -1144,12 +1146,20 @@ try {
     await removeTeamDir(stateRoot, malformed.id)
   }
 
-  const found = await findTeamByCaptain(stateRoot, 'sess-captain')
-  check('findTeamByCaptain finds the team', found?.id === team.id)
-  check('findTeamByCaptain ignores other captains', await findTeamByCaptain(stateRoot, 'sess-other') === undefined)
-  check('findTeamByParticipant finds the captain', (await findTeamByParticipant(stateRoot, 'sess-captain'))?.id === team.id)
-  check('findTeamByParticipant finds an active member', (await findTeamByParticipant(stateRoot, 'sess-member'))?.id === team.id)
-  check('findTeamByParticipant rejects a removed member', await findTeamByParticipant(stateRoot, 'sess-removed') === undefined)
+  // WP11 phase 1: the finders return every match, because a captain may lead
+  // several teams; addressing happens by team_id.
+  const found = await findTeamsByCaptain(stateRoot, 'sess-captain')
+  check('findTeamsByCaptain finds the team', found.map(team => team.id).join(',') === team.id)
+  check('findTeamsByCaptain ignores other captains', (await findTeamsByCaptain(stateRoot, 'sess-other')).length === 0)
+  check('findTeamsByParticipant finds the captain', (await findTeamsByParticipant(stateRoot, 'sess-captain')).map(team => team.id).join(',') === team.id)
+  check('findTeamsByParticipant finds an active member', (await findTeamsByParticipant(stateRoot, 'sess-member')).map(team => team.id).join(',') === team.id)
+  check('findTeamsByParticipant rejects a removed member', (await findTeamsByParticipant(stateRoot, 'sess-removed')).length === 0)
+  check('listTeams returns every readable team oldest first',
+    (await listTeams(stateRoot)).map(team => team.id).join(',') === team.id
+      && (await listTeams(join(stateRoot, 'missing-root'))).length === 0)
+  check('describeTeamHandles names id and team for the missing-team_id error',
+    describeTeamHandles([{ id: 't1', name: 'Alpha' }]) === 't1 (Alpha)'
+      && describeTeamHandles([]).includes('agent_teams_create'))
 
   const escapedContent = String.raw`save to notes\foo.md`
   const message = createMessage('alice', CAPTAIN_KEY, escapedContent)
@@ -1209,24 +1219,22 @@ try {
 
   const duplicateCaptain = { ...team, id: 'duplicate-captain', members: [] }
   await createTeamDir(stateRoot, duplicateCaptain)
-  let duplicateCaptainRejected = false
-  try {
-    await findTeamByCaptain(stateRoot, 'sess-captain')
-  } catch {
-    duplicateCaptainRejected = true
-  }
-  check('multiple teams for one captain fail as ambiguous', duplicateCaptainRejected)
+  // WP11 phase 1 replaced "ambiguous, refuse" with "list them and address one by
+  // team_id": a captain may legitimately lead two teams in one workspace.
+  const withTwoTeams = await findTeamsByCaptain(stateRoot, 'sess-captain')
+  check('a captain may lead two teams without an ambiguous failure',
+    withTwoTeams.length === 2
+      && [team.id, duplicateCaptain.id].every(id => withTwoTeams.some(candidate => candidate.id === id))
+      && withTwoTeams.every((candidate, index) => index === 0
+        || (withTwoTeams[index - 1]?.createdAt ?? 0) <= candidate.createdAt))
+  check('the team list names both teams for the missing-team_id error',
+    describeTeamHandles(withTwoTeams).includes(team.id) && describeTeamHandles(withTwoTeams).includes(duplicateCaptain.id))
   await removeTeamDir(stateRoot, duplicateCaptain.id)
 
   const duplicateMember = { ...team, id: 'duplicate-member', captainSessionId: 'sess-other-captain' }
   await createTeamDir(stateRoot, duplicateMember)
-  let duplicateMemberRejected = false
-  try {
-    await findTeamByParticipant(stateRoot, 'sess-member')
-  } catch {
-    duplicateMemberRejected = true
-  }
-  check('multiple teams for one member fail as ambiguous', duplicateMemberRejected)
+  const memberOfTwo = await findTeamsByParticipant(stateRoot, 'sess-member')
+  check('a session may belong to two teams and both are listed', memberOfTwo.length === 2)
   await removeTeamDir(stateRoot, duplicateMember.id)
 
   const invalidId = 'invalid-shape'

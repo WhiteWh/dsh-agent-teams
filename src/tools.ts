@@ -29,8 +29,10 @@ import {
   CAPTAIN_KEY,
   createMessage,
   createTeamDir,
-  findTeamByCaptain,
-  findTeamByParticipant,
+  findTeamsByCaptain,
+  findTeamsByParticipant,
+  listTeams,
+  describeTeamHandles,
   cancelUnfinishedTask,
   invalidateTaskAttempt,
   readUnreadMailbox,
@@ -142,6 +144,12 @@ export interface AgentTeamsRuntime {
   discardStagedTeam(captain: Agent, teamId: string): Promise<{ teamId: string }>
 }
 
+/** Workspace fuse for WP11 phase 1 (configurable keys arrive in phase 3). */
+const MAX_TEAMS_PER_WORKSPACE = 4
+
+/** Workspace-wide active-worker fuse for WP11 phase 1 (owner decision D6). */
+const MAX_CONCURRENT_WORKERS_GLOBAL = 8
+
 /** The caller agent, or a loud failure for non-agent callers. */
 function requireCaptain(exec: ToolRunContext): Agent {
   if (!exec.agent) {
@@ -170,22 +178,81 @@ function captainLockKey(stateRoot: string, captainId: string): string {
   return `captain:${stateRoot}:${captainId}`
 }
 
-/** The team this captain currently leads, or a loud failure. */
-async function requireCaptainTeam(workspace: string, config: ToolsConfig, captain: Agent): Promise<TeamState> {
-  const team = await findTeamByCaptain(stateRootOf(workspace, config), captain.id)
-  if (team === undefined) {
-    throw new Error('you are not leading any team yet — call agent_teams_create first')
+/**
+ * The `team_id` parameter every team-scoped tool declares (WP11 phase 1).
+ *
+ * It stays optional in the schema on purpose. The runtime validates arguments
+ * before the handler runs, so a schema-level `required` would answer a missing id
+ * with a bare "missing required property" instead of the list of teams the caller
+ * can address. `pickCallerTeam` enforces presence and names those teams, which is
+ * what lets the model correct itself in one step.
+ * @returns a fresh parameter descriptor.
+ */
+function teamIdParam(): { type: 'string'; description: string } {
+  return {
+    type: 'string',
+    description: 'Team id this call acts on (required): get it from agent_teams_create, or from agent_teams_status with no argument. An omitted id fails with the list of your teams.',
   }
-  return team
 }
 
-/** The team this captain or active member currently participates in. */
-async function requireParticipantTeam(workspace: string, config: ToolsConfig, caller: Agent): Promise<TeamState> {
-  const team = await findTeamByParticipant(stateRootOf(workspace, config), caller.id)
-  if (team === undefined) {
-    throw new Error('you do not lead or belong to any active team yet')
+/**
+ * Pick one team out of the caller's teams (WP11 phase 1).
+ *
+ * Team identity is an argument, not a property of the calling session: a captain
+ * may lead several teams in one workspace, so a missing id is an error that lists
+ * the caller's teams instead of guessing. The one exception is a member of exactly
+ * one team — the capability context substitutes that team, so the member prompt
+ * does not change.
+ * @param teams - the caller's teams, oldest first.
+ * @param teamId - the requested team id, when the caller passed one.
+ * @param allowSoleParticipantTeam - substitute the only team the caller belongs to.
+ * @param emptyMessage - message when the caller has no team at all.
+ * @returns the selected team record.
+ */
+function pickCallerTeam(
+  teams: readonly TeamState[],
+  teamId: string | undefined,
+  allowSoleParticipantTeam: boolean,
+  emptyMessage: string,
+): TeamState {
+  const wanted = teamId?.trim() ?? ''
+  if (wanted !== '') {
+    const match = teams.find((team) => team.id === wanted)
+    if (match === undefined) {
+      throw new Error(
+        `team "${wanted}" is not one of your teams; your teams: ${describeTeamHandles(teams)}`,
+      )
+    }
+    return match
   }
-  return team
+  if (teams.length === 0) throw new Error(emptyMessage)
+  const sole = teams[0]
+  if (allowSoleParticipantTeam && teams.length === 1 && sole !== undefined) return sole
+  throw new Error(
+    `team_id is required: you participate in ${String(teams.length)} teams (${describeTeamHandles(teams)})`,
+  )
+}
+
+/** The team this captain leads, or a loud failure naming every team they lead. */
+async function requireCaptainTeam(
+  workspace: string,
+  config: ToolsConfig,
+  captain: Agent,
+  teamId?: string,
+): Promise<TeamState> {
+  const teams = await findTeamsByCaptain(stateRootOf(workspace, config), captain.id)
+  return pickCallerTeam(teams, teamId, false, 'you are not leading any team yet — call agent_teams_create first')
+}
+
+/** The team this captain leads or this member belongs to. */
+async function requireParticipantTeam(
+  workspace: string,
+  config: ToolsConfig,
+  caller: Agent,
+  teamId?: string,
+): Promise<TeamState> {
+  const teams = await findTeamsByParticipant(stateRootOf(workspace, config), caller.id)
+  return pickCallerTeam(teams, teamId, true, 'you do not lead or belong to any active team yet')
 }
 
 type ParticipantIdentity =
@@ -720,9 +787,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_create',
-    description: 'Create a team. Use approval=required for a two-phase plan: members and tasks remain unspawned/unclaimed until the user reviews the Web plan and explicitly approves it. Optional profiles expand their configured roster; seed profiles also expand template tasks, while captain profiles leave the graph for the Captain to design. approval=automatic preserves the legacy immediate-execution path.',
+    description: 'Create a team. Use approval=required for a two-phase plan: members and tasks remain unspawned/unclaimed until the user reviews the Web plan and explicitly approves it. Optional profiles expand their configured roster; seed profiles also expand template tasks, while captain profiles leave the graph for the Captain to design. approval=automatic preserves the legacy immediate-execution path. A captain may lead several teams at once, so this tool creates a new one only when the user explicitly asked for it: pass new_team=true in that case, and otherwise continue the team whose id you already have (agent_teams_status with no argument lists your teams).',
     parameters: {
       name: { type: 'string', required: true, description: 'Name for the new team (used as its stable id).' },
+      new_team: { type: 'boolean', description: 'Set when the user explicitly asked for a separate new team although you already lead one or more. Without it, a second create is refused and names the teams you lead.' },
       description: { type: 'string', description: 'Team purpose / the goal the team will work on.' },
       profile: { type: 'string', description: 'Optional configured profile name.' },
       plan: {
@@ -785,13 +853,44 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         : undefined
       if (profileName !== undefined && args.plan !== undefined) throw new Error('choose either a configured profile or an inline plan')
       const created = await withTeamLock(captainLockKey(stateRoot, captain.id), async () => {
-        const current = await findTeamByParticipant(stateRoot, captain.id)
-        if (current !== undefined) {
-          const relationship = current.captainSessionId === captain.id ? 'lead' : 'belong to'
-          const guidance = current.captainSessionId === captain.id
-            ? 'Use agent_teams_status and continue the existing team. Do not delete and recreate it merely to continue work. End it only when the user explicitly wants a separate new team.'
-            : 'Continue your assigned member work and report to your captain; do not create a separate team.'
-          throw new Error(`you already ${relationship} team "${current.name}" (id ${current.id}). ${guidance}`)
+        const participated = await findTeamsByParticipant(stateRoot, captain.id)
+        // WP11 phase 1: "one team per captain" is gone — a captain may lead several
+        // teams in one workspace, and each call addresses one by team_id. A member
+        // session still must not create a team of its own, and a second team needs
+        // the explicit `new_team` flag (an explicit user request, not a model mood).
+        const memberTeam = participated.find((team) => team.captainSessionId !== captain.id)
+        if (memberTeam !== undefined) {
+          throw new Error(
+            `you already belong to team "${memberTeam.name}" (id ${memberTeam.id}) as a member.`
+            + ' Continue your assigned member work and report to your captain; do not create a separate team.',
+          )
+        }
+        const owned = participated.filter((team) => team.captainSessionId === captain.id)
+        if (owned.length > 0 && args.new_team !== true) {
+          throw new Error(
+            `you already lead ${String(owned.length)} team(s): ${describeTeamHandles(owned)}.`
+            + ' Use agent_teams_status and continue the existing team.'
+            + ' Do not delete and recreate it merely to continue work. Pass new_team=true only when'
+            + ' the user explicitly asked for a separate new team.',
+          )
+        }
+        // State-based guard (owner decision D6): a fuse on the workspace, not a
+        // fixed count of teams. The configurable keys arrive with WP11 phase 3.
+        const live = await listTeams(stateRoot)
+        if (live.length >= MAX_TEAMS_PER_WORKSPACE) {
+          throw new Error(
+            `this workspace already has ${String(live.length)} live teams (limit ${String(MAX_TEAMS_PER_WORKSPACE)});`
+            + ' archive one before creating another',
+          )
+        }
+        const activeWorkers = live.reduce((total, team) => (
+          total + team.members.filter((member) => member.status === 'working').length
+        ), 0)
+        if (activeWorkers >= MAX_CONCURRENT_WORKERS_GLOBAL) {
+          throw new Error(
+            `this workspace already runs ${String(activeWorkers)} active workers`
+            + ` (limit ${String(MAX_CONCURRENT_WORKERS_GLOBAL)}); let some of them finish first`,
+          )
         }
         return withTeamLock(teamLockKey(stateRoot, teamId), async () => {
           const existing = await readTeam(stateRoot, teamId)
@@ -906,6 +1005,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_edit_plan',
     description: 'Atomically revise an AgentTeams plan. While staged, edit tasks and roster without starting work. While running, only update_task is allowed, and only for pending tasks with no prior attempt: correct dependencies, assignees or descriptions before they start; newly ready work is scheduled after commit. Never edit active/finished attempts. Submit dependent edits in order. Never modify .agent-teams files directly.',
     parameters: {
+      team_id: teamIdParam(),
       operations: {
         type: 'array',
         required: true,
@@ -956,7 +1056,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(args, exec) {
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       if (args.operations.length === 0) throw new Error('at least one staged plan operation is required')
 
       const mutations: StagedPlanMutation[] = args.operations.map((operation, index) => {
@@ -1026,6 +1126,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_approve',
     description: 'Approve and start a staged team plan. Call this only in response to an explicit user approval in a new user turn; never call it during the turn that created or edited the plan. The Web Approve & Run button uses the same runtime directly.',
     parameters: {
+      team_id: teamIdParam(),
       confirmation: { type: 'string', required: true, description: 'The user\'s explicit approval statement.' },
     },
     output: {
@@ -1048,7 +1149,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       if (args.confirmation.trim() === '') throw new Error('explicit user approval text is required')
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const approved = await approveStagedTeam(captain, team.id, exec.signal)
       return { status: 'running', team_id: approved.teamId, members: approved.members, tasks: approved.tasks }
     },
@@ -1058,6 +1159,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_add_member',
     description: 'Add a member to the team roster. Planning and idle roster rows do not call a model. After approval, the member session starts with its first ready task or explicit message and remains durable for later work.',
     parameters: {
+      team_id: teamIdParam(),
       name: { type: 'string', required: true, description: 'Unique member name inside the team.' },
       role: { type: 'string', description: 'Role of the member (e.g. researcher, engineer, reviewer).' },
       provider: { type: 'string', description: 'Optional LLM provider route. Use only when the user explicitly requests a different provider; requires model.' },
@@ -1090,7 +1192,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const created = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const memberName = args.name.trim()
@@ -1155,6 +1257,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_remove_member',
     description: 'Remove a member safely: revoke its current attempts, return all unfinished owned tasks to the shared pending pool, interrupt its live turn, and mark it removed.',
     parameters: {
+      team_id: teamIdParam(),
       name: { type: 'string', required: true, description: 'Name of the member to remove.' },
     },
     output: {
@@ -1176,7 +1279,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const revoked = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const member = fresh.members.find(item => item.name === args.name)
@@ -1214,6 +1317,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_create_task',
     description: 'Create a task in your team\'s task list. Use kind=work (default) for research, repository audits and general tasks. kind=review is only a quality gate for an existing implementation/repair task via reviewedTaskId. Every call must include a non-empty subject, including verification and review tasks. Tasks can depend on other tasks (dependencies): a task is only claimable once every dependency is completed. Optionally assign it to a member, who still claims it before working.',
     parameters: {
+      team_id: teamIdParam(),
       subject: { type: 'string', required: true, description: 'Required non-empty title for this task. Never omit it, including for verification or review tasks.' },
       description: { type: 'string', description: 'What needs to be done, in detail.' },
       dependencies: {
@@ -1263,7 +1367,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       // Some models materialize optional parameters as "" instead of omitting
       // them (issue #105). Normalize blank optional fields to omitted before
       // validation so a blank value can neither be rejected spuriously nor be
@@ -1385,6 +1489,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_reassign_task',
     description: 'Atomically retry, reassign, or let the captain take over one ready unfinished/failed task. The old attempt is revoked before its member is interrupted, so late updates cannot overwrite the new owner. Use assignee="captain" only when you will finish that task in this turn; a captain can own only one unfinished takeover at a time, and an unfinished takeover returns to the member pool when the captain becomes idle.',
     parameters: {
+      team_id: teamIdParam(),
       task_id: { type: 'string', required: true, description: 'Task to retry/reassign.' },
       assignee: { type: 'string', required: true, description: 'Active member name, or "captain" for captain takeover.' },
       reason: { type: 'string', description: 'Why the task is being retried or reassigned.' },
@@ -1411,7 +1516,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const target = args.assignee.trim()
       if (target === '') throw new Error('reassignment assignee must not be empty')
 
@@ -1516,6 +1621,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_supersede_task',
     description: 'Captain-only atomic replacement of one task that will not finish (failed, abandoned, or pointed at the wrong contract). The replaced task becomes `superseded` with a link to its replacement, its capability and changedPaths are dropped, every non-terminal dependent now depends on the replacement, and every non-terminal review/repair contract that pointed at it is retargeted. The replacement is either an existing task id (`replacement`) or a task created in the same call from the create_task fields (subject required); an inline replacement inherits kind, round, sourceTaskId, coverageOf and, by default, the replaced task\'s dependencies. A completed task cannot be superseded, and a replacement that depends on the task it replaces is refused (dependency cycle).',
     parameters: {
+      team_id: teamIdParam(),
       task_id: { type: 'string', required: true, description: 'The task to replace.' },
       reason: { type: 'string', required: true, description: 'Why the lane is being replaced; recorded in the event and the result.' },
       replacement: { type: 'string', description: 'Id of an existing task that replaces this one. Omit to create the replacement in this same call from the fields below.' },
@@ -1557,7 +1663,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const inline = normalizeBlankOptionalTaskFields(args)
       const result = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
@@ -1679,6 +1785,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_claim_task',
     description: 'Members claim their own ready task or read their existing attempt_id. Captains must use reassign_task to assign and wake a member; claim_task does not dispatch work. A member cannot own a second unfinished task. The returned attempt_id is required for updates and becomes stale after retry/reassignment.',
     parameters: {
+      team_id: { type: 'string', description: 'Team id this call acts on. Optional for a single-team member (the plugin substitutes the only team the caller belongs to); required once the caller participates in more than one.' },
       task_id: { type: 'string', required: true, description: 'The task id to claim.' },
       assignee: { type: 'string', description: 'Deprecated: claim_task only supports a member claiming its own task. Captains must use reassign_task.' },
     },
@@ -1704,7 +1811,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const team = await requireParticipantTeam(workspace, config, caller, args.team_id)
       return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
         const task = requireTask(fresh, args.task_id)
@@ -1787,6 +1894,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_update_task',
     description: 'Update a task status/output. Members must supply the current attempt_id returned by claim_task; stale attempts are rejected after takeover/reassignment. Terminal results are immutable. A captain must use reassign_task(assignee="captain") before updating member-owned work. An acceptance criterion or verify command that cannot honestly be measured green — it is already red on the baseline for a reason outside this task, or no measurement exists — is reported as status="waived" with evidence naming the reason and the baseline; it counts as covered, but it flags the task and keeps Delivery blocked until a kind=review task completes with verdict=pass and an explicit waiverConfirmation. reviewPolicy.allowWaivers=false forbids waivers.',
     parameters: {
+      team_id: { type: 'string', description: 'Team id this call acts on. Optional for a single-team member (the plugin substitutes the only team the caller belongs to); required once the caller participates in more than one.' },
       task_id: { type: 'string', required: true, description: 'The task id to update.' },
       attempt_id: { type: 'string', description: 'Members must explicitly include the current attempt_id from their assignment/claim in EVERY update, including failed reviews with findings. If omitted, retry with the same current id; omission does not revoke the attempt.' },
       status: {
@@ -1881,7 +1989,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const team = await requireParticipantTeam(workspace, config, caller, args.team_id)
       const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
         const task = requireTask(fresh, args.task_id)
@@ -2025,6 +2133,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_pin_delta',
     description: 'Captain-only registry of checks that are red in this workspace for a reason outside the lane that runs them. Pin one entry per check (command or acceptance criterion text) once; afterwards a verification task whose commandsRun names that check may submit status="waived" without writing its own evidence — the plugin fills in "pinned delta <id>: <reason>". A duplicate pin for the same check is refused and names the existing entry, so the auto evidence can never be ambiguous or hide a stale pin. The registry is shown in agent_teams_status.',
     parameters: {
+      team_id: teamIdParam(),
       id: { type: 'string', description: 'Stable delta id used by unpin_delta and in the auto evidence. Defaults to the check text.' },
       check: { type: 'string', required: true, description: 'The command or criterion text this delta explains, for example "pnpm run lint".' },
       expected: { type: 'string', required: true, description: 'What a green run would show, for example "exit 0".' },
@@ -2049,7 +2158,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const pinned = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const result = pinKnownDelta(fresh.knownDeltas, {
@@ -2081,6 +2190,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_unpin_delta',
     description: 'Captain-only: remove one entry from the known-delta registry by id. A check that is no longer red for an outside reason must be unpinned, otherwise a waived result citing it would look justified. The error names the pinned ids when the given one is unknown.',
     parameters: {
+      team_id: teamIdParam(),
       id: { type: 'string', required: true, description: 'Delta id to remove.' },
       reason: { type: 'string', description: 'Why the delta no longer applies; recorded in the event.' },
     },
@@ -2103,7 +2213,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const unpinned = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const result = unpinKnownDelta(fresh.knownDeltas, args.id)
@@ -2129,6 +2239,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_accept_paths',
     description: 'Captain-only post-hoc scope acceptance: ADD the given workspace-relative paths to a task\'s inScope instead of replacing the list (use amend_task to replace). A worker that honestly reported a changed path outside its declared inScope leaves the task in `awaiting_scope_review`; accepting the paths completes the lane with the work it actually did. Works on a completed task too, as long as no review/requirements verdict has passed judgment on it — pass force=true with the same mandatory reason to widen the scope after that freeze. Every acceptance is appended to the task\'s revisions ledger.',
     parameters: {
+      team_id: teamIdParam(),
       task_id: { type: 'string', required: true, description: 'Task whose inScope is widened.' },
       paths: { type: 'array', items: { type: 'string' }, required: true, description: 'Workspace-relative paths to add to inScope (additive, not a replacement).' },
       reason: { type: 'string', required: true, description: 'Why these paths belong to the lane; recorded in the revisions ledger.' },
@@ -2158,7 +2269,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const accepted = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const task = requireTask(fresh, args.task_id)
@@ -2216,6 +2327,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_amend_task',
     description: 'Captain-only controlled contract amendment for one task that is pending, claimed, in_progress or failed: replace a wrong objective/acceptance/verify/inScope/outOfScope/deliverables/nonGoals/reviewedTaskId when the original contract makes honest completion impossible (for example a verify command that cannot pass, or an inScope that forbids the file the objective names), and amend the subject/description/deliverables of a kind=work task. The amendment is appended to the task\'s revisions ledger with previous values and the reason, and is rejected once a review/requirements task has passed judgment on this task; pass force=true with the same mandatory reason to override that freeze, which marks the passing verdict stale so the changed contract must be reviewed again. A completed or cancelled task stays immutable. Members cannot amend contracts; the implementer re-reads the amended contract before its next quality gate. Lists are full replacements, not deltas.',
     parameters: {
+      team_id: teamIdParam(),
       task_id: { type: 'string', required: true, description: 'Task whose contract is being amended.' },
       reason: { type: 'string', required: true, description: 'Why the current contract is wrong; recorded in the revisions ledger.' },
       force: { type: 'boolean', description: 'Override the freeze a passing review/requirements verdict put on this contract. The verdict becomes stale, so the amended contract has to be reviewed again. Requires the same non-empty reason.' },
@@ -2253,7 +2365,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const amended = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const task = requireTask(fresh, args.task_id)
@@ -2325,6 +2437,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_send_message',
     description: 'Send coordination or current-task guidance directly to the captain or a teammate. A running recipient receives it at the next model step; an idle recipient wakes. Messages are durably retained until read. Use task creation/reassignment for a new unit of work, not repeated status nudges.',
     parameters: {
+      team_id: { type: 'string', description: 'Team id this call acts on. Optional for a single-team member (the plugin substitutes the only team the caller belongs to); required once the caller participates in more than one.' },
       to: { type: 'string', required: true, description: 'Recipient: "captain" or a member name.' },
       content: { type: 'string', required: true, description: 'The message text.' },
       from: { type: 'string', description: 'Sender (defaults to the caller: the captain, or the calling member).' },
@@ -2349,7 +2462,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const team = await requireParticipantTeam(workspace, config, caller, args.team_id)
       const to = args.to.trim()
       const prepared = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
@@ -2439,7 +2552,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   ctx.tools.register(defineTool({
     name: 'agent_teams_status',
     description: 'Team snapshot: members with live activity and tasks with status/assignee/dependencies/output. Captains also see every team mailbox; members see only their own inbox. Use after mailbox progress deliveries or for an explicit status request. After dispatch, end your turn while members work; do not repeatedly poll.',
-    parameters: {},
+    parameters: {
+      team_id: { type: 'string', description: 'Team id to report on. Omit it to list every team the caller leads or belongs to.' },},
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
       render: (_args, value) => [{ type: 'text', text: renderStatus(value) }],
@@ -2448,7 +2562,32 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
       const stateRoot = stateRootOf(workspace, config)
-      const located = await requireParticipantTeam(workspace, config, caller)
+      // WP11 phase 1: with no team_id the caller gets the roster of their teams
+      // (that is how a captain reminds itself of an id); with one, the full
+      // snapshot of that team. A single-team caller keeps the detailed answer it
+      // has always received, so the member prompt does not change.
+      const participated = await findTeamsByParticipant(stateRoot, caller.id)
+      const requested = _args.team_id?.trim() ?? ''
+      if (requested === '' && participated.length > 1) {
+        return {
+          teams: await Promise.all(participated.map(async (candidate) => {
+            const snapshot = await readTeam(stateRoot, candidate.id) ?? candidate
+            const done = snapshot.tasks.filter((task) => task.status === 'completed').length
+            return {
+              team_id: snapshot.id,
+              name: snapshot.name,
+              phase: snapshot.phase ?? 'running',
+              halted: snapshot.halted === true,
+              tasks: { total: snapshot.tasks.length, done },
+              members: snapshot.members.filter((member) => member.status !== 'removed').length,
+              activeWorkers: snapshot.members.filter((member) => member.status === 'working').length,
+              role: snapshot.captainSessionId === caller.id ? 'captain' : 'member',
+            }
+          })),
+          note: `you take part in ${String(participated.length)} teams; pass team_id to act on one of them`,
+        }
+      }
+      const located = await requireParticipantTeam(workspace, config, caller, _args.team_id)
       if (located.captainSessionId === caller.id) {
         await scheduler.kickTeam(workspace, located.id, caller)
       }
@@ -2597,6 +2736,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     name: 'agent_teams_resume',
     description: 'Explicitly resume a halted team. Requires a non-empty reason. Does not recreate cancelled tasks; only still-pending work is scheduled.',
     parameters: {
+      team_id: teamIdParam(),
       reason: { type: 'string', required: true, description: 'Why the team is being resumed.' },
     },
     output: {
@@ -2620,7 +2760,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, args.team_id)
       const result = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const resumed = resumeTeamState(fresh, args.reason)
@@ -2648,7 +2788,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   ctx.tools.register(defineTool({
     name: 'agent_teams_delete',
     description: 'End and archive your team: interrupts members and moves the current tasks and mailboxes out of active state for later inspection. Use when the work is done or explicitly abandoned. A same-name archive replaces its previous generation.',
-    parameters: {},
+    parameters: {
+      team_id: teamIdParam(),
+    },
     output: {
       schema: {
         type: 'object',
@@ -2667,7 +2809,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
-      const team = await requireCaptainTeam(workspace, config, captain)
+      const team = await requireCaptainTeam(workspace, config, captain, _args.team_id)
       const members = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         // Include previously removed members so deleting a pre-fix team also
@@ -2986,6 +3128,18 @@ function applyPinnedDeltaEvidence<T extends { status: string; evidence?: string 
 
 /** Render the status snapshot as compact text for the model. */
 function renderStatus(value: JsonValue): string {
+  const listed = value as { teams?: { team_id: string; name: string; phase: string; halted: boolean; tasks: { total: number; done: number }; members: number; activeWorkers: number; role: string }[]; note?: string }
+  if (Array.isArray(listed.teams)) {
+    return [
+      `Your teams (${String(listed.teams.length)}):`,
+      ...listed.teams.map((entry) => (
+        `  - ${entry.team_id} "${entry.name}" [${entry.phase}${entry.halted ? ', halted' : ''}]`
+        + ` as ${entry.role}: ${String(entry.tasks.done)}/${String(entry.tasks.total)} tasks done,`
+        + ` ${String(entry.members)} members, ${String(entry.activeWorkers)} working`
+      )),
+      ...listed.note === undefined ? [] : [listed.note],
+    ].join('\n')
+  }
   const team = value as {
     team_name: string
     description?: string

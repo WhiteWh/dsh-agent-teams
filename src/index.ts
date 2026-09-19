@@ -38,7 +38,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
 import { serveArtwork } from './artwork.ts'
-import { findTeamByCaptain } from './state.ts'
+import { findTeamsByCaptain } from './state.ts'
 import { formatProfilesForPrompt, type TeamProfileConfig } from './profiles.ts'
 import { installTeamCapabilities } from './capabilities.ts'
 import { TEAM_TOOL_NAMES } from './tool-names.ts'
@@ -138,7 +138,7 @@ export const Config: z<Config> = z.object({
 /** The model-facing usage policy: when and how to drive AgentTeams. */
 export function usageSectionText(toolNames: string, profilesText = ''): string {
   return `AgentTeams captain protocol:
-1. Inspect current team state when needed, using agent_teams_status. Continue existing work without duplicating its roster/tasks. Create only when no current team exists, with the user's goal as description and approval="required"; automatic approval requires an explicit request to run immediately. Staged plans never spawn or schedule work.
+1. Team identity is the \`team_id\` every team-scoped tool takes. Remember the id \`agent_teams_create\` returns; if you are unsure, call \`agent_teams_status\` with no argument to list your teams (id, name, phase, tasks, members, active workers). A missing \`team_id\` is an error naming your teams, and you may lead several teams at once. Inspect current team state when needed, using agent_teams_status. Continue existing work without duplicating its roster/tasks. Create a team only when the user asks for one — a second team needs \`new_team: true\` and an explicit request — with the user's goal as description and approval="required"; automatic approval requires an explicit request to run immediately. Staged plans never spawn or schedule work.
 2. Add each needed role once; members inherit your model route unless another is requested/needed. A requested profile goes to create({profile}); it supplies its roster. Seed profiles also supply tasks; captain-planning profiles require your DAG. Do not duplicate either.
 3. Build the complete smallest useful DAG while staged. For an ordinary research/audit plan, pass the roster and dependency graph together in create({plan:{members,tasks}}) to avoid repeated setup rounds. Every task needs a subject; pass kind and assignee explicitly when the plan specifies them. Titles, descriptions and member roles do not set these fields. Dependencies represent prerequisites. Give every required contributor a task or explicit message. Present the plan and end your turn for review; never approve in that planning turn. Approve only after a later explicit user approval or the Web action.
 4. Respect Web approve/return/discard control messages. On return, ask what to change before editing; after the answer, use one atomic agent_teams_edit_plan batch (edit downstream references before removals), summarize and await review again. Never inspect or edit .agent-teams state files or plugin source code to revise plans. Discard does not authorize a replacement.
@@ -267,7 +267,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         const workspace = captain.session.header.cwd ?? process.cwd()
         const stateRoot = join(workspace, resolved.stateDir)
-        const team = await findTeamByCaptain(stateRoot, captain.id)
+        const team = (await findTeamsByCaptain(stateRoot, captain.id)).find((candidate) => candidate.id === teamId)
         if (team === undefined || team.id !== teamId) {
           res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'team not found for this captain' }))
@@ -323,7 +323,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         const workspace = captain.session.header.cwd ?? process.cwd()
         const stateRoot = join(workspace, resolved.stateDir)
-        const team = await findTeamByCaptain(stateRoot, captain.id)
+        const team = (await findTeamsByCaptain(stateRoot, captain.id)).find((candidate) => candidate.id === teamId)
         if (team === undefined || team.id !== teamId) {
           res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'team not found for this captain' }))

@@ -319,10 +319,24 @@ function execFor(subject) {
   return { agent: subject, signal: new AbortController().signal }
 }
 
-async function call(name, args, subject = captain) {
+// WP11 phase 1: every team-scoped call is addressed by `team_id`, so the harness
+// does what a real captain does — remembers the id `create` returned and passes it
+// on. The fourth argument overrides that memory: an id addresses another team,
+// `null` omits the id on purpose (used to assert the listing error).
+let captainTeamId = ''
+
+async function call(name, args, subject = captain, teamId) {
   const definition = definitions.get(name)
   if (!definition) throw new Error(`missing tool ${name}`)
-  return definition.execute(args, execFor(subject))
+  const payload = { ...args }
+  if (payload.team_id === undefined && subject === captain && teamId !== null) {
+    const chosen = teamId ?? captainTeamId
+    if (chosen !== '') payload.team_id = chosen
+  }
+  const result = await definition.execute(payload, execFor(subject))
+  if (name === 'agent_teams_create' && subject === captain && typeof result?.team_id === 'string') captainTeamId = result.team_id
+  if (name === 'agent_teams_delete') captainTeamId = ''
+  return result
 }
 
 const teamId = 'lifecycle'
@@ -1157,6 +1171,84 @@ try {
     (await call('agent_teams_status', {})).known_deltas?.[0]?.id === 'lint-baseline')
   await call('agent_teams_delete', {})
 
+  // ── WP11 phase 1: team identity is data, not the calling session ──
+  // Two teams in one workspace, addressed by team_id. The old "one team per
+  // captain" rule and the `ambiguous` failure are gone; a missing id now names
+  // the caller's teams instead of guessing.
+  const multiTeamId = 'multi-a'
+  await call('agent_teams_create', { name: 'Multi A', description: 'first team' })
+  await call('agent_teams_add_member', { name: 'worker', role: 'implementer' })
+  const multiA = await call('agent_teams_create_task', { team_id: multiTeamId, subject: 'task in A', assignee: 'worker' })
+  let secondTeamRefused = false
+  try {
+    await call('agent_teams_create', { name: 'Multi B', description: 'second team' })
+  } catch (error) {
+    secondTeamRefused = /new_team=true/.test(String(error))
+  }
+  check('a second team needs the explicit new_team flag', secondTeamRefused)
+  await call('agent_teams_create', { name: 'Multi B', description: 'second team', new_team: true })
+  const multiBId = 'multi-b'
+  const multiB = await call('agent_teams_create_task', { team_id: multiBId, subject: 'task in B' })
+  const multiBExtra = await call('agent_teams_create_task', { team_id: multiBId, subject: 'second task in B' })
+  let missingTeamIdRefused = false
+  try {
+    await call('agent_teams_create_task', { subject: 'task without a team id' }, captain, null)
+  } catch (error) {
+    missingTeamIdRefused = /team_id is required/.test(String(error))
+      && String(error).includes(multiTeamId)
+      && String(error).includes(multiBId)
+  }
+  check('a missing team_id lists every team the caller leads', missingTeamIdRefused)
+  const listed = await call('agent_teams_status', {}, captain, null)
+  check('status without a team_id lists the teams with their counters',
+    Array.isArray(listed.teams)
+      && listed.teams.length === 2
+      && listed.teams.every(entry => typeof entry.team_id === 'string' && typeof entry.tasks?.total === 'number')
+      && listed.teams.some(entry => entry.team_id === multiTeamId && entry.role === 'captain'))
+  const statusA = await call('agent_teams_status', { team_id: multiTeamId })
+  check('status with a team_id reports that team in detail',
+    statusA.team_name === 'Multi A' && Array.isArray(statusA.tasks) && statusA.tasks.length === 1)
+  // Task ids restart per team, so the isolation probe addresses a task id that
+  // only the other team owns: a leaked write would move it out of `pending`.
+  let crossTeamUpdateRefused = false
+  try {
+    await call('agent_teams_update_task', {
+      team_id: multiTeamId,
+      task_id: multiBExtra.task_id,
+      status: 'cancelled',
+      output: 'addressed through the wrong team',
+    })
+  } catch {
+    crossTeamUpdateRefused = true
+  }
+  check('update_task cannot reach a task that lives in another team',
+    crossTeamUpdateRefused
+      && (await readTeam(stateRoot, multiBId))?.tasks.find(candidate => candidate.id === multiBExtra.task_id)?.status === 'pending')
+  await call('agent_teams_delete', { team_id: multiBId })
+  const afterOneDelete = await call('agent_teams_status', { team_id: multiTeamId })
+  // One live team left, so the bare call falls back to the detailed answer the
+  // single-team caller has always received instead of the multi-team list.
+  const soleRemaining = await call('agent_teams_status', {}, captain, null)
+  check('archiving one team leaves the other live',
+    afterOneDelete.team_name === 'Multi A'
+      && soleRemaining.team_name === 'Multi A'
+      && (await readTeam(stateRoot, multiBId)) === undefined
+      && (await readArchivedTeam(stateRoot, multiBId))?.tasks.map(candidate => candidate.subject).join('|')
+        === 'task in B|second task in B'
+      && (await readArchivedTeam(stateRoot, multiBId))?.tasks.some(candidate => candidate.id === multiB.task_id) === true
+      && (await readTeam(stateRoot, multiTeamId))?.tasks.map(candidate => candidate.subject).join('|') === 'task in A')
+  for (const name of ['Multi C', 'Multi D', 'Multi E']) {
+    await call('agent_teams_create', { name, description: 'workspace limit filler', new_team: true })
+  }
+  let workspaceLimitRefused = false
+  try {
+    await call('agent_teams_create', { name: 'Multi F', description: 'over the limit', new_team: true })
+  } catch (error) {
+    workspaceLimitRefused = /already has 4 live teams \(limit 4\)/.test(String(error))
+  }
+  check('the workspace refuses a fifth live team with the live count in the message', workspaceLimitRefused)
+  for (const id of [multiTeamId, 'multi-c', 'multi-d', 'multi-e']) await call('agent_teams_delete', { team_id: id })
+
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })
   const addedAlpha = await call('agent_teams_add_member', { name: 'alpha', role: 'slow implementer' })
   const addedBeta = await call('agent_teams_add_member', { name: 'beta', role: 'researcher' })
@@ -1915,9 +2007,15 @@ try {
     registerAgentTeamsTools(attemptCtx, {
       stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 1, maxMembers: 4, profiles: {},
     })
-    const attemptCall = (name, args, subject = cap) => (
-      defs.get(name).execute(args, { agent: subject, signal: new AbortController().signal })
-    )
+    let attemptTeamId = ''
+    const attemptCall = async (name, args, subject = cap) => {
+      const payload = { ...args }
+      if (payload.team_id === undefined && subject === cap && attemptTeamId !== '') payload.team_id = attemptTeamId
+      const result = await defs.get(name).execute(payload, { agent: subject, signal: new AbortController().signal })
+      if (name === 'agent_teams_create' && subject === cap && typeof result?.team_id === 'string') attemptTeamId = result.team_id
+      if (name === 'agent_teams_delete') attemptTeamId = ''
+      return result
+    }
     await attemptCall('agent_teams_create', { name: 'Attempt Fence', description: 'scheduler attempt fence' })
     await attemptCall('agent_teams_add_member', { name: 'worker', role: 'implementer' })
     const todo = await attemptCall('agent_teams_create_task', { subject: 'Work', assignee: 'worker' })

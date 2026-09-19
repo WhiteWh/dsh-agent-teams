@@ -116,7 +116,8 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
         assert.equal(host.tools.get('agent_teams_open', legacy), undefined)
         assertCaptainProtocol(renderPrompt(await assemble(legacy)))
         for (const name of ['agent_teams_create', 'agent_teams_delete']) {
-          const result = await host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Legacy', approval: 'required' } : {}, callId: name + '-legacy', agent: legacy, signal: new AbortController().signal })
+          // WP11 phase 1: the archive call names its team explicitly.
+          const result = await host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Legacy', approval: 'required' } : { team_id: 'legacy' }, callId: name + '-legacy', agent: legacy, signal: new AbortController().signal })
           assert.equal(result.isError, false, JSON.stringify(result))
         }
         assertCaptainProtocol(renderPrompt(await assemble(legacy)))
@@ -236,7 +237,7 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
     await t.test('create, status and archive preserve the prefix in native and nested dispatch', async () => {
       for (const nested of [false, true]) {
         assert.equal(await header(a), initialHeader)
-        const exec = name => host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Saved', description: 'Preserve the requested goal', approval: 'required' } : {}, callId: name + '-test', agent: a, signal: new AbortController().signal, ...(nested ? { parent: {} } : {}) })
+        const exec = name => host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Saved', description: 'Preserve the requested goal', approval: 'required' } : name === 'agent_teams_delete' ? { team_id: 'saved' } : {}, callId: name + '-test', agent: a, signal: new AbortController().signal, ...(nested ? { parent: {} } : {}) })
         for (const name of ['agent_teams_create', 'agent_teams_status', 'agent_teams_delete']) {
           const result = await exec(name)
           assert.equal(result.isError, false, JSON.stringify(result))

@@ -1,7 +1,7 @@
 /** Durable delivery receipts and execution-generation filtering at step admission. */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
-import { acknowledgeMailbox, CAPTAIN_KEY, discardMailboxMessages, findTeamByCaptain, readMailbox, readTeam, sanitizeKey, withTeamLock } from './state.ts'
+import { acknowledgeMailbox, CAPTAIN_KEY, discardMailboxMessages, findTeamsByCaptain, readMailbox, readTeam, sanitizeKey, withTeamLock } from './state.ts'
 import type { TeamMessage, TeamState } from './types.ts'
 import { sessionOwnEvents } from './harness-compat.ts'
 
@@ -55,22 +55,25 @@ export function installMailboxAdmission(ctx: Context, stateDir: string): void {
     }))
     const redundantSettlements = new Set<string>()
     if (successfulSettlements.size > 0) {
-      const owned = await findTeamByCaptain(root, payload.agent.id)
-      if (owned !== undefined) await withTeamLock(`team:${root}:${owned.id}`, async () => {
-        const team = await readTeam(root, owned.id)
-        if (team?.captainSessionId !== payload.agent.id || team.halted) return
-        const reports = await readMailbox(root, team.id, CAPTAIN_KEY)
-        for (const member of team.members) {
-          if (!successfulSettlements.has(member.id) || member.status === 'removed' || member.stopping) continue
-          const tasks = team.tasks.filter(task => task.assignee === member.name)
-          if (tasks.some(task => task.status === 'claimed' || task.status === 'in_progress')) continue
-          const latest = tasks.filter(task => (task.attempt ?? 0) > 0 || task.status === 'completed').sort((a, b) => b.updatedAt - a.updatedAt)[0]
-          if (latest?.status === 'completed' && reports.some(report => report.from === member.name && report.ts >= latest.updatedAt
-            && report.discardedAt === undefined && (report.deliveredAt !== undefined || report.readAt !== undefined))) {
-            redundantSettlements.add(member.id)
+      // WP11 phase 1: a captain may lead several teams, so check every one of them.
+      const ownedTeams = await findTeamsByCaptain(root, payload.agent.id)
+      for (const owned of ownedTeams) {
+        await withTeamLock(`team:${root}:${owned.id}`, async () => {
+          const team = await readTeam(root, owned.id)
+          if (team?.captainSessionId !== payload.agent.id || team.halted) return
+          const reports = await readMailbox(root, team.id, CAPTAIN_KEY)
+          for (const member of team.members) {
+            if (!successfulSettlements.has(member.id) || member.status === 'removed' || member.stopping) continue
+            const tasks = team.tasks.filter(task => task.assignee === member.name)
+            if (tasks.some(task => task.status === 'claimed' || task.status === 'in_progress')) continue
+            const latest = tasks.filter(task => (task.attempt ?? 0) > 0 || task.status === 'completed').sort((a, b) => b.updatedAt - a.updatedAt)[0]
+            if (latest?.status === 'completed' && reports.some(report => report.from === member.name && report.ts >= latest.updatedAt
+              && report.discardedAt === undefined && (report.deliveredAt !== undefined || report.readAt !== undefined))) {
+              redundantSettlements.add(member.id)
+            }
           }
-        }
-      })
+        })
+      }
     }
     const batches = new Map<string, { receipt: Receipt; ids: Set<string>; current: Map<string, TeamMessage> }>()
     const inputs = decision.messages.map(input => {

@@ -48,7 +48,7 @@ Old `kind=work` tasks can still be completed with free text. Quality kinds (`req
 
 | Tool | Purpose |
 |---|---|
-| `agent_teams_create` | create a team; the caller becomes the captain (a captain leads one team at a time) |
+| `agent_teams_create` | create a team; the caller becomes the captain. One workspace may hold several teams and a captain may lead more than one: a second team needs the explicit `new_team: true`, and every later team-scoped call names its team through `team_id` |
 | `agent_teams_add_member` | bring a member onto the roster (spawns a continuable subagent plus a member persona) |
 | `agent_teams_remove_member` | remove a member safely: revoke its attempt, reclaim its unfinished tasks, wait for the interruption to settle, then reschedule |
 | `agent_teams_create_task` | create a task with contract fields, `dependencies` and `assignee`; rejected by default while halted unless `resume` is explicit |
@@ -61,11 +61,21 @@ Old `kind=work` tasks can still be completed with free text. Quality kinds (`req
 | `agent_teams_pin_delta` | captain-only: register a check that is red here for a reason outside the lane (`check`, `expected`, `reason`); afterwards a `waived` result for that check gets its evidence filled in automatically as `pinned delta <id>: <reason>`. One entry per check; a duplicate names the existing id |
 | `agent_teams_unpin_delta` | captain-only: remove one registry entry by id (the error lists the pinned ids when the id is unknown) |
 | `agent_teams_send_message` | any member → any member/captain: the message lands directly in the recipient's mailbox and wakes it (no captain relay; an impersonated `from` is rejected) |
-| `agent_teams_status` | the whole team: kind/round/verdict, coverage matrix, escalated, halt/resume state |
+| `agent_teams_status` | one team in detail (kind/round/verdict, coverage matrix, escalated, halt/resume state); without a `team_id` it lists every team the caller leads or belongs to |
 | `agent_teams_resume` | explicitly resume a halted team; a non-empty reason is required; cancelled tasks are not recreated |
 | `agent_teams_delete` | end a team: interrupt its members and **archive** the team directory (tasks, dependency graph and mailboxes retained in full) |
 
 `agent_teams_add_member` needs no model parameters by default: when a member follows the captain's current LLM provider/model, the captain's current reasoning effort is snapshotted with it. When the user explicitly asks for a different model for a role, the optional `provider` + `model` may be passed together; overriding only `model` keeps the captain's current LLM provider. Whenever either provider or model changes, the reasoning effort automatically uses the target model's default tier; when the user explicitly asks for a specific effort for a member, the optional `reasoning_effort` may be passed (a tier id the target model supports, or `"default"` to force the model's own default). The plugin never opens a second selection round or a dialog per member.
+
+## Addressing a team
+
+Team identity is an **argument, not a property of the calling session**: `agent_teams_create` answers with the `team_id` (derived from the team name), and every team-scoped tool takes that id. The id is optional in the argument schema only so that a missing one can be answered with the list of teams the caller can address — `team_id is required: you participate in 2 teams (multi-a (Multi A), multi-b (Multi B))` — instead of a bare schema error, so one step is enough to correct the call. The system prompt tells the captain to remember the id from the `create` answer and to call `agent_teams_status` with no argument when it has forgotten it.
+
+- `agent_teams_status` without a `team_id` lists the caller's teams (`team_id`, name, phase, halted, `tasks: {total, done}`, members, activeWorkers, role) when there are several, and keeps reporting a **single** team in detail — that is also how a member of exactly one team may omit the id, because the plugin substitutes the only team it takes part in. A member prompt therefore never has to carry an id.
+- A second team in the same workspace needs `new_team: true`. That flag is the explicit "the user asked for a separate new team" signal: without it, `create` answers with the existing teams and tells the model to continue one of them instead of recreating anything.
+- Teams are independent. Tasks, dependencies, mailboxes, capability attempts and archives are read and written per `team_id`; a task id that exists only in another team is not reachable (an `update_task` on it fails instead of touching a same-numbered task of the addressed team). Task ids restart per team (`t1`, `t2`, …).
+- State-based workspace guards (configurable keys arrive with 0.2.0): a fifth live team is refused (`this workspace already has 4 live teams (limit 4)`), and so is a ninth active worker counted across all live teams. Archiving a team frees its slot immediately.
+- The Web panel, the plan-review routes and the pre-execution planner still follow one team at a time in this release; the per-team switcher arrives with 0.2.0.
 
 ## Configuration
 
@@ -150,7 +160,7 @@ While a long task runs, a stop button appears to the right of the specific team 
 ## Known limitations
 
 - Scheduling is event-driven rather than permanently polling; a member cannot be cold-resumed while the captain is offline, and tasks and messages stay on disk until the captain resumes or calls the status tool.
-- A captain leads one team at a time (matching Claude Code AgentTeams).
+- A captain may lead several teams in one workspace, but a call acts on exactly one of them: there is no combined report, no cross-team scheduler (a member is never double-booked because assignment stays inside one team) and the panel follows a single team per session until the 0.2.0 switcher.
 - A member persona replaces the deployment's default persona; members still have the full tool set (bash/fs/web and so on).
 - Team state is file-level persistence, so several processes operating on the same team at once are not guaranteed to be consistent (serialised by a lock inside one dsh process).
 - The activity panel reads the on-disk truth and is independent of the session-log event stream: after a switch/restart it performs one cold discovery for the current session, and keeps a 1s poll only when an active team was found or a conversation card needs it, so an ordinary session does not scan permanently.

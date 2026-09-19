@@ -74,13 +74,13 @@ the pre-step count, and FAIL must stay 0.
 | S06 | WP10 phases / agents / queues views | done | 935be9b | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
 | S07 | docs + release 0.1.21 | done | 74fc749 | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; t5-replay 7/7; scheduler fix in 0108c81 |
 | F4 | artwork cache revision (hotfix release 0.1.22) | done | | verify 219 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; mutation-tested route check; plan releases below shift by one |
-| S08 | WP2 amend_task extensions + retry from failed | done | | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
-| S09 | WP3 superseded + atomic dependency redirect | done | | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
-| S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
-| S11 | WP6.3 known-delta registry | done | | verify 237 PASS/0 FAIL; qg-tdd 126 PASS/0 FAIL; lifecycle +5 checks |
-| S12 | WP6.4 requiredReviewers enforced | done | | verify 237 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; fixture default list removed (see log) |
-| S13 | docs + release 0.1.23 | done | | version 0.1.23; notes + release record; tag v0.1.23 with the branch marker; artifact packed and installed into the web profile |
-| S14 | WP11 phase 1 team_id addressing | todo | | needs S09; D5: team_id mandatory except create and bare status; D6 minimal guard |
+| S08 | WP2 amend_task extensions + retry from failed | done | d79296b | verify 230 PASS/0 FAIL; qg-tdd 108 PASS/0 FAIL; amend suite 15/15; lifecycle scenario amend→retry→complete |
+| S09 | WP3 superseded + atomic dependency redirect | done | 481e89b | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
+| S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | d80470f | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
+| S11 | WP6.3 known-delta registry | done | 6d22d8b | verify 237 PASS/0 FAIL; qg-tdd 126 PASS/0 FAIL; lifecycle +5 checks |
+| S12 | WP6.4 requiredReviewers enforced | done | 8bdea2d | verify 237 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; fixture default list removed (see log) |
+| S13 | docs + release 0.1.23 | done | fc0ba2c | version 0.1.23; notes + release record; tag v0.1.23 with the branch marker; artifact packed and installed into the web profile |
+| S14 | WP11 phase 1 team_id addressing | done | | verify 240 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; lifecycle 145 PASS/0 FAIL (+16 multi-team checks); all 21 suites exit 0; D5 schema-optional id with a listing error, D6 guard |
 | S15 | docs + release 0.1.24 | todo | | 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | todo | | needs S09; D3: server-side byKind/equal modes |
 | S17 | WP7 replan live team | todo | | needs S08–S10, S02; D4: nearest-ancestor phase fitting + lift-and-flag |
@@ -172,6 +172,59 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S14 — WP11 phase 1: `team_id` addressing (green)
+
+Scope (plan §WP11 phase 1, owner decisions D5 + D6): team identity becomes an
+argument instead of a property of the calling session, so one workspace can hold
+several teams (requirement R2) and any folder works (R1/R3).
+
+- **`src/state.ts`:** `findTeamByCaptain` / `findTeamByParticipant` (which threw
+  `ambiguous` at two teams) are replaced by list-returning `listTeams`,
+  `findTeamsByCaptain`, `findTeamsByParticipant` plus `describeTeamHandles` for
+  human-readable id/name lists.
+- **`src/tools.ts`:** every team-scoped tool gained a `team_id` parameter;
+  `pickCallerTeam` is the single enforcement point — a missing id throws
+  `team_id is required: you participate in N teams (<handles>)`, an unknown id
+  names the caller's teams. The parameter is deliberately **optional in the
+  argument schema**: the runtime validates arguments before the handler runs, so
+  `required: true` would answer with a bare `missing required property` instead
+  of the list, and D5 asks for one-step self-correction. Members of exactly one
+  team keep omitting it (`capabilities.ts` context), so the member prompt is
+  unchanged. `agent_teams_create` returns the id and needs `new_team: true` for
+  a second team; the duplicate-team error keeps the historical
+  "Use agent_teams_status and continue the existing team" guidance, adds the
+  `new_team=true` rule and keeps refusing to end the old team first.
+  `agent_teams_status` without an id lists the caller's teams (`team_id`, name,
+  phase, halted, `tasks: {total, done}`, members, activeWorkers, role) when there
+  are several and still answers a single team in detail. State-based guard (D6):
+  a fifth live team and a ninth concurrently working member are refused, with the
+  live count in the message; configurable keys stay in phase 3 (S19).
+- **`src/index.ts`:** prompt rule 1 is the addressing rule (remember the id from
+  `create`, `status` with no argument if unsure, second team needs an explicit
+  request plus `new_team: true`); the web routes and the panel resolve the caller's
+  team by id through the list API.
+- **Tests (the plan's WP11 list, phase-1 part):** `scripts/lifecycle-verify.mjs`
+  gained the multi-team scenario — two teams in one workspace, `new_team`
+  guard, a missing `team_id` naming both ids, the `status` list shape versus the
+  per-team detail, a cross-team `update_task` probe that uses a task id the
+  addressed team does not own, archiving one team leaving the other live, and the
+  fifth-team refusal. The harnesses in `lifecycle-verify.mjs`, `stress-verify.mjs`
+  and `quality-gates-tdd.mjs` now remember the id their `create` returned and pass
+  it like a model would (a `null` override omits it on purpose for the negative
+  case); `capabilities.test.mjs` names its team on the archive call.
+- **Docs:** README capability row, `docs/usage.md` (create row, status row, a new
+  "Addressing a team" section, the rewritten limitation),
+  `docs/progressive-loading.md` (the two core rules).
+- **Green:** typecheck exit 0; build exit 0 (twice, after the S11/S12 trap);
+  `verify.mjs` **240 PASS / 0 FAIL**; `quality-gates-tdd` **132 PASS / 0 FAIL**;
+  `lifecycle-verify` **145 PASS / 0 FAIL** (was 129); `stress-verify` 21;
+  `capabilities.test.mjs` 18/18; all 21 suites and `sync-skill --check` exit 0
+  (logs in `.local/logs/s14/` and `.local/logs/s14b/`).
+- **Deferred, with a FOLLOWUPS entry:** the plan's `stress-verify` line "two teams,
+  one free member, no double assignment" needs the phase-2 cross-team scheduler;
+  phase 1 keeps assignment inside one team, where a member cannot be double-booked
+  by construction.
 
 ### S13 — docs + release 0.1.23 (done)
 

@@ -25,7 +25,7 @@ import {
   beginTaskAttempt,
   CAPTAIN_KEY,
   claimMailboxDelivery,
-  findTeamByParticipant,
+  findTeamsByParticipant,
   invalidateTaskAttempt,
   readTeam,
   readPendingMailbox,
@@ -519,64 +519,65 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   const syncMemberStatus = async (agent: Agent, status: AgentStatus): Promise<void> => {
     const workspace = agent.session.header.cwd ?? process.cwd()
     const stateRoot = stateRootOf(workspace, config)
-    const located = await findTeamByParticipant(stateRoot, agent.id)
-    if (located === undefined) {
+    // WP11 phase 1: one session may take part in several teams, so every lane of
+    // the agent is reconciled in turn instead of assuming a single match.
+    const locatedTeams = await findTeamsByParticipant(stateRoot, agent.id)
+    if (locatedTeams.length === 0) {
       parkedAttempts.delete(agent.id)
       return
     }
-    if (located.captainSessionId === agent.id) {
-      // Captain takeover is scoped to the captain's current turn. Unlike a
-      // durable member, the captain has no scheduler lane that can resume an
-      // abandoned attempt later. Returning unfinished captain-owned work to
-      // the shared pool on the idle edge prevents it from becoming a
-      // permanently parked `claimed` task after the captain answers, is
-      // interrupted, or the user switches conversations.
-      if (status === 'running') return
-      let requeued = false
+    for (const located of locatedTeams) {
+      if (located.captainSessionId === agent.id) {
+        // Captain takeover is scoped to the captain's current turn. Unlike a
+        // durable member, the captain has no scheduler lane that can resume an
+        // abandoned attempt later. Returning unfinished captain-owned work to
+        // the shared pool on the idle edge prevents it from becoming a
+        // permanently parked `claimed` task after the captain answers, is
+        // interrupted, or the user switches conversations.
+        if (status === 'running') continue
+        let requeued = false
+        await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
+          const fresh = await readTeam(stateRoot, located.id)
+          if (fresh === undefined || fresh.captainSessionId !== agent.id) return
+          for (const task of fresh.tasks) {
+            if (task.assignee !== CAPTAIN_KEY
+              || task.status === 'completed'
+              || task.status === 'failed'
+              || task.status === 'cancelled') continue
+            invalidateTaskAttempt(task)
+            task.reassigning = false
+            requeued = true
+          }
+          if (requeued) await writeTeam(stateRoot, fresh)
+        })
+        if (requeued) await runtime.kickTeam(workspace, located.id, agent)
+        continue
+      }
+      const member = located.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
+      if (member === undefined) continue
       await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
         const fresh = await readTeam(stateRoot, located.id)
-        if (fresh === undefined || fresh.captainSessionId !== agent.id) return
-        for (const task of fresh.tasks) {
-          if (task.assignee !== CAPTAIN_KEY
-            || task.status === 'completed'
-            || task.status === 'failed'
-            || task.status === 'cancelled') continue
-          invalidateTaskAttempt(task)
-          task.reassigning = false
-          requeued = true
-        }
-        if (requeued) await writeTeam(stateRoot, fresh)
-      })
-      if (requeued) await runtime.kickTeam(workspace, located.id, agent)
-      return
-    }
-    const member = located.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
-    if (member === undefined) {
-      parkedAttempts.delete(agent.id)
-      return
-    }
-    await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
-      const fresh = await readTeam(stateRoot, located.id)
-      const current = fresh?.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
-      if (fresh === undefined || current === undefined) return
-      const next = status === 'running' ? 'working' : 'idle'
-      if (next === 'idle') {
-        const owned = ownedOpenTask(fresh.tasks, current.name)
-        if (owned?.attemptId === undefined) parkedAttempts.delete(agent.id)
-        else parkedAttempts.set(agent.id, owned.attemptId)
-        // The turn ended while this member still owns an open task: that is the
-        // lost-delivery window, so its attempt may be adopted once. A delivery
-        // failure counts as the same boundary.
-        if (owned !== undefined) nextDispatchReclaims.add(agent.id)
-      } else {
-        parkedAttempts.delete(agent.id)
+        const current = fresh?.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
+        if (fresh === undefined || current === undefined) return
+        const next = status === 'running' ? 'working' : 'idle'
+        if (next === 'idle') {
+          const owned = ownedOpenTask(fresh.tasks, current.name)
+          if (owned?.attemptId === undefined) parkedAttempts.delete(agent.id)
+          else parkedAttempts.set(agent.id, owned.attemptId)
+          // The turn ended while this member still owns an open task: that is the
+          // lost-delivery window, so its attempt may be adopted once. A delivery
+          // failure counts as the same boundary.
+          if (owned !== undefined) nextDispatchReclaims.add(agent.id)
+        } else {
+          parkedAttempts.delete(agent.id)
         nextDispatchReclaims.delete(agent.id)
       }
       if (current.status === next) return
       current.status = next
       await writeTeam(stateRoot, fresh)
-    })
-    if (status === 'idle') await runtime.kickMember(workspace, located.id, member.name)
+      })
+      if (status === 'idle') await runtime.kickMember(workspace, located.id, member.name)
+    }
   }
 
   ctx.on('agent/status', ({ agent, status }) => {

@@ -476,68 +476,74 @@ export async function recordRetiredMemberIds(stateRoot: string, memberIds: reado
  * @param captainSessionId - the owning session id.
  * @returns the team record, or undefined when the captain leads no team.
  */
-export async function findTeamByCaptain(
-  stateRoot: string,
-  captainSessionId: string,
-): Promise<TeamState | undefined> {
+/**
+ * Every live team in one state root, oldest first (WP11 phase 1).
+ *
+ * Team identity is data: a captain may lead several teams in the same workspace
+ * (and one team per workspace is only the common case), so nothing may assume a
+ * single match. Callers address a team by id and use this list to build the
+ * "your teams" error text a missing id produces.
+ * @param stateRoot - resolved absolute state root directory.
+ * @returns the readable team records.
+ */
+export async function listTeams(stateRoot: string): Promise<TeamState[]> {
   let entries
   try {
     entries = await readdir(stateRoot, { withFileTypes: true })
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return undefined
+      return []
     }
     throw error
   }
-  let found: TeamState | undefined
+  const teams: TeamState[] = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const team = await readTeam(stateRoot, entry.name)
-    if (team?.captainSessionId === captainSessionId) {
-      if (found !== undefined && found.id !== team.id) {
-        throw new Error(`captain session leads multiple active teams ("${found.id}", "${team.id}"); archive one before continuing`)
-      }
-      found = team
-    }
+    if (team !== undefined) teams.push(team)
   }
-  return found
+  return teams.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
 }
 
 /**
- * Find the team in which one session is an active participant.
+ * The teams one captain session leads, oldest first.
+ * @param stateRoot - resolved absolute state root directory.
+ * @param captainSessionId - the calling captain session id.
+ * @returns every team whose captain is that session (possibly none).
+ */
+export async function findTeamsByCaptain(stateRoot: string, captainSessionId: string): Promise<TeamState[]> {
+  return (await listTeams(stateRoot)).filter((team) => team.captainSessionId === captainSessionId)
+}
+
+/**
+ * The teams in which one session is an active participant, oldest first.
  * Captains match `captainSessionId`; members match their durable child session
- * id. Removed members no longer have access to team-scoped tools.
+ * id, and a removed member no longer participates.
  * @param stateRoot - resolved absolute state root directory.
  * @param agentSessionId - calling captain/member session id.
- * @returns the team record, or undefined when the caller belongs to no team.
+ * @returns every team the caller belongs to (possibly none).
  */
-export async function findTeamByParticipant(
-  stateRoot: string,
-  agentSessionId: string,
-): Promise<TeamState | undefined> {
-  let entries
-  try {
-    entries = await readdir(stateRoot, { withFileTypes: true })
-  } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return undefined
-    }
-    throw error
-  }
-  let found: TeamState | undefined
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const team = await readTeam(stateRoot, entry.name)
-    const participates = team?.captainSessionId === agentSessionId
-      || team?.members.some((member) => member.id === agentSessionId && member.status !== 'removed') === true
-    if (participates && team !== undefined) {
-      if (found !== undefined && found.id !== team.id) {
-        throw new Error(`agent session belongs to multiple active teams ("${found.id}", "${team.id}"); the target team is ambiguous`)
-      }
-      found = team
-    }
-  }
-  return found
+export async function findTeamsByParticipant(stateRoot: string, agentSessionId: string): Promise<TeamState[]> {
+  return (await listTeams(stateRoot)).filter((team) => (
+    team.captainSessionId === agentSessionId
+    || team.members.some((member) => member.id === agentSessionId && member.status !== 'removed')
+  ))
+}
+
+/** One team's id and name, for the "pass team_id" error text. */
+export interface TeamHandle {
+  readonly id: string
+  readonly name: string
+}
+
+/**
+ * Render the caller's teams as `id (name)` pairs (WP11 phase 1).
+ * @param teams - the teams to describe.
+ * @returns a comma-joined list, or a phrase when there are none.
+ */
+export function describeTeamHandles(teams: readonly TeamHandle[]): string {
+  if (teams.length === 0) return 'none — call agent_teams_create first'
+  return teams.map((team) => `${team.id} (${team.name})`).join(', ')
 }
 
 /** Build a fresh message record. */

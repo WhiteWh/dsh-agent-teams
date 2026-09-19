@@ -187,10 +187,23 @@ function execFor(subject) {
   return { agent: subject, signal: new AbortController().signal }
 }
 
-async function call(name, args, subject = runtime.captain) {
+// WP11 phase 1: a captain addresses one team per call, so the harness remembers
+// the id `create` returned and passes it on. The fourth argument overrides that
+// memory: an id addresses another team, `null` omits the id on purpose.
+let captainTeamId = ''
+
+async function call(name, args, subject = runtime.captain, teamId) {
   const definition = runtime.definitions.get(name)
   if (definition === undefined) throw new Error(`missing tool ${name}`)
-  return definition.execute(args, execFor(subject))
+  const payload = { ...args }
+  if (payload.team_id === undefined && subject === runtime.captain && teamId !== null) {
+    const chosen = teamId ?? captainTeamId
+    if (chosen !== '') payload.team_id = chosen
+  }
+  const result = await definition.execute(payload, execFor(subject))
+  if (name === 'agent_teams_create' && subject === runtime.captain && typeof result?.team_id === 'string') captainTeamId = result.team_id
+  if (name === 'agent_teams_delete') captainTeamId = ''
+  return result
 }
 
 async function state() {
