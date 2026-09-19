@@ -79,7 +79,7 @@ import {
   resizePanelLayout,
   resolvePanelGeometry,
 } from '../lib/client/panel-geometry.js'
-import { memberArtUrl } from '../lib/client/artwork.js'
+import { ACTION_SYMBOL, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl } from '../lib/client/artwork.js'
 import { parseAgentTeamsCreateArgs } from '../lib/client/agent-teams-card-definition.js'
 import {
   AGENT_TEAMS_LOCALE_NAMESPACE,
@@ -303,6 +303,16 @@ const expectedArtwork = [
   'action-working-v2.png', 'action-thinking-v2.png',
   'action-reporting-v2.png', 'action-celebrating-v2.png',
   'action-sleeping-v2.png', 'action-sending-v2.png',
+  // Standalone symbol pack for the small corner badge: the mascot art above is
+  // unreadable at badge size, so both corner marks are separate drawings.
+  'team-lead-symbol.png',
+  'member-researcher-symbol.png', 'member-engineer-symbol.png',
+  'member-qa-symbol.png', 'member-designer-symbol.png',
+  'member-security-symbol.png', 'member-docs-symbol.png',
+  'member-data-symbol.png', 'member-operator-symbol.png',
+  'action-working-symbol.png', 'action-thinking-symbol.png',
+  'action-reporting-symbol.png', 'action-celebrating-symbol.png',
+  'action-sleeping-symbol.png', 'action-sending-symbol.png',
 ].sort()
 const artworkDir = new URL('../assets/agent-teams/', import.meta.url)
 const packagedArtwork = (await readdir(artworkDir)).sort()
@@ -336,10 +346,14 @@ check(
     || image.colorType !== 6))}`,
 )
 check(
-  'client mapping and host allowlist reference every V2 artwork asset',
+  'client mapping and host allowlist reference every artwork asset',
   expectedArtwork.every(name => artworkSource.includes(name) || hostSource.includes(name))
     && artworkSource.includes('member-data-v2.png')
-    && artworkSource.includes('member-operator-v2.png'),
+    && artworkSource.includes('member-operator-v2.png')
+    // The corner badge must resolve its symbol from the role table rather than
+    // hard-coding one image per call site, otherwise the pair drifts apart.
+    && artworkSource.includes("-symbol.png'")
+    && artworkSource.includes('memberSymbolUrl'),
   'a packaged image is unreachable or one of the eighth-member mappings is missing',
 )
 const eightRoleArtwork = [
@@ -356,6 +370,38 @@ check(
   'canonical eight-member roster resolves to eight distinct role images',
   eightRoleArtwork.every(Boolean) && new Set(eightRoleArtwork).size === 8,
   `resolved artwork = ${JSON.stringify(eightRoleArtwork)}`,
+)
+// The corner badge is the surface this pair exists for. Eight roles that share
+// a symbol would make two different members look identical in the panel, which
+// is exactly the readability defect the symbol pack replaced.
+const eightRoleSymbols = [
+  ['Researcher', 'Researcher'],
+  ['Engineer', 'Backend Engineer'],
+  ['QA', 'QA Engineer'],
+  ['Designer', 'UI UX Designer'],
+  ['Security', 'Security Reviewer'],
+  ['Docs', 'Docs Writer'],
+  ['Data', 'Data Analyst'],
+  ['Operator', 'Release Operator'],
+].map(([name, role]) => memberSymbolUrl(name, role))
+check(
+  'canonical eight-member roster resolves to eight distinct corner symbols',
+  eightRoleSymbols.every(Boolean) && new Set(eightRoleSymbols).size === 8
+    && eightRoleSymbols.every(url => url.endsWith('-symbol.png'))
+    && memberSymbolUrl('Lead', 'Team Lead') === LEAD_SYMBOL,
+  `resolved symbols = ${JSON.stringify(eightRoleSymbols)}`,
+)
+// The defect this pair replaced: the corner badge drew the same mascot art as
+// the avatar, which is a smudge at 18px. Both marks must come from the symbol
+// packs, and the panel must not fall back to the mascot for either one.
+check(
+  'the small corner badge draws both marks from the symbol packs',
+  Object.values(ACTION_SYMBOL).every(url => url.endsWith('-symbol.png'))
+    && Object.values(ACTION_SYMBOL).every(url => !url.includes('-v2.png'))
+    && !activityPanelSource.includes('ACTION_ART[')
+    && activityPanelSource.includes('ACTION_SYMBOL[member.activity]')
+    && activityPanelSource.includes('src={memberSymbolUrl(member.name, member.role)'),
+  `action symbols = ${JSON.stringify(ACTION_SYMBOL)}`,
 )
 check(
   'whale portraits use transparent cutouts instead of dark circular plates',

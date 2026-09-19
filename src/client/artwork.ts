@@ -1,14 +1,19 @@
 /**
- * Shared whale artwork lookup for the activity panel and the conversation
+ * Shared mascot artwork lookup for the activity panel and the conversation
  * card: role keywords map to the packaged role images; the captain always
- * uses the lead whale.
+ * uses the lead mascot.
+ *
+ * Two packs are served from the same route: the amber terminal mascot carries
+ * the member identity at full size, while the standalone role symbol marks the
+ * same role in the small corner badge. The symbols exist as a separate pack
+ * because a mascot scaled down to badge size is unreadable.
  * @module dsh-agent-teams/client/artwork
  */
 
 /** Artwork route prefix served by the plugin host half. */
 export const ART_BASE = '/plugins/dsh-agent-teams/assets/'
 
-/** V2 whale role artwork per role keyword. */
+/** Terminal mascot role artwork per role keyword. */
 const ROLE_ART: ReadonlyArray<readonly [RegExp, string]> = [
   [/data|analys|metric|performance|数据|分析|指标|性能/, 'member-data-v2.png'],
   [/resear|investig|explor|study|研究|调查|探索|调研/, 'member-researcher-v2.png'],
@@ -22,14 +27,56 @@ const ROLE_ART: ReadonlyArray<readonly [RegExp, string]> = [
   [/release|\bbuild\b|deploy|\bops\b|\bci\b|ship|coordin|发布|构建|部署|运维|协调/, 'member-operator-v2.png'],
 ]
 
-/** Captain artwork (always the lead whale). */
+/** Captain artwork (always the lead mascot). */
 export const LEAD_ART = `${ART_BASE}team-lead-v2.png`
+
+/**
+ * Role symbol for the small corner badge, derived from the mascot file name.
+ *
+ * The symbol pack ships the same nine role names, so the mapping stays a pure
+ * extension of the role table above and cannot drift away from it.
+ * @param artName - packaged mascot file name, for example `member-qa-v2.png`.
+ * @returns the matching symbol URL.
+ */
+function symbolFor(artName: string): string {
+  return `${ART_BASE}${artName.replace(/-v2\.png$/u, '-symbol.png')}`
+}
+
+/** Captain role symbol for the corner badge (always the lead symbol). */
+export const LEAD_SYMBOL = symbolFor('team-lead-v2.png')
 
 /** Status action artwork per member activity. */
 export const ACTION_ART: Record<'working' | 'idle' | 'unknown', string> = {
   working: `${ART_BASE}action-working-v2.png`,
   idle: `${ART_BASE}action-sleeping-v2.png`,
   unknown: `${ART_BASE}action-thinking-v2.png`,
+}
+
+/**
+ * Standalone action symbol per member activity, drawn in the small corner
+ * badge. A mascot scaled to badge size reads as a smudge; the symbol pack
+ * exists for exactly this slot, the same reason the role symbol does.
+ */
+export const ACTION_SYMBOL: Record<'working' | 'idle' | 'unknown', string> = {
+  working: symbolFor('action-working-v2.png'),
+  idle: symbolFor('action-sleeping-v2.png'),
+  unknown: symbolFor('action-thinking-v2.png'),
+}
+
+/**
+ * Member role symbol (the small corner badge mark), or null when no role
+ * matches. Null means the avatar already falls back to the initial letter, so
+ * the caller renders no badge rather than a symbol for a role we did not match.
+ * @param name - the member's display name.
+ * @param role - the member's role text.
+ * @returns the role symbol URL, or null when unmatched.
+ */
+export function memberSymbolUrl(name: string, role: string): string | null {
+  const identity = `${name} ${role}`.toLowerCase()
+  for (const [pattern, art] of ROLE_ART) {
+    if (pattern.test(identity)) return symbolFor(art)
+  }
+  return null
 }
 
 /**

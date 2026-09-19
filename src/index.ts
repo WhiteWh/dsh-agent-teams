@@ -427,9 +427,11 @@ export function apply(ctx: Context, config: Config): void {
       },
     }), 'agent-teams: plan route')
 
-  // Whale mascot artwork: serve the packaged V2 role/action images to the
-  // activity panel. An explicit allowlist guards the route (no path
-  // traversal); the images ship with the bundle (files: assets/).
+  // Amber terminal mascot artwork plus the symbol packs: serve the packaged
+  // role/action images to the activity panel. An explicit allowlist guards the
+  // route (no path traversal); the images ship with the bundle (files:
+  // assets/). The `-symbol` files are the standalone marks drawn in the small
+  // corner badge, where the mascot art is too dense to read.
   const artDir = fileURLToPath(new URL('../assets/agent-teams/', import.meta.url))
   const ART_ALLOWLIST = new Set([
     'team-lead-v2.png',
@@ -440,6 +442,14 @@ export function apply(ctx: Context, config: Config): void {
     'action-working-v2.png', 'action-thinking-v2.png',
     'action-reporting-v2.png', 'action-celebrating-v2.png',
     'action-sleeping-v2.png', 'action-sending-v2.png',
+    'team-lead-symbol.png',
+    'member-researcher-symbol.png', 'member-engineer-symbol.png',
+    'member-qa-symbol.png', 'member-designer-symbol.png',
+    'member-security-symbol.png', 'member-docs-symbol.png',
+    'member-data-symbol.png', 'member-operator-symbol.png',
+    'action-working-symbol.png', 'action-thinking-symbol.png',
+    'action-reporting-symbol.png', 'action-celebrating-symbol.png',
+    'action-sleeping-symbol.png', 'action-sending-symbol.png',
   ])
     ctx.effect(() => webServer.register({
       kind: 'prefix',

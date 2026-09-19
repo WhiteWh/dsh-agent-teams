@@ -893,18 +893,47 @@
 
 .stateArt {
   position: absolute;
-  right: -5px;
+  right: -2px;
   bottom: -3px;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   box-sizing: border-box;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 50%;
+  padding: 2px;
   object-fit: contain;
-  background: transparent;
+  background: var(--dsw-alias-bg-layer-1);
   filter:
     drop-shadow(0 0 1px var(--dsw-alias-bg-layer-1))
     drop-shadow(0 1px 1px rgb(18 45 72 / 24%));
+}
+
+/* Role symbol: the identity mark of the small corner pair. It sits inside the
+   action badge, which stays the outermost mark because the activity is what
+   changes and therefore has to catch the eye first. */
+.memberSymbol,
+.leadSymbol {
+  position: absolute;
+  bottom: -3px;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 50%;
+  padding: 2px;
+  object-fit: contain;
+  background: var(--dsw-alias-bg-layer-1);
+  filter:
+    drop-shadow(0 0 1px var(--dsw-alias-bg-layer-1))
+    drop-shadow(0 1px 1px rgb(18 45 72 / 24%));
+}
+
+.memberSymbol {
+  right: 13px;
+}
+
+.leadSymbol {
+  right: 14px;
 }
 
 .stateArt[data-activity='working'] {

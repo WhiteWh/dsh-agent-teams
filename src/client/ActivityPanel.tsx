@@ -64,7 +64,7 @@ import {
   type ActivityTask,
   type ActivityTeam,
 } from './activity-monitor.ts'
-import { ACTION_ART, LEAD_ART, memberArtUrl } from './artwork.ts'
+import { ACTION_SYMBOL, LEAD_ART, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl } from './artwork.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
 import { StagingPlanEditor } from './StagingPlanEditor.tsx'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
@@ -910,6 +910,7 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
         <div className={css.captainNode}>
           <span className={css.captainAvatar}>
             <img className={css.leadAvatar} src={LEAD_ART} alt="" aria-hidden />
+            <img className={css.leadSymbol} src={LEAD_SYMBOL} alt="" aria-hidden />
           </span>
           <span className={css.captainInfo}>
             <span className={css.captainLine}>
@@ -977,7 +978,19 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                     ) : (
                       <span className={css.memberInitial} style={{ background: accentOf(member.id) }}>{memberInitial(member.name)}</span>
                     )}
-                    <img className={css.stateArt} data-activity={member.activity} src={ACTION_ART[member.activity]} alt="" aria-hidden />
+                    {/* Corner marks: the role symbol names the identity, the action
+                        symbol names the live activity. Both come from the standalone
+                        symbol packs, because the mascot art is unreadable at this
+                        size — the defect this pair replaced. */}
+                    {memberSymbolUrl(member.name, member.role) !== null && (
+                      <img
+                        className={css.memberSymbol}
+                        src={memberSymbolUrl(member.name, member.role) ?? ''}
+                        alt=""
+                        aria-hidden
+                      />
+                    )}
+                    <img className={css.stateArt} data-activity={member.activity} src={ACTION_SYMBOL[member.activity]} alt="" aria-hidden />
                   </span>
                   <span className={css.memberInfo}>
                     <span className={css.memberLine}>
