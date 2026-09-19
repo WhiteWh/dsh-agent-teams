@@ -1,0 +1,157 @@
+﻿=== direct node:test runs ===
+### scripts/quality-gates-repair-scope.test.mjs exit=0 pass= fail=
+✔ repair scope includes the fix target named in requiredFix, not just the observed file (0.9069ms)
+✔ repair scope drops absolute paths that can never match workspace-relative patterns (0.4755ms)
+✔ repair scope falls back to the source inScope when findings name nothing legal (0.0786ms)
+✔ line-number suffixes are stripped from derived paths (0.0689ms)
+✔ end-to-end: generated repair round is satisfiable for the incident shape (0.6029ms)
+✔ generated repair is completable: real F_DOC incident (0.6743ms)
+✔ generated repair is completable: directory exclusion covers observed and required paths (0.1928ms)
+✔ generated repair is completable: fallback scope has duplicates and overlapping exclusions (0.1357ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8.2392
+
+### scripts/quality-gates-amend.test.mjs exit=0 pass= fail=
+✔ amend fixes an unsatisfiable inScope and records the revision (1.643ms)
+✔ amended contract is the one the completion gate evaluates (0.5985ms)
+✔ mid-flight amendments are allowed until a review passes judgment (0.1743ms)
+✔ requirements passing judgment also freezes the contract (0.1348ms)
+✔ terminal tasks and work tasks have nothing amendable (0.1418ms)
+✔ amendment requires a reason, an author, and at least one contract field (0.1176ms)
+✔ replacement values must be well-formed: non-empty strings, non-empty lists, workspace-relative paths (0.1608ms)
+✔ revisions accumulate; previous values always snapshot the immediately prior contract (0.1661ms)
+✔ durable-state validation accepts well-formed revisions and rejects malformed ones (0.2676ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10.228
+
+### scripts/release-metadata.test.mjs exit=0 pass= fail=
+✔ stable latest requires the recommended host and bounded compatibility (3.6462ms)
+✔ alpha candidates use next and never replace latest (1.8252ms)
+✔ beta candidates use next and never replace latest (1.233ms)
+✔ rc candidates use next and never replace latest (1.2048ms)
+✔ reject unsupported versions and unbounded peers (1.326ms)
+✔ checked-in candidate has consistent dependency and release metadata (0.3965ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 13.5631
+
+### scripts/readme-version.test.mjs exit=0 pass= fail=
+✔ a README that still names an older plugin version is rejected (0.8504ms)
+✔ an older version left in prose is rejected even without an install command (0.6433ms)
+✔ older versions stay reachable through their release-notes links (0.2039ms)
+✔ a shorter version does not match inside a longer prerelease (0.1768ms)
+✔ install commands are extracted regardless of version (0.1083ms)
+✔ published versions come from the release notes themselves (0.4356ms)
+✔ the checked-in READMEs match the package version (1.1971ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8.9779
+
+### scripts/compatibility.test.mjs exit=1 pass= fail=
+  +   errno: -4048,
+  +   path: 'C:\\Program Files\\nodejs\\node.exe',
+  +   spawnargs: [
+  +     'C:\\Users\\whitl\\AppData\\Local\\Temp\\dsh-DuczPF\\agent-teams-doctor-bin-kktu0b\\dsh-agent-teams-doctor',
+  +     '--host-root',
+  +     'C:\\Users\\whitl\\AppData\\Local\\Temp\\dsh-DuczPF\\agent-teams-doctor-bin-kktu0b\\host',
+  +     '--json'
+  +   ],
+  +   syscall: 'spawnSync C:\\Program Files\\nodejs\\node.exe'
+  + }
+  - undefined
+  
+      at TestContext.<anonymous> (file:///D:/OwlCats/AI_Tools/dsh-agent-teams/scripts/compatibility.test.mjs:27:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [Error],
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+### scripts/http-body.test.mjs exit=0 pass= fail=
+✔ HTTP body reader returns 413 without losing the response or buffering the rest (46.9787ms)
+✔ aborted body rejects and removes its buffering listeners (0.4731ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 52.465
+
+### scripts/capabilities.test.mjs exit=0 pass= fail=
++          ~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ((node:289160) E...nge at any time:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✔ PTC and both modes keep the operation SDK stable after status (90.3907ms)
+  ✔ real run_code may discard status output without losing operating rules (31.6617ms)
+  ✔ HMR removes old masks and restores persisted participants in existing scopes (3.9948ms)
+  ✔ a cold captain loads its durable role before its first request (3.0205ms)
+  ✔ archive and idle preserve the original captain prefix (1.3645ms)
+  ✔ create, status and archive preserve the prefix in native and nested dispatch (20.5841ms)
+  ✔ even aggressive host result pruning cannot remove the system protocol (1.0836ms)
+  ✔ read failure leaves the fixed header intact (1.828ms)
+✔ stable tool presentation uses real scoped registry and prompt assembly (207.7428ms)
+ℹ {"role":"captain-idle","profiles":["demo"],"promptBytes":5321,"schemaBytes":16521}
+ℹ {"role":"member","promptBytes":443,"schemaBytes":4376}
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 210.0459
+
+### scripts/member-spawn-recovery.test.mjs exit=0 pass= fail=
+▶ a member start drops the names the host rejects and succeeds
+  ✔ the rejected names are removed and the start succeeds (0.8629ms)
+  ✔ only the names the host named are dropped, not the ones it listed as known (0.1214ms)
+  ✔ each rejection removes one more name until the host accepts the filter (0.1504ms)
+  ✔ a first attempt that already works is not retried (0.1663ms)
+✔ a member start drops the names the host rejects and succeeds (2.1ms)
+▶ a member start that failed for another reason still surfaces
+  ✔ an unrelated start failure propagates (0.2877ms)
+  ✔ a restriction error that is not an unknown-name report propagates (0.1174ms)
+  ✔ a non-error rejection does not loop forever (0.1083ms)
+  ✔ a rejection that names no name already in the filter does not loop forever (0.1355ms)
+✔ a member start that failed for another reason still surfaces (1.0445ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9.9446
+

@@ -40,7 +40,7 @@ the pre-step count, and FAIL must stay 0.
 | S04 | WP6.2 Delivery ignores dead tasks, path loop filtered by completed | done | 86d2c4a | verify 188 PASS/0 FAIL; qg-tdd 101 PASS/0 FAIL |
 | S05 | WP6.1 profile lint + doctor --profiles | done | 7941ede | verify 188 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
 | S06 | WP10 phases / agents / queues views | done | 935be9b | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
-| S07 | docs + release 0.1.21 | todo | | |
+| S07 | docs + release 0.1.21 | done | 74fc749 | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; t5-replay 7/7; scheduler fix in 0108c81 |
 | S08 | WP2 amend_task extensions + retry from failed | todo | | needs S01 |
 | S09 | WP3 superseded + atomic dependency redirect | todo | | needs S01 |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | todo | | needs S03 |
@@ -119,7 +119,7 @@ plan's §5 was retitled when the owner answered them.
 
 ## Step log
 
-### S07 — docs + release 0.1.21 (in progress)
+### S07 — docs + release 0.1.21 (done, `74fc749`)
 
 Scope: WP1 + WP2-free docs, WP5, WP6.1, WP6.2, WP9-a, WP10, plus the scheduler
 fix found by the t5 replay. Two extra commits belong to this step:

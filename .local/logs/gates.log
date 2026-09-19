@@ -1,0 +1,168 @@
+﻿=== sandbox-safe gates ===
+
+### node scripts/quality-gates-tdd.mjs => exit 0
+  PASS  tdd.create.review-blank-reviewedTaskId-rejected.tool
+  PASS  tdd.create.blank-profile-treated-as-omitted.tool
+  PASS  tdd.create.implementation-requires-objective.tool
+  PASS  tdd.resume.create-task-does-not-unhalt.tool
+  PASS  tdd.resume.explicit-resume-clears-halt.tool-exists
+  PASS  tdd.resume.explicit-resume-clears-halt.tool
+quality-gates TDD — H. generated repair scope (#173)
+  PASS  tdd.scope.generated-repair-inScope-has-no-duplicates — ["deploy/compose/postfix/master.cf.inc"]
+  PASS  tdd.scope.generated-repair-drops-outOfScope-covering-its-inScope — ["go.mod"]
+  PASS  tdd.scope.every-generated-repair-inScope-path-is-registrable
+quality-gates TDD checks passed
+
+
+### node --test scripts/quality-gates-repair-scope.test.mjs scripts/quality-gates-amend.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node --test scripts/release-metadata.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node scripts/readme-version.mjs => exit 0
+README version references match 0.1.20
+
+
+### node --test scripts/readme-version.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node scripts/compatibility.mjs => exit 0
+Compatibility targets: 0.1.5-rc.1, 0.1.2-rc.1, 0.1.2-alpha.5, 0.1.2-alpha.2
+
+
+### node --test scripts/compatibility.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node --test scripts/http-body.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node --test scripts/capabilities.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node --test scripts/member-spawn-recovery.test.mjs => exit 1
+      at FileTest.runInAsyncScope (node:async_hooks:227:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+
+### node scripts/fallback-tdd.mjs => exit 0
+  PASS  fallback whitelist includes AUTH
+  PASS  fallback whitelist includes MISSING_CREDENTIAL
+  PASS  fallback whitelist includes NO_ADAPTER
+  PASS  fallback whitelist excludes CONTEXT_WINDOW_EXCEEDED
+  PASS  fallback whitelist excludes INVALID_CREDENTIAL
+  PASS  fallback whitelist excludes INVALID_ARGS
+  PASS  fallback whitelist excludes TASK_FAILED
+  PASS  eligible failure switches and retries
+  PASS  fallback switches at most once
+  PASS  non-eligible failure keeps primary route
+fallback TDD checks passed
+
+
+### node scripts/member-failure-tdd.mjs => exit 0
+✔ unavailable captain keeps failure notification readable: {"captainOffline":true} (29.6116ms)
+✔ unavailable captain keeps failure notification readable: {"rejectDelivery":true} (30.9897ms)
+✔ a queued error cannot fail a newer attempt created before it gets the team lock (9.5556ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 237.1084
+
+
+### node scripts/lifecycle-verify.mjs => exit 0
+  PASS  settled member discards failed-attempt guidance without another model turn
+  PASS  invalid batch plan is rejected without any state or session side effect
+  PASS  one atomic call creates the full roster and resolves forward dependency references
+  PASS  ordinary pending work cannot be reported deliverable
+  PASS  claim exposes the complete task contract without reading team files
+  PASS  failed teardown keeps reassignment fenced and does not launch a new generation
+  PASS  the same failed handoff can be retried safely
+  PASS  failed member drain never reports a successful archive
+  PASS  archive retries drain previously removed roster rows
+
+all lifecycle checks passed
+
+
+### node scripts/sync-skill.mjs --check => exit 0
+DSH skill mirrors are up to date: 10 skills, 121 files.
+
+ALL_GATES_DONE
