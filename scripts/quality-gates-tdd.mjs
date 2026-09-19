@@ -1635,6 +1635,65 @@ console.log('quality-gates TDD — K. waived acceptance / no-regression (WP1)')
   )
 }
 
+console.log('quality-gates TDD — L. Delivery ignores dead tasks (WP6.2)')
+
+{
+  // Feedback §6.2: the captain had to clear `changedPaths` by hand because the
+  // Delivery report kept listing "has unaudited path X" for a task that had
+  // already been cancelled. Dead work must not burden the report at all.
+  const cancelled = task({
+    ...implContract(),
+    id: 't1',
+    status: 'cancelled',
+    changedPaths: ['src/dead-lane.ts', 'docs/never-written.md'],
+  })
+  const delivered = task({
+    id: 't2',
+    kind: 'implementation',
+    status: 'completed',
+    dependencies: ['t1'],
+    assignee: 'implementer',
+    objective: 'Ship the parser',
+    inScope: ['src/parser.ts'],
+    acceptance: ['parser accepts empty input'],
+    verify: ['pnpm test'],
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{ criterion: 'parser accepts empty input', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  const review = task({
+    id: 't3',
+    kind: 'review',
+    status: 'completed',
+    verdict: 'pass',
+    reviewedTaskId: 't2',
+    objective: 'Review the implementation',
+    acceptance: ['no blocker or high findings'],
+  })
+  const result = api.canDeclareDelivery?.(team({ tasks: [cancelled, delivered, review], taskSeq: 3 }))
+  check(
+    'tdd.delivery.cancelled-task-paths-are-not-blockers',
+    result?.ok === true,
+    JSON.stringify(result?.blockers),
+  )
+  check(
+    'tdd.delivery.path-audit-follows-completed-work-only',
+    result?.ok === true
+      && (result.blockers ?? []).every((blocker) => !blocker.includes('src/dead-lane.ts')),
+    JSON.stringify(result?.blockers),
+  )
+
+  // The filter must not silently switch the audit off: a COMPLETED task with an
+  // undeclared path is exactly what the gate exists for.
+  const unaudited = { ...delivered, changedPaths: ['src/parser.ts', 'src/unlisted.ts'] }
+  const blocked = api.canDeclareDelivery?.(team({ tasks: [cancelled, unaudited, review], taskSeq: 3 }))
+  check(
+    'tdd.delivery.completed-task-unaudited-path-still-blocks',
+    blocked?.ok === false && (blocked.blockers ?? []).some((item) => item.includes('src/unlisted.ts')),
+    JSON.stringify(blocked?.blockers),
+  )
+}
+
 if (failures > 0) {
   console.error(`quality-gates TDD failed: ${failures} check(s)`)
   process.exitCode = 1

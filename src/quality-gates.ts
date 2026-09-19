@@ -1048,7 +1048,13 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
     }
   }
 
+  // Only work that actually landed can have an unaudited path. A `cancelled`
+  // (and, from WP3, `superseded`) task keeps whatever `changedPaths` it had
+  // reported, and feedback §6.2 was that the captain had to scrub those by hand
+  // before Delivery would clear. The status filter is on the loop itself, so the
+  // audit still fires for every completed task.
   for (const item of implementations) {
+    if (item.status !== 'completed') continue
     for (const path of item.changedPaths ?? []) {
       if (classifyChangedPath(path, item.inScope ?? [], item.outOfScope ?? []) !== 'in_scope') {
         blockers.push(`${item.id} has unaudited path ${path}`)
