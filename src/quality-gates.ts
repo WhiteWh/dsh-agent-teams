@@ -1337,6 +1337,44 @@ export function buildCoverageMatrix(goalItems: readonly string[], tasks: readonl
 /** Statuses that mean "this work will never finish": dead, but not a failure. */
 const DEAD_TASK_STATUSES: readonly TaskStatus[] = ['cancelled', 'superseded']
 
+/**
+ * Whether a failed quality task already has the follow-up the loop owes it: a
+ * `repair` task for a review/implementation/repair lane, or a later
+ * `requirements` round for a requirements lane.
+ *
+ * Delivery (WP6.4) and plan progress (WP7/S17) both need this answer: a repaired
+ * failure is settled history, not work the team still owes, so it must neither
+ * block Delivery nor drag the percentage down. One helper, one rule.
+ *
+ * @param tasks - every task of the team.
+ * @param item - the failed task to look up.
+ * @returns true when a live or completed follow-up lane exists.
+ */
+export function hasFollowUpRepair(tasks: readonly TeamTask[], item: TeamTask): boolean {
+  const kind = taskKindOf(item)
+  if (kind !== 'review' && kind !== 'requirements' && kind !== 'implementation' && kind !== 'repair') return false
+  const quality = tasks.filter((candidate) => isQualityKind(taskKindOf(candidate)))
+  if (kind === 'review') {
+    // The link must be real: a review with no `reviewedTaskId` and a repair with
+    // no `sourceTaskId` are two unrelated records, not a follow-up pair.
+    const reviewed = item.reviewedTaskId?.trim() ?? ''
+    if (reviewed === '') return false
+    return quality.some((candidate) => (
+      taskKindOf(candidate) === 'repair'
+      && candidate.sourceTaskId === reviewed
+      && ['pending', 'claimed', 'in_progress', 'completed'].includes(candidate.status)
+    ))
+  }
+  if (kind === 'requirements') {
+    return quality.some((candidate) => (
+      taskKindOf(candidate) === 'requirements' && (candidate.round ?? 1) > (item.round ?? 1)
+    ))
+  }
+  return quality.some((candidate) => (
+    taskKindOf(candidate) === 'repair' && (candidate.sourceTaskId?.trim() ?? '') === item.id
+  ))
+}
+
 export function canDeclareDelivery(team: TeamState): DeliveryResult {
   const blockers: string[] = []
   if (team.phase === 'staged') blockers.push('team plan is awaiting approval')
@@ -1365,21 +1403,7 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
       continue
     }
     if (item.status === 'failed') {
-      const repaired = kind === 'review'
-        ? quality.some((candidate) => (
-          taskKindOf(candidate) === 'repair'
-          && candidate.sourceTaskId === (item.reviewedTaskId ?? item.sourceTaskId)
-          && (candidate.status === 'pending' || candidate.status === 'claimed' || candidate.status === 'in_progress' || candidate.status === 'completed')
-        ))
-        : kind === 'requirements'
-          ? quality.some((candidate) => (
-            taskKindOf(candidate) === 'requirements'
-            && (candidate.round ?? 1) > (item.round ?? 1)
-          ))
-          : quality.some((candidate) => (
-            taskKindOf(candidate) === 'repair' && candidate.sourceTaskId === item.id
-          ))
-      if (!repaired) blockers.push(`${item.id} failed without a follow-up repair`)
+      if (!hasFollowUpRepair(team.tasks, item)) blockers.push(`${item.id} failed without a follow-up repair`)
       continue
     }
     if (DEAD_TASK_STATUSES.includes(item.status)) continue

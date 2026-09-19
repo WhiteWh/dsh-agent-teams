@@ -62,6 +62,8 @@ import {
   pinKnownDelta,
   unpinKnownDelta,
   pinnedWaiverEvidence,
+  revisePlan,
+  validateTeamGraph,
   waivedResultCount,
   waiversConfirmed,
 } from './state.ts'
@@ -84,6 +86,7 @@ import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeam
 import { installMailboxAdmission, mailboxPrompt } from './mailbox.ts'
 import { resolveTeamProfile } from './profiles.ts'
 import { planProgress } from './progress.ts'
+import { replanTeam } from './replan.ts'
 
 export { steerCaptainReport } from './members.ts'
 
@@ -136,6 +139,17 @@ export type StagedPlanMutation =
   | { action: 'remove_task'; taskId: string }
   | { action: 'remove_member'; memberName: string }
 
+/** The result the Web surface and the tool both report for one replan batch. */
+export interface ReplanRuntimeResult {
+  readonly revision: number
+  readonly applied: number
+  readonly changes: string[]
+  readonly added: string[]
+  readonly removed: string[]
+  readonly rebound: string[]
+  readonly invalidated: string[]
+}
+
 /** Runtime bridge shared by model-facing tools and the Web staging surface. */
 export interface AgentTeamsRuntime {
   isPendingMember(agent: Agent): boolean
@@ -144,6 +158,18 @@ export interface AgentTeamsRuntime {
   approveStagedTeam(captain: Agent, teamId: string, signal?: AbortSignal): Promise<{ teamId: string; members: number; tasks: number }>
   continueStagedPlanning(captain: Agent, teamId: string): Promise<{ teamId: string; alreadyWaiting: boolean }>
   discardStagedTeam(captain: Agent, teamId: string): Promise<{ teamId: string }>
+  /**
+   * WP7/S17: revise a RUNNING plan in one atomic batch. Shared by
+   * `agent_teams_replan` and the Web running-mode plan editor, so both paths
+   * validate, write, emit the same event and wake the same members.
+   */
+  replanLiveTeam(
+    captain: Agent,
+    teamId: string,
+    operations: readonly import('./replan.ts').ReplanOperation[],
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<ReplanRuntimeResult>
 }
 
 /** Workspace fuse for WP11 phase 1 (configurable keys arrive in phase 3). */
@@ -330,35 +356,15 @@ function trimmedOptional(value: string | null | undefined): string | undefined {
   return trimmed === undefined || trimmed === '' ? undefined : trimmed
 }
 
-/** Validate references and cycles before a staged graph can be saved or run. */
+/**
+ * Validate references and cycles before a staged graph can be saved or run.
+ *
+ * The rule itself lives in `state.ts` (`validateTeamGraph`) because the live
+ * replan batch of WP7 has to enforce exactly the same thing; this wrapper keeps
+ * the staged call sites reading as they did.
+ */
 function validateStagedGraph(team: TeamState, requireRunnable: boolean): void {
-  const members = team.members.filter((member) => member.status !== 'removed')
-  if (requireRunnable && members.length === 0) throw new Error('add at least one member before approving the plan')
-  if (requireRunnable && team.tasks.length === 0) throw new Error('add at least one task before approving the plan')
-  const memberNames = new Set(members.map((member) => member.name))
-  const taskIds = new Set(team.tasks.map((task) => task.id))
-  for (const task of team.tasks) {
-    if (task.subject.trim() === '') throw new Error(`task "${task.id}" must have a subject`)
-    if (task.assignee !== undefined && task.assignee !== CAPTAIN_KEY && !memberNames.has(task.assignee)) {
-      throw new Error(`task "${task.id}" assignee "${task.assignee}" is not an active member`)
-    }
-    for (const dependency of task.dependencies) {
-      if (dependency === task.id) throw new Error(`task "${task.id}" cannot depend on itself`)
-      if (!taskIds.has(dependency)) throw new Error(`task "${task.id}" depends on unknown task "${dependency}"`)
-    }
-  }
-  const visiting = new Set<string>()
-  const visited = new Set<string>()
-  const byId = new Map(team.tasks.map((task) => [task.id, task]))
-  const visit = (taskId: string): void => {
-    if (visiting.has(taskId)) throw new Error(`task dependency graph contains a cycle at "${taskId}"`)
-    if (visited.has(taskId)) return
-    visiting.add(taskId)
-    for (const dependency of byId.get(taskId)?.dependencies ?? []) visit(dependency)
-    visiting.delete(taskId)
-    visited.add(taskId)
-  }
-  for (const task of team.tasks) visit(task.id)
+  validateTeamGraph(team, requireRunnable)
 }
 
 function memberOpenTask(team: TeamState, memberName: string, exceptTaskId?: string): TeamTask | undefined {
@@ -653,6 +659,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
       } else fresh.planReviewState = 'awaiting_review'
       signal?.throwIfAborted()
+      revisePlan(fresh)
       await writeTeam(stateRoot, fresh)
       return fresh
     })
@@ -662,6 +669,78 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   const updateStagedPlanBatch: AgentTeamsRuntime['updateStagedPlanBatch'] = (captain, teamId, mutations, signal) => (
     updatePlanBatch(captain, teamId, mutations, signal)
   )
+
+  /**
+   * Revise a running plan (WP7/S17).
+   *
+   * One implementation for the model tool and the Web running-mode editor: the
+   * batch is validated and written under the team lock, the plan-revised event
+   * records the diff, a revoked attempt is stopped and told why, and the
+   * scheduler is woken once for whatever became ready.
+   */
+  const replanLiveTeam: AgentTeamsRuntime['replanLiveTeam'] = async (captain, teamId, operations, reason, signal) => {
+    const workspace = workspaceOf(captain)
+    const stateRoot = stateRootOf(workspace, config)
+    const team = await requireCaptainTeam(workspace, config, captain, teamId)
+    if (operations.length === 0) throw new Error('at least one replan operation is required')
+
+    const applied = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+      const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+      if (fresh.phase === 'staged') {
+        throw new Error('this team is still staged; use agent_teams_edit_plan until the plan is approved')
+      }
+      if (fresh.halted === true) throw new Error('team is halted; resume before replanning')
+      const { team: next, result } = replanTeam(fresh, operations, { reason })
+      await writeTeam(stateRoot, next)
+      return { next, result }
+    })
+
+    appendTeamEvent(ctx, captainSessionOf(ctx, applied.next.captainSessionId, captain.session), 'agent-teams/plan-revised', {
+      teamId: applied.next.id,
+      revision: applied.result.revision,
+      reason,
+      added: applied.result.added,
+      removed: applied.result.removed,
+      rebound: applied.result.rebound,
+      invalidated: applied.result.invalidated,
+    })
+
+    // A revoked attempt has to stop being worked on before anything else is
+    // dispatched, and the member has to learn why its lane moved: the durable
+    // mailbox note is written first, then the activation is drained.
+    for (const detail of applied.result.invalidationDetails) {
+      const message = createMessage(
+        CAPTAIN_KEY,
+        detail.memberName,
+        `task ${detail.taskId} replanned: ${reason}. Stop working on it; the captain owns the new plan.`,
+      )
+      await appendMailbox(stateRoot, applied.next.id, detail.memberName, message)
+      const member = applied.next.members.find((candidate) => candidate.id === detail.memberId)
+      if (member === undefined) continue
+      await stopTeamMemberActivations(ctx, captain, [member], signal)
+      // A live steer tells the member now; when it cannot be accepted the
+      // durable mailbox note above is what it reads on its next turn.
+      await dispatchMember(
+        captain,
+        applied.next.id,
+        detail.memberName,
+        mailboxPrompt(applied.next.id, detail.memberName, [message]),
+        signal ?? new AbortController().signal,
+        'steer',
+      ).catch(() => false)
+    }
+
+    await scheduler.kickTeam(workspace, applied.next.id, captain)
+    return {
+      revision: applied.result.revision,
+      applied: applied.result.changes.length,
+      changes: applied.result.changes.map((change) => `${change.action} ${change.taskId}: ${change.detail}`),
+      added: [...applied.result.added],
+      removed: [...applied.result.removed],
+      rebound: [...applied.result.rebound],
+      invalidated: [...applied.result.invalidated],
+    }
+  }
 
   const updateStagedPlan: AgentTeamsRuntime['updateStagedPlan'] = async (captain, teamId, mutation, signal) => (
     updateStagedPlanBatch(captain, teamId, [mutation], signal)
@@ -785,6 +864,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     approveStagedTeam,
     continueStagedPlanning,
     discardStagedTeam,
+    replanLiveTeam,
   }
 
   ctx.tools.register(defineTool({
@@ -909,6 +989,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
               members: [],
               tasks: [],
               taskSeq: 0,
+              // WP7: the plan record exists from creation, so any reader can
+              // rely on a revision without a fallback branch of its own.
+              plan: { revision: 1, updatedAt: Date.now(), ...args.description === undefined ? {} : { goal: args.description } },
               ...staged ? { phase: 'staged' as const, planReviewState: 'awaiting_review' as const } : {},
             }
             await createTeamDir(stateRoot, state)
@@ -1121,6 +1204,85 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         roster: updated.members.map((member) => `${member.name} (${member.role || 'member'}; ${member.provider ?? ''}/${member.model ?? ''})`),
         graph: updated.tasks.map((task) => `${task.id}: ${task.subject} -> ${task.assignee || 'shared'}${task.dependencies.length === 0 ? '' : `; depends on ${task.dependencies.join(', ')}`}`),
       }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_replan',
+    description: 'Captain-only atomic replan of a RUNNING team: repair the plan instead of cancelling and re-creating it. One batch, one reason, validated as a whole under the team lock — if any operation is invalid, nothing is written. Operations: add_task (full create_task contract fields), update_task (subject/description/assignee/dependencies of a pending or failed task; a task a member currently holds needs invalidate=true, which revokes the attempt, stops that member and leaves a mailbox note), supersede_task (replace a failed or abandoned lane with an existing replacement_task_id or one created in the same call), cancel_task, accept_paths (settle a task held in awaiting_scope_review), amend_task (rewrite a wrong contract; force=true overrides a post-review freeze), move_phase (put a task in a declared phase; pass a title to declare a new one). Prefer this over cancel + create: a replan keeps members, satisfied dependencies and their context.',
+    parameters: {
+      team_id: teamIdParam(),
+      reason: { type: 'string', required: true, description: 'Why the plan is being revised; recorded on the event and used as the default reason of every operation.' },
+      operations: {
+        type: 'array',
+        required: true,
+        description: 'The batch, in the order it must apply. Every operation is validated against the result of the previous one, and the whole batch is refused if any step is invalid.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            action: {
+              type: 'string',
+              required: true,
+              enum: ['add_task', 'update_task', 'supersede_task', 'cancel_task', 'accept_paths', 'amend_task', 'move_phase'],
+            },
+            task_id: { type: 'string', description: 'Target task for every action except add_task.' },
+            subject: { type: 'string', description: 'add_task: the new task title. update_task: replacement title. supersede_task: the replacement title when the replacement is created inline.' },
+            description: { type: 'string', description: 'Optional description (an empty value clears it on update_task/amend_task).' },
+            assignee: { type: 'string', description: 'Active member name; an empty string moves the task to the shared pool.' },
+            dependencies: { type: 'array', items: { type: 'string' }, description: 'Complete replacement dependency list.' },
+            kind: { type: 'string', enum: ['work', 'requirements', 'implementation', 'verification', 'review', 'repair', 'integration'], description: 'Task kind for add_task or an inline replacement.' },
+            round: { type: 'number', description: '1-based review/repair round for add_task or an inline replacement.' },
+            objective: { type: 'string', description: 'Contract objective (add_task, or the amended field of amend_task).' },
+            inScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths the task may change.' },
+            outOfScope: { type: 'array', items: { type: 'string' }, description: 'Workspace-relative paths the task must not change.' },
+            acceptance: { type: 'array', items: { type: 'string' }, description: 'Acceptance criteria (full list on amend_task).' },
+            verify: { type: 'array', items: { type: 'string' }, description: 'Verification commands (full list on amend_task).' },
+            deliverables: { type: 'array', items: { type: 'string' }, description: 'Expected deliverable paths or names.' },
+            nonGoals: { type: 'array', items: { type: 'string' }, description: 'Explicit non-goals.' },
+            reviewedTaskId: { type: 'string', description: 'review/repair source task; must exist and be an implementation, repair, verification or integration task.' },
+            sourceTaskId: { type: 'string', description: 'Repair source implementation/artifact.' },
+            sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids a repair must close.' },
+            coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
+            replacement_task_id: { type: 'string', description: 'supersede_task: an existing task to promote instead of creating one inline.' },
+            paths: { type: 'array', items: { type: 'string' }, description: 'accept_paths: workspace-relative paths to ADD to inScope.' },
+            phase_id: { type: 'string', description: 'move_phase / add_task: the phase to place the task in (an empty string removes it from every phase).' },
+            title: { type: 'string', description: 'move_phase / add_task: title for a phase that does not exist yet.' },
+            reason: { type: 'string', description: 'Per-operation reason; the batch reason is the default.' },
+            force: { type: 'boolean', description: 'amend_task / accept_paths: override the freeze a passing review verdict put on the contract (the verdict becomes stale).' },
+            invalidate: { type: 'boolean', description: 'Required to rewrite, cancel or replace a task a member currently holds: revokes the attempt, stops that member and leaves a mailbox note explaining the replan.' },
+            retry: { type: 'boolean', description: 'update_task: put a failed (or scope-held) task back in the queue after its contract was repaired, instead of replacing the lane.' },
+          },
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          revision: { type: 'number', required: true },
+          applied: { type: 'number', required: true },
+          changes: { type: 'array', items: { type: 'string' }, required: true },
+          added: { type: 'array', items: { type: 'string' }, required: true },
+          removed: { type: 'array', items: { type: 'string' }, required: true },
+          rebound: { type: 'array', items: { type: 'string' }, required: true },
+          invalidated: { type: 'array', items: { type: 'string' }, required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Plan revised to revision ${String(value.revision)} (${String(value.applied)} operation(s)):`
+          + `${value.added.length === 0 ? '' : ` added ${value.added.join(', ')};`}`
+          + `${value.removed.length === 0 ? '' : ` replaced ${value.removed.join(', ')};`}`
+          + `${value.rebound.length === 0 ? '' : ` rebound ${value.rebound.join(', ')};`}`
+          + `${value.invalidated.length === 0 ? '' : ` revoked live attempts on ${value.invalidated.join(', ')};`}`
+          + `\n${value.changes.join('\n')}`,
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      return replanLiveTeam(captain, args.team_id ?? '', args.operations, args.reason, exec.signal)
     },
   }))
 
@@ -1345,6 +1507,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       sourceTaskId: { type: 'string', description: 'Source implementation/artifact. Required for kind=repair.' },
       sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids this repair must close.' },
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
+      phase: { type: 'string', description: 'Declared phase id to place this task in (`plan.phases`, from `taskPlanning.phases` or a replan `move_phase`). An unknown phase is refused; omit it for an unphased task.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
     },
@@ -1464,6 +1627,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
+        // WP7/S17: a task added to a declared phase joins that phase.
+        const phaseId = args.phase?.trim() ?? ''
+        if (phaseId !== '') {
+          const phases = fresh.plan?.phases ?? []
+          const phase = phases.find((candidate) => candidate.id === phaseId)
+          if (phase === undefined) {
+            throw new Error(`unknown phase "${phaseId}"; declared phases: ${phases.map((candidate) => candidate.id).join(', ') || 'none'}`)
+          }
+          phase.taskIds.push(task.id)
+        }
+        revisePlan(fresh)
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/task-created', {
           teamId: fresh.id,
@@ -2008,6 +2182,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           if (task.attemptId !== undefined && (args.attempt_id === undefined || args.attempt_id.trim() === '')) {
             throw new Error(`missing attempt_id for task ${task.id}. Retry this update with attempt_id="${task.attemptId}" from your current assignment. This is a missing parameter, not a revoked attempt; do not restart the work or request reassignment.`)
           }
+          // A capability the captain revoked (replan/reassign/halt) is not merely
+          // "the current one changed": the task has no capability at all, so a
+          // member still holding the old id must stop instead of starting a new
+          // attempt on a lane that was just replanned underneath it (WP7/S17).
+          if (task.attemptId === undefined && args.attempt_id !== undefined && args.attempt_id.trim() !== '') {
+            throw new Error(`stale attempt for task ${task.id}: the current plan has no capability for it (it was replanned or revoked); stop work and wait for a fresh assignment`)
+          }
           if (task.attemptId !== undefined && args.attempt_id !== task.attemptId) {
             throw new Error(`stale attempt for task ${task.id}: expected the current attempt_id; stop work and request fresh assignment`)
           }
@@ -2297,6 +2478,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             throw new Error(gate.error ?? 'the accepted scope still cannot complete the task')
           }
         }
+        revisePlan(fresh)
         await writeTeam(stateRoot, fresh)
         return {
           taskId: task.id,
@@ -2397,6 +2579,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           current.verdict = review.verdict
           current.updatedAt = review.updatedAt
         }
+        revisePlan(fresh)
         await writeTeam(stateRoot, fresh)
         return {
           taskId: task.id,
@@ -2891,6 +3074,15 @@ async function initializeProfileTeam(input: {
     ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },
     captainSessionId: input.captain.id,
     createdAt: now,
+    // WP7: the profile may declare phases; tasks join them later.
+    plan: {
+      revision: 1,
+      updatedAt: now,
+      ...input.description === undefined ? {} : { goal: input.description },
+      ...profile.phases === undefined
+        ? {}
+        : { phases: profile.phases.map((phase) => ({ ...phase, taskIds: [...phase.taskIds] })) },
+    },
     ...input.staged ? { phase: 'staged' as const, planReviewState: 'awaiting_review' as const } : {},
     members: profile.members.map((template, index) => {
       const selection = selections[index]!

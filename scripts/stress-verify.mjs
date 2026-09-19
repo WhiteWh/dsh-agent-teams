@@ -612,6 +612,73 @@ try {
       && (await chainTask(swap.superseded_by))?.status === 'completed'
       && (await chainTask(leaf.task_id))?.status !== 'failed')
   await call('agent_teams_delete', {})
+
+  // ── WP7/S17: a replan next to a live member must not invalidate its attempt ──
+  // Regression for the upstream #103 class of bug: a planning mutation that
+  // touches an unrelated task used to make the member's in-flight capability
+  // stale, so its next honest update was rejected as "attempt revoked".
+  await call('agent_teams_create', { name: 'Replan Under Load', description: 'replan while a member works' })
+  await call('agent_teams_add_member', { name: 'kappa', role: 'implementer' })
+  const loadTeamId = 'replan-under-load'
+  const loadState = () => readTeam(stateRoot, loadTeamId)
+  const loadTask = async id => (await loadState())?.tasks.find(candidate => candidate.id === id)
+  const liveRoot = await call('agent_teams_create_task', { subject: 'live lane', assignee: 'kappa' })
+  const liveSide = await call('agent_teams_create_task', { subject: 'side lane', assignee: 'kappa', dependencies: [liveRoot.task_id] })
+  const waitForKappa = async () => {
+    for (let round = 0; round < 100; round += 1) {
+      const record = (await loadState())?.members.find(member => member.name === 'kappa')
+      const agent = record === undefined ? undefined : runtime.liveAgents.get(record.id)
+      if (agent !== undefined) return agent
+      await call('agent_teams_status', { team_id: loadTeamId })
+      await settle()
+    }
+    throw new Error('member kappa was never spawned')
+  }
+  const kappa = await waitForKappa()
+  const liveClaim = await call('agent_teams_claim_task', { task_id: liveRoot.task_id }, kappa)
+  await call('agent_teams_update_task', { task_id: liveRoot.task_id, status: 'in_progress', attempt_id: liveClaim.attempt_id }, kappa)
+  const replanWhileLive = await call('agent_teams_replan', {
+    reason: 'the side lane should wait for the live lane to land first',
+    operations: [{ action: 'update_task', task_id: liveSide.task_id, subject: 'side lane (waiting for the live lane)' }],
+  })
+  check('a replan of another lane leaves the live attempt untouched',
+    replanWhileLive.applied === 1
+      && (await loadTask(liveRoot.task_id))?.attemptId === liveClaim.attempt_id
+      && (await loadTask(liveRoot.task_id))?.status === 'in_progress',
+  )
+  await call('agent_teams_update_task', {
+    task_id: liveRoot.task_id,
+    status: 'completed',
+    attempt_id: liveClaim.attempt_id,
+    output: 'the live lane landed after the replan',
+  }, kappa)
+  check('the member can still complete its lane after an unrelated replan',
+    (await loadTask(liveRoot.task_id))?.status === 'completed',
+  )
+  const sideClaim = await call('agent_teams_claim_task', { task_id: liveSide.task_id }, kappa)
+  await call('agent_teams_update_task', { task_id: liveSide.task_id, status: 'in_progress', attempt_id: sideClaim.attempt_id }, kappa)
+  const replanOwnLane = await call('agent_teams_replan', {
+    reason: 'the side lane was pointed at the wrong subject and must run again',
+    operations: [{ action: 'update_task', task_id: liveSide.task_id, subject: 'side lane (replanned)', invalidate: true }],
+  })
+  check('replanning the lane a member holds revokes exactly that attempt',
+    replanOwnLane.invalidated.join(',') === liveSide.task_id
+      && (await loadTask(liveSide.task_id))?.status === 'pending'
+      && (await loadTask(liveSide.task_id))?.attemptId === undefined
+      && (await loadState())?.members.find(member => member.name === 'kappa')?.status === 'idle',
+  )
+  let staleRejected = false
+  try {
+    await call('agent_teams_update_task', {
+      task_id: liveSide.task_id,
+      status: 'in_progress',
+      attempt_id: sideClaim.attempt_id,
+    }, kappa)
+  } catch (error) {
+    staleRejected = /attempt|revoked|stale/i.test(String(error))
+  }
+  check('the revoked capability is refused afterwards instead of writing late', staleRejected)
+  await call('agent_teams_delete', {})
 } finally {
   await rm(workspace, { recursive: true, force: true })
 }

@@ -135,8 +135,58 @@ export const Config: z<Config> = z.object({
   slashCommand: z.boolean().default(true),
 })
 
-/** The model-facing usage policy: when and how to drive AgentTeams. */
-export function usageSectionText(toolNames: string, profilesText = ''): string {
+/**
+ * Map one camelCase Web operation into a replan operation (WP7).
+ *
+ * The browser editor cannot send a readonly TS type, so this is the one place
+ * that turns an untrusted JSON body into the batch shape the shared applier
+ * validates. Unknown keys are ignored on purpose: the applier rejects anything
+ * that matters, and a stray field must not break an otherwise valid batch.
+ */
+export function parseReplanOperation(entry: unknown, index: number): import('./replan.ts').ReplanOperation {
+  const label = `operations[${String(index)}]`
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    throw new Error(`${label} must be an object`)
+  }
+  const raw = entry as Record<string, unknown>
+  const action = typeof raw['action'] === 'string' ? raw['action'] : ''
+  if (action === '') throw new Error(`${label}.action is required`)
+  const strings = (value: unknown): string[] | undefined => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : undefined
+  const text = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
+  return {
+    action: action as import('./replan.ts').ReplanAction,
+    ...text(raw['taskId']) === undefined ? {} : { task_id: text(raw['taskId']) },
+    ...text(raw['subject']) === undefined ? {} : { subject: text(raw['subject']) },
+    ...text(raw['description']) === undefined ? {} : { description: text(raw['description']) },
+    ...text(raw['assignee']) === undefined ? {} : { assignee: text(raw['assignee']) },
+    ...strings(raw['dependencies']) === undefined ? {} : { dependencies: strings(raw['dependencies']) },
+    ...text(raw['kind']) === undefined ? {} : { kind: text(raw['kind']) as import('./types.ts').TaskKind },
+    ...typeof raw['round'] === 'number' ? { round: raw['round'] } : {},
+    ...text(raw['objective']) === undefined ? {} : { objective: text(raw['objective']) },
+    ...strings(raw['inScope']) === undefined ? {} : { inScope: strings(raw['inScope']) },
+    ...strings(raw['outOfScope']) === undefined ? {} : { outOfScope: strings(raw['outOfScope']) },
+    ...strings(raw['acceptance']) === undefined ? {} : { acceptance: strings(raw['acceptance']) },
+    ...strings(raw['verify']) === undefined ? {} : { verify: strings(raw['verify']) },
+    ...strings(raw['deliverables']) === undefined ? {} : { deliverables: strings(raw['deliverables']) },
+    ...strings(raw['nonGoals']) === undefined ? {} : { nonGoals: strings(raw['nonGoals']) },
+    ...text(raw['reviewedTaskId']) === undefined ? {} : { reviewedTaskId: text(raw['reviewedTaskId']) },
+    ...text(raw['sourceTaskId']) === undefined ? {} : { sourceTaskId: text(raw['sourceTaskId']) },
+    ...strings(raw['sourceFindingIds']) === undefined ? {} : { sourceFindingIds: strings(raw['sourceFindingIds']) },
+    ...strings(raw['coverageOf']) === undefined ? {} : { coverageOf: strings(raw['coverageOf']) },
+    ...text(raw['replacementTaskId']) === undefined ? {} : { replacement_task_id: text(raw['replacementTaskId']) },
+    ...strings(raw['paths']) === undefined ? {} : { paths: strings(raw['paths']) },
+    ...text(raw['phaseId']) === undefined ? {} : { phase_id: text(raw['phaseId']) },
+    ...text(raw['title']) === undefined ? {} : { title: text(raw['title']) },
+    ...text(raw['reason']) === undefined ? {} : { reason: text(raw['reason']) },
+    ...raw['force'] === true ? { force: true } : {},
+    ...raw['invalidate'] === true ? { invalidate: true } : {},
+    ...raw['retry'] === true ? { retry: true } : {},
+  }
+}
+
+/** The model-facing usage policy: when and how to drive AgentTeams. */export function usageSectionText(toolNames: string, profilesText = ''): string {
   return `AgentTeams captain protocol:
 1. Team identity is the \`team_id\` every team-scoped tool takes. Remember the id \`agent_teams_create\` returns; if you are unsure, call \`agent_teams_status\` with no argument to list your teams (id, name, phase, tasks, members, active workers). A missing \`team_id\` is an error naming your teams, and you may lead several teams at once. Inspect current team state when needed, using agent_teams_status. Continue existing work without duplicating its roster/tasks. Create a team only when the user asks for one — a second team needs \`new_team: true\` and an explicit request — with the user's goal as description and approval="required"; automatic approval requires an explicit request to run immediately. Staged plans never spawn or schedule work.
 2. Add each needed role once; members inherit your model route unless another is requested/needed. A requested profile goes to create({profile}); it supplies its roster. Seed profiles also supply tasks; captain-planning profiles require your DAG. Do not duplicate either.
@@ -144,7 +194,7 @@ export function usageSectionText(toolNames: string, profilesText = ''): string {
 4. Respect Web approve/return/discard control messages. On return, ask what to change before editing; after the answer, use one atomic agent_teams_edit_plan batch (edit downstream references before removals), summarize and await review again. Never inspect or edit .agent-teams state files or plugin source code to revise plans. Discard does not authorize a replacement.
 5. The scheduler dispatches ready tasks after approval. Delegate; do not duplicate slow work or send messages merely to start a stage. Handle reports/user work, then yield when waiting is all that remains: reports wake you automatically. Use status after a delivery or user request, never busy-poll or wait for unassigned members.
 6. Tasks carry attempt_id capabilities. Use the current attempt_id; stale means ownership changed. Pause members only on explicit request; later guidance via send_message continues that same attempt. Retry, transfer or take over through reassign_task first; it revokes the old attempt and waits for quiescence. Prefer a member. Captain implementation/review takeover requires a user request. Every takeover is one ready task at a time, finished in this turn; never yield with captain-owned work open.
-7. In a running team, correct never-started pending tasks with edit_plan update_task; preserve dependency and ownership contracts instead of cancelling and recreating the graph. A captain can cancel a never-started pending task directly. Active attempts still require reassign_task. Quality kinds (requirements, implementation, verification, review, repair, integration) require objective + acceptance; implementation/repair also require inScope + verify. Derive paths/commands from the workspace/profile, never assume src/ or pnpm test. Review/requirements complete only with verdict=pass; needs_revision/reject fail with findings. Never approve your own implementation or ask for a deliberate failure. When a quality contract itself is wrong (a verify command that cannot pass, an inScope that forbids the file the objective requires), fix it with agent_teams_amend_task — captain-only, non-terminal tasks only, frozen after a passing review, and every amendment is recorded in the task's revisions ledger — instead of letting the worker dead-lock or game the gate.
+7. In a running team, repair the plan instead of cancelling and recreating it: one atomic \`agent_teams_replan\` batch (add_task, update_task, supersede_task, cancel_task, accept_paths, amend_task, move_phase) under one reason. Correct never-started pending tasks with edit_plan update_task; a task a member currently holds needs replan's invalidate=true, which revokes the attempt, stops that member and leaves it a mailbox note. When a gate refused because the contract or the scope was wrong, prefer amend_task / accept_paths / supersede_task over cancel + create. Quality kinds (requirements, implementation, verification, review, repair, integration) require objective + acceptance; implementation/repair also require inScope + verify. Derive paths/commands from the workspace/profile, never assume src/ or pnpm test. Review/requirements complete only with verdict=pass; needs_revision/reject fail with findings. Never approve your own implementation or ask for a deliberate failure. When a quality contract itself is wrong (a verify command that cannot pass, an inScope that forbids the file the objective requires), fix it with agent_teams_amend_task (captain-only, non-terminal tasks only, frozen after a passing review, every amendment recorded in the task's revisions ledger) instead of letting the worker dead-lock or game the gate. A completed contract stays immutable: the post-hoc repair for a finished lane is accept_paths, not a rewrite of history.
 8. When full quality mode is requested: requirements → implementation → verification → review → integration. Plan the entire DAG while staged, including implementation before requirements finishes and integration depending on review round 1. Failed review automatically adds repair + next review and rewires pending downstream gates. Do not recreate this loop, omit integration or depend on a failed task. Review acceptance judges the latest implementation. Do not put smoke-test scripts into task instructions.
 9. Halted means the user stopped work (including the captain turn). Resume only on a later explicit user request with a reason, via agent_teams_resume or create_task({resume:true,resumeReason}); creating tasks alone never resumes. Escalated means the review loop hit its limit, not a halt. Deployment requires explicit user confirmation.
 10. Wait for all required tasks to be terminal and members idle/ready, present results, then delete/archive unless the user wants to continue. Never discard unfinished work without authorization.
@@ -359,6 +409,21 @@ export function apply(ctx: Context, config: Config): void {
             const discarded = await agentTeamsRuntime.discardStagedTeam(captain, teamId)
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
             res.end(JSON.stringify({ ok: true, phase: 'archived', ...discarded }))
+            return
+          }
+          if (action === 'replan') {
+            // WP7/S17: the running-mode plan editor sends the same batch shape the
+            // `agent_teams_replan` tool takes, so both paths share one validator,
+            // one writer, one event and one wake-up.
+            const reason = typeof payload['reason'] === 'string' ? payload['reason'].trim() : ''
+            if (reason === '') throw new Error('reason is required for a replan')
+            if (!Array.isArray(payload['operations']) || payload['operations'].length === 0) {
+              throw new Error('operations are required for a replan')
+            }
+            const operations = payload['operations'].map((entry, index) => parseReplanOperation(entry, index))
+            const revised = await agentTeamsRuntime.replanLiveTeam(captain, teamId, operations, reason)
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: true, revision: revised.revision, applied: revised.applied, changes: revised.changes }))
             return
           }
           const dependencies = Array.isArray(payload['dependencies'])

@@ -193,6 +193,36 @@ Every gate decision (acceptance, waivers, scope audit, required reviewers, Deliv
 per-team: the addressed team's tasks are the only ones in view, which is what makes a
 `reviewedTaskId`, an `inScope` overlap check and a Delivery report unambiguous again.
 
+### 1.7 Added in 0.2.0: a live plan is repaired, not rebuilt (WP7)
+
+A failing gate used to leave two bad options: leave the red lane in the graph, or cancel a
+cascade of dependents and recreate it — which threw away every satisfied dependency and
+every member's context. `agent_teams_replan` (S17) replaces that with one atomic batch:
+
+- the applier (`src/replan.ts`) works on a **copy** of the team and returns the next record,
+  so "any error — nothing written" is structural; the whole batch is validated in order,
+  including dependency cycles and the full quality contract of every added or amended task;
+- `invalidate: true` is the explicit permission to rewrite a lane a member holds: the attempt
+  is revoked, the member is drained, goes `idle` and gets a mailbox note; its old capability is
+  refused afterwards even while the task is `pending` again, so a late update cannot start a new
+  attempt on a replanned lane;
+- a rejected batch is a rejected *plan*, not a rejected task: the error names the operation
+  index and the action (`operation 2 (update_task): task t3 is held by builder (in_progress);
+  pass invalidate=true …`).
+
+Two gate rules moved with it, and both now share one helper (`hasFollowUpRepair`) instead of
+keeping private copies:
+
+| Rule | Before | Now |
+| --- | --- | --- |
+| Delivery: is a red lane settled? | inline check inside `canDeclareDelivery` | `hasFollowUpRepair(tasks, item)`, exported and reused |
+| Progress: does a repaired failure still count? | not considered (WP8 counted every failed task against the percentage) | a failed quality lane with a follow-up repair leaves the denominator exactly like `cancelled`/`superseded`, and the payload reports it as `repaired` |
+
+The second change is why a repaired plan can now reach 100% while its history still shows the
+red attempt: the failed record stays for the audit trail, and the work the team owes is the
+repair. The completed-contract rule is unchanged: `amend_task force` overrides a post-review
+*freeze*, never completion — the post-hoc repair for a finished lane remains `accept_paths`.
+
 ## 2. Allowed / not allowed
 
 ### 2.1 Allowed

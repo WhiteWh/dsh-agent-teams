@@ -122,6 +122,23 @@ export interface AgentTeamsPlanDiscardedData {
   readonly teamId: string
 }
 
+/** Records one rethink of a live plan (WP7): the diff the captain applied. */
+export interface AgentTeamsPlanRevisedData {
+  readonly teamId: string
+  /** Monotone plan revision after this batch. */
+  readonly revision: number
+  /** Why the captain revised the plan (the batch reason). */
+  readonly reason: string
+  /** Task ids the batch created. */
+  readonly added: readonly string[]
+  /** Task ids the batch took out of the live graph by superseding them. */
+  readonly removed: readonly string[]
+  /** Task ids whose dependencies or owner the batch changed. */
+  readonly rebound: readonly string[]
+  /** Task ids whose running attempt the batch revoked. */
+  readonly invalidated: readonly string[]
+}
+
 /** Records one mailbox message sent between team agents. */
 export interface AgentTeamsMessageSentData {
   readonly teamId: string
@@ -206,22 +223,39 @@ declare module '@deepseek-ai/dsh-session/types' {
      * @param data - stable team identity.
      */
     'agent-teams/plan-discarded': AgentTeamsPlanDiscardedData
+
+    /**
+     * A live plan was revised in one atomic batch (WP7).
+     * @param data - the revision and the diff it applied.
+     */
+    'agent-teams/plan-revised': AgentTeamsPlanRevisedData
   }
 }
 
-/** The full set of `agent-teams/*` event names. */
-export type AgentTeamsEventType =
-  | 'agent-teams/team-created'
-  | 'agent-teams/member-added'
-  | 'agent-teams/member-removed'
-  | 'agent-teams/task-created'
-  | 'agent-teams/task-updated'
-  | 'agent-teams/task-amended'
-  | 'agent-teams/task-superseded'
-  | 'agent-teams/paths-accepted'
-  | 'agent-teams/delta-pinned'
-  | 'agent-teams/message-sent'
-  | 'agent-teams/team-halted'
-  | 'agent-teams/team-resumed'
-  | 'agent-teams/team-deleted'
-  | 'agent-teams/plan-discarded'
+/**
+ * The full set of `agent-teams/*` event names.
+ *
+ * The runtime list is the single source: the union type is derived from it, so a
+ * new event cannot be added to the type without appearing here (and a test can
+ * assert membership without re-typing the list).
+ */
+export const AGENT_TEAMS_EVENT_TYPES = [
+  'agent-teams/team-created',
+  'agent-teams/member-added',
+  'agent-teams/member-removed',
+  'agent-teams/task-created',
+  'agent-teams/task-updated',
+  'agent-teams/task-amended',
+  'agent-teams/task-superseded',
+  'agent-teams/paths-accepted',
+  'agent-teams/delta-pinned',
+  'agent-teams/plan-revised',
+  'agent-teams/message-sent',
+  'agent-teams/team-halted',
+  'agent-teams/team-resumed',
+  'agent-teams/team-deleted',
+  'agent-teams/plan-discarded',
+] as const
+
+/** One `agent-teams/*` event name. */
+export type AgentTeamsEventType = (typeof AGENT_TEAMS_EVENT_TYPES)[number]

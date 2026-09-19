@@ -8,7 +8,7 @@ This document holds the detailed usage material for `dsh-agent-teams`: how it wo
 
 | DSH capability | How AgentTeams uses it |
 |---|---|
-| `ctx.tools` registry | registers the 18 business tools; restricts which tools a model can see by session identity |
+| `ctx.tools` registry | registers the 19 business tools; restricts which tools a model can see by session identity |
 | `ctx.subagents.startContinuable()` | creates a member: a durable, continuable subagent carrying a member persona |
 | `ctx.subagents.followup()` | wakes the recipient member (the message joins its next turn) |
 | the durable team member table + `ctx.agents` | the former stores durable member identity, the latter provides real `running / idle / ready` activity (no reliance on a volatile subagent directory projection) |
@@ -60,6 +60,7 @@ Old `kind=work` tasks can still be completed with free text. Quality kinds (`req
 | `agent_teams_accept_paths` | captain-only: ADD workspace-relative paths to a task's `inScope` (additive, unlike the full replacement in `amend_task`); completes a task held in `awaiting_scope_review`, works post-hoc on a completed task until a review verdict freezes the contract (`force` overrides), and records a revision |
 | `agent_teams_pin_delta` | captain-only: register a check that is red here for a reason outside the lane (`check`, `expected`, `reason`); afterwards a `waived` result for that check gets its evidence filled in automatically as `pinned delta <id>: <reason>`. One entry per check; a duplicate names the existing id |
 | `agent_teams_unpin_delta` | captain-only: remove one registry entry by id (the error lists the pinned ids when the id is unknown) |
+| `agent_teams_replan` | captain-only: repair a RUNNING plan in one atomic batch — `add_task`, `update_task` (with `retry` and `invalidate`), `supersede_task`, `cancel_task`, `accept_paths`, `amend_task`, `move_phase` — under one `reason`; every operation is validated against the result of the previous one, and any error leaves the team untouched. The alternative to a cancel-and-recreate cascade |
 | `agent_teams_send_message` | any member → any member/captain: the message lands directly in the recipient's mailbox and wakes it (no captain relay; an impersonated `from` is rejected) |
 | `agent_teams_status` | one team in detail (kind/round/verdict, coverage matrix, escalated, halt/resume state); without a `team_id` it lists every team the caller leads or belongs to |
 | `agent_teams_resume` | explicitly resume a halted team; a non-empty reason is required; cancelled tasks are not recreated |
@@ -98,6 +99,26 @@ Override it in the profile's `cordis.patch.yml`:
 ```
 
 The effective precedence is: an explicit member `provider` + `model` / `model` → `memberModel` → the captain's current route. When a member follows the captain's current provider/model it inherits the captain's reasoning effort; whenever either provider or model changes, the target model's default tier is used automatically. An explicit `reasoning_effort` (a tier id the target model supports, or `"default"`) wins and is validated against the target provider/model before creation; an incompatible value makes member creation fail loudly. The provider/model/reasoning effort that actually took effect is written into `team.json` for status queries and member cold resume.
+
+## Replanning a live team
+
+A running plan is repaired, not rebuilt. `agent_teams_replan` takes one batch and one reason; the whole batch is validated against the result of the previous operation under the team lock, and **any** invalid step leaves the team exactly as it was (the applier works on a copy, so "nothing written" is structural rather than a promise about statement order).
+
+| Operation | What it does | When the target status allows it |
+| --- | --- | --- |
+| `add_task` | create a lane with the full `create_task` contract | any status of the others |
+| `update_task` | replace `subject`/`description`/`assignee`/`dependencies`; `retry: true` puts a failed (or scope-held) lane back in the queue | `pending` (any attempt), `failed`, `awaiting_scope_review` |
+| `supersede_task` | replace a lane that will not finish, redirecting dependents and reviews (`replacement_task_id`, or a replacement created in the same operation) | `failed`, `cancelled`, `claimed`/`in_progress` with `invalidate: true` |
+| `cancel_task` | drop a lane without deleting its history | `pending`; a held lane needs `invalidate: true` |
+| `accept_paths` | settle a lane held in `awaiting_scope_review` (additive paths) | `awaiting_scope_review`, or post-hoc on `completed` |
+| `amend_task` | rewrite a contract that makes honest completion impossible; `force` overrides a post-review freeze (the verdict becomes `stale`) | `pending`/`claimed`/`in_progress`/`failed` — a **completed** contract stays immutable |
+| `move_phase` | put a task in a declared phase; pass a `title` to declare a new one, `phase_id: ''` to remove it | any |
+
+`invalidate: true` is the explicit permission to touch a lane a member currently holds: the attempt is revoked, that member is drained, it goes `idle` (its session stays), and it receives a mailbox note — `task tN replanned: <reason>` — so it stops instead of finishing work the plan no longer wants. A revoked capability is refused afterwards even if the task is `pending` again, so a late update can never start a new attempt on a replanned lane. Members whose only remaining work disappeared go `idle`; nothing is retired (that stays exclusive to `remove_member`).
+
+Each batch bumps the team's **plan revision** (`TeamState.plan.revision`, a monotone counter) and appends one `agent-teams/plan-revised` event carrying the diff: `added`, `removed` (superseded), `rebound` (dependencies or owner changed) and `invalidated`. The panel's running-mode editor posts the same batch to `POST /plugins/dsh-agent-teams/plan` with `action: 'replan'`, so the browser and the model share one validator, one writer and one wake-up.
+
+Declared phases are part of the plan: a profile may list them (`taskPlanning.phases: [{id: E0, title: Recon}]`), a task joins one at creation (`create_task phase: 'E0'`) or later (`move_phase`), and the progress rows, the Phases view and the task checklist all order themselves by them — falling back to the DAG levels when nothing is declared.
 
 ## Usage protocol
 
@@ -161,7 +182,7 @@ Every team snapshot, the `agent_teams_status` report and the conversation card c
 Progress: 62% (8/13; running 2, blocked 1, failed 0, waived 1)
 ```
 
-The rule is `Σ weight(completed) / Σ weight(total − cancelled − superseded)`: a cancelled task and a task replaced by `agent_teams_supersede_task` are not work the team still owes, so they leave the denominator instead of counting as failure, and a plan with nothing left in the denominator reports 0 rather than inventing 100. Two weightings are computed together and both numbers travel in the payload:
+The rule is `Σ weight(completed) / Σ weight(total − cancelled − superseded)`: a cancelled task and a task replaced by `agent_teams_supersede_task` are not work the team still owes, so they leave the denominator instead of counting as failure, and a plan with nothing left in the denominator reports 0 rather than inventing 100. A failed quality lane that already has its follow-up repair leaves the denominator the same way — its repair is the work that remains — which is exactly the rule Delivery uses to decide that a red lane is settled history, so a repaired plan reaches 100% and the payload counts those lanes as `repaired` rather than `failed`. Two weightings are computed together and both numbers travel in the payload:
 
 | Mode | Weight of a task | Where |
 | --- | --- | --- |

@@ -862,6 +862,150 @@ try {
       && nextReview.assignee !== 'builder')
   await call('agent_teams_delete', {})
 
+  // ── WP7/S17: one replan batch repairs the plan instead of a cancel cascade ──
+  // The owner's t5 case: a lane failed because its contract was wrong (an
+  // acceptance criterion that can never hold), the automatic review loop had
+  // already opened a repair and a next review, and the only way out used to be
+  // cancel + recreate. One batch must amend the contract, retry the lane and add
+  // the follow-up the review asked for, with nothing else touched.
+  await call('agent_teams_create', { name: 'Replan Repair', description: 'repair a false criterion in one batch' })
+  await call('agent_teams_add_member', { name: 'builder', role: 'implementer' })
+  await call('agent_teams_add_member', { name: 'critic', role: 'reviewer' })
+  const replanTeamState = () => readTeam(stateRoot, 'replan-repair')
+  const replanImpl = await call('agent_teams_create_task', {
+    subject: 'implement the exporter',
+    assignee: 'builder',
+    kind: 'implementation',
+    objective: 'Ship the exporter',
+    inScope: ['src/exporter.ts'],
+    acceptance: ['the exporter writes the payload'],
+    verify: ['node scripts/verify.mjs'],
+  })
+  const replanReview = await call('agent_teams_create_task', {
+    subject: 'review the exporter',
+    assignee: 'critic',
+    kind: 'review',
+    objective: 'Review the exporter',
+    acceptance: ['no blocker or high findings'],
+    reviewedTaskId: replanImpl.task_id,
+  })
+  const replanBuilder = liveAgents.get((await replanTeamState()).members.find(member => member.name === 'builder').id)
+  const replanCritic = liveAgents.get((await replanTeamState()).members.find(member => member.name === 'critic').id)
+  const replanClaim = await call('agent_teams_claim_task', { task_id: replanImpl.task_id }, replanBuilder)
+  await call('agent_teams_update_task', { task_id: replanImpl.task_id, status: 'in_progress', attempt_id: replanClaim.attempt_id }, replanBuilder)
+  await call('agent_teams_update_task', {
+    task_id: replanImpl.task_id,
+    status: 'completed',
+    attempt_id: replanClaim.attempt_id,
+    output: 'exporter shipped',
+    changedPaths: ['src/exporter.ts'],
+    acceptanceResults: [{ criterion: 'the exporter writes the payload', status: 'passed' }],
+    commandsRun: [{ command: 'node scripts/verify.mjs', status: 'passed' }],
+  }, replanBuilder)
+  const reviewClaim2 = await call('agent_teams_claim_task', { task_id: replanReview.task_id }, replanCritic)
+  await call('agent_teams_update_task', { task_id: replanReview.task_id, status: 'in_progress', attempt_id: reviewClaim2.attempt_id }, replanCritic)
+  await call('agent_teams_update_task', {
+    task_id: replanReview.task_id,
+    status: 'failed',
+    attempt_id: reviewClaim2.attempt_id,
+    verdict: 'needs_revision',
+    findings: [{
+      id: 'R-001',
+      severity: 'high',
+      problem: 'the exporter has no round-trip test',
+      requiredFix: 'add the round-trip test and make the exporter emit a stable trailer',
+      file: 'src/exporter.ts',
+    }],
+  }, replanCritic)
+  const openedRepair = (await replanTeamState())?.tasks.find(item => item.kind === 'repair')
+  const openedReview = (await replanTeamState())?.tasks.filter(item => item.kind === 'review' && item.id !== replanReview.task_id)[0]
+  check('the failed review opened a repair lane and a next review round',
+    openedRepair !== undefined && openedReview !== undefined
+      && openedRepair.assignee === 'builder')
+
+  // The repair lane inherits a contract that cannot hold here (the review asked
+  // for a worktree this workspace does not have). One batch fixes it.
+  await call('agent_teams_amend_task', {
+    task_id: openedRepair.id,
+    reason: 'the required fix names a worktree that does not exist in this workspace',
+    acceptance: ['the round-trip test passes in this workspace'],
+  })
+  const repairClaim = await call('agent_teams_claim_task', { task_id: openedRepair.id }, replanBuilder)
+  await call('agent_teams_update_task', { task_id: openedRepair.id, status: 'in_progress', attempt_id: repairClaim.attempt_id }, replanBuilder)
+  await call('agent_teams_update_task', {
+    task_id: openedRepair.id,
+    status: 'failed',
+    attempt_id: repairClaim.attempt_id,
+    output: 'the lane cannot satisfy its contract as written',
+  }, replanBuilder)
+  const planBeforeReplan = await replanTeamState()
+  check('a wrong contract fails the lane and leaves the plan red',
+    planBeforeReplan?.tasks.find(item => item.id === openedRepair.id)?.status === 'failed'
+      && planBeforeReplan.plan?.revision === planBeforeReplan.plan?.revision)
+
+  const replanApplied = await call('agent_teams_replan', {
+    reason: 'the repair lane cannot run against a worktree this workspace does not have',
+    operations: [
+      {
+        action: 'amend_task',
+        task_id: openedRepair.id,
+        acceptance: ['the round-trip test passes with node scripts/verify.mjs'],
+        verify: ['node scripts/verify.mjs'],
+      },
+      { action: 'update_task', task_id: openedRepair.id, retry: true },
+      { action: 'add_task', subject: 'document the exporter contract', assignee: 'builder', dependencies: [openedRepair.id] },
+    ],
+  })
+  const afterReplan = await replanTeamState()
+  check('one replan batch amends, retries and adds without a cancel cascade',
+    replanApplied.applied === 3
+      && replanApplied.added.length === 1
+      && replanApplied.rebound.includes(openedRepair.id)
+      && afterReplan?.tasks.find(item => item.id === openedRepair.id)?.status === 'pending'
+      && afterReplan?.tasks.find(item => item.id === replanApplied.added[0])?.subject === 'document the exporter contract'
+      && afterReplan?.plan?.revision === planBeforeReplan.plan.revision + 1,
+  )
+  check('the replan keeps the review round it inherited',
+    afterReplan?.tasks.find(item => item.id === openedReview.id)?.status === 'pending'
+      && afterReplan?.tasks.find(item => item.id === replanReview.task_id)?.status === 'failed')
+
+  // Finish the graph through the same members; nothing was recreated.
+  const resumedRepairClaim = await call('agent_teams_claim_task', { task_id: openedRepair.id }, replanBuilder)
+  await call('agent_teams_update_task', { task_id: openedRepair.id, status: 'in_progress', attempt_id: resumedRepairClaim.attempt_id }, replanBuilder)
+  await call('agent_teams_update_task', {
+    task_id: openedRepair.id,
+    status: 'completed',
+    attempt_id: resumedRepairClaim.attempt_id,
+    output: 'round-trip test added',
+    changedPaths: ['src/exporter.ts'],
+    acceptanceResults: [{ criterion: 'the round-trip test passes with node scripts/verify.mjs', status: 'passed' }],
+    commandsRun: [{ command: 'node scripts/verify.mjs', status: 'passed' }],
+  }, replanBuilder)
+  const docsTask = afterReplan?.tasks.find(item => item.id === replanApplied.added[0])
+  const docsClaim = await call('agent_teams_claim_task', { task_id: docsTask.id }, replanBuilder)
+  await call('agent_teams_update_task', { task_id: docsTask.id, status: 'in_progress', attempt_id: docsClaim.attempt_id }, replanBuilder)
+  await call('agent_teams_update_task', {
+    task_id: docsTask.id,
+    status: 'completed',
+    attempt_id: docsClaim.attempt_id,
+    output: 'contract documented',
+  }, replanBuilder)
+  const nextReviewClaim = await call('agent_teams_claim_task', { task_id: openedReview.id }, replanCritic)
+  await call('agent_teams_update_task', { task_id: openedReview.id, status: 'in_progress', attempt_id: nextReviewClaim.attempt_id }, replanCritic)
+  await call('agent_teams_update_task', {
+    task_id: openedReview.id,
+    status: 'completed',
+    attempt_id: nextReviewClaim.attempt_id,
+    verdict: 'pass',
+    output: 'the repaired lane is green',
+  }, replanCritic)
+  const replanStatus = await call('agent_teams_status', {})
+  check('the repaired plan delivers without cancelling a single lane',
+    replanStatus.delivery?.ok === true
+      && replanStatus.tasks.every(task => task.status === 'completed' || task.status === 'failed')
+      && replanStatus.progress?.percent === 100)
+  await call('agent_teams_delete', {})
+
   // ── WP2/S08: a wrong contract is fixed in place, and a failed lane retries ──
   // The captain undercounts inScope, the member's honest completion is refused as
   // an undeclared path, and the lane fails. Before S08 that was a dead end:

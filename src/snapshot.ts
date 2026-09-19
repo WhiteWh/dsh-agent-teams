@@ -15,7 +15,7 @@ import { memberActivity } from './members.ts'
 import { planProgress } from './progress.ts'
 import type { PlanProgress } from './progress.ts'
 import {
-  CAPTAIN_KEY, listArchivedTeamIds, readArchivedTeam, readUnreadMailbox, readTeam,
+  CAPTAIN_KEY, listArchivedTeamIds, planOf, readArchivedTeam, readUnreadMailbox, readTeam,
   taskDepthsById, taskVisualState, waivedResultCount,
 } from './state.ts'
 import type { MemberStatus, TeamState, TeamTask } from './types.ts'
@@ -71,6 +71,21 @@ export interface TeamActivityMessage {
   readonly content: string
 }
 
+/** One declared phase of a plan, as the panel sees it (WP7). */
+export interface TeamActivityPhase {
+  readonly id: string
+  readonly title?: string
+  readonly taskIds: readonly string[]
+}
+
+/** The plan identity the panel renders (WP7/S17). */
+export interface TeamActivityPlan {
+  readonly revision: number
+  readonly updatedAt: number
+  readonly goal?: string
+  readonly phases: readonly TeamActivityPhase[]
+}
+
 /** The full panel payload for one team. */
 export interface TeamActivitySnapshot {
   readonly workspace: string
@@ -85,6 +100,8 @@ export interface TeamActivitySnapshot {
   readonly tasks: readonly TeamActivityTask[]
   /** Plan progress (WP8): both percentages plus the per-phase rows. */
   readonly progress: PlanProgress
+  /** Plan identity plus the declared phases (WP7): the panel draws them as columns. */
+  readonly plan?: TeamActivityPlan
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
 }
@@ -131,6 +148,7 @@ export async function assembleTeamSnapshot(
 ): Promise<TeamActivitySnapshot> {
   const tasks = state.tasks
   const depths = taskDepthsById(tasks)
+  const plan = planOf(state)
   const roster = options.includeRemoved === true
     ? state.members
     : state.members.filter((member) => member.status !== 'removed')
@@ -207,7 +225,26 @@ export async function assembleTeamSnapshot(
     })),
     progress: planProgress(tasks, {
       ...state.profile?.progressWeights === undefined ? {} : { weights: state.profile.progressWeights },
+      // WP7: declared phases win over the DAG levels, exactly as the Phases view
+      // does; without them the progress rows stay the dependency levels.
+      ...plan.phases === undefined || plan.phases.length === 0
+        ? {}
+        : { phases: plan.phases.map((phase) => ({
+          id: phase.id,
+          ...phase.title === undefined ? {} : { title: phase.title },
+          taskIds: phase.taskIds,
+        })) },
     }),
+    plan: {
+      revision: plan.revision,
+      updatedAt: plan.updatedAt,
+      ...plan.goal === undefined ? {} : { goal: plan.goal },
+      phases: (plan.phases ?? []).map((phase) => ({
+        id: phase.id,
+        ...phase.title === undefined ? {} : { title: phase.title },
+        taskIds: [...phase.taskIds],
+      })),
+    },
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),
     captainInbox: captainInbox.slice(-5).map((message) => ({

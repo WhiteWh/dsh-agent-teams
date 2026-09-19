@@ -57,6 +57,7 @@ import {
   teamIsActive,
   usesParallelTaskGrid,
   type ActivityViewMode,
+  type ManualPhase,
   type ProgressMode,
 } from './activity-model.ts'
 import {
@@ -70,6 +71,9 @@ import {
   type ActivityTask,
   type ActivityTeam,
 } from './activity-monitor.ts'
+
+/** The authenticated plan route: the running-mode replan editor posts here. */
+const ACTIVITY_PLAN_URL = '/plugins/dsh-agent-teams/plan'
 import { ACTION_SYMBOL, LEAD_ART, memberArtUrl, memberSymbolUrl, ownerSymbolUrl } from './artwork.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
 import { StagingPlanEditor } from './StagingPlanEditor.tsx'
@@ -621,15 +625,17 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
 }
 
 /** Phases view: fixed column per phase, dependency edges between columns. */
-function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin }: {
+function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
   readonly discarded?: boolean
   readonly pinnedTaskId?: string | null
   readonly onPin?: (id: string) => void
+  /** Declared phases (WP7): they win over the derived DAG levels. */
+  readonly manualPhases?: readonly ManualPhase[]
 }) {
-  const layout = useMemo(() => phaseBoardLayout(tasks), [tasks])
+  const layout = useMemo(() => phaseBoardLayout(tasks, manualPhases), [tasks, manualPhases])
   if (tasks.length === 0) return null
   return (
     <div className={css.phaseBoardViewport} data-phase-board>
@@ -817,21 +823,23 @@ function ViewSwitcher({ view, onChange, t }: {
  * the order the work becomes claimable. Clicking a row pins that node in the
  * dependency tree.
  */
-function TaskChecklist({ tasks, t, onFocus }: {
+function TaskChecklist({ tasks, t, onFocus, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly t: AgentTeamsTranslate
   readonly onFocus: (taskId: string) => void
+  /** Declared phases (WP7): they order the rows before the DAG depth does. */
+  readonly manualPhases?: readonly ManualPhase[]
 }) {
   const [open, setOpen] = useState(true)
   const rows = useMemo(() => {
     const ordered: ActivityTask[] = []
-    for (const column of phaseColumns(tasks)) {
+    for (const column of phaseColumns(tasks, manualPhases)) {
       ordered.push(...column.tasks.slice().sort((left, right) => (
         left.depth - right.depth || left.id.localeCompare(right.id)
       )))
     }
     return ordered
-  }, [tasks])
+  }, [tasks, manualPhases])
   return (
     <section className={css.checklist} aria-label={t('checklist.aria')} data-task-checklist>
       <button
@@ -889,12 +897,275 @@ function TaskChecklist({ tasks, t, onFocus }: {
   )
 }
 
+/** One dependency level of an auto-derived phase column. */
+function declaredPhasesOf(team: ActivityTeam): ManualPhase[] {
+  return (team.plan?.phases ?? []).map((phase) => ({
+    id: phase.id,
+    ...phase.title === undefined ? {} : { title: phase.title },
+    taskIds: phase.taskIds,
+  }))
+}
+
+/**
+ * The running-plan editor (WP7/S17).
+ *
+ * One batch, one reason: every row the captain edits becomes one operation of a
+ * single `action: 'replan'` request, so the whole repair is atomic exactly like
+ * the `agent_teams_replan` tool. Only the fields each status allows are offered —
+ * a pending task can be retargeted, a failed lane can be retried or replaced, a
+ * scope-held lane can be accepted, and a task a member holds needs the explicit
+ * "stop the member" box before it can be rewritten.
+ */
+function RunningPlanEditor({ team, t }: {
+  readonly team: ActivityTeam
+  readonly t: AgentTeamsTranslate
+}) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [rows, setRows] = useState<Record<string, {
+    subject?: string
+    assignee?: string
+    dependencies?: string
+    action?: 'update' | 'retry' | 'supersede' | 'cancel' | 'accept' | 'move'
+    invalidate?: boolean
+    paths?: string
+    phase?: string
+  }>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [applied, setApplied] = useState('')
+  const members = team.members.filter((member) => member.status !== 'removed').map((member) => member.name)
+  const phases = team.plan?.phases ?? []
+  const ordered = useMemo(() => {
+    const list: ActivityTask[] = []
+    for (const column of phaseColumns(team.tasks, declaredPhasesOf(team))) {
+      list.push(...column.tasks.slice().sort((left, right) => left.depth - right.depth || left.id.localeCompare(right.id)))
+    }
+    return list
+  }, [team])
+  const edit = (taskId: string, patch: Record<string, unknown>): void => {
+    setRows((current) => ({ ...current, [taskId]: { ...current[taskId], ...patch } }))
+  }
+  const buildOperations = (): Record<string, unknown>[] => {
+    const operations: Record<string, unknown>[] = []
+    for (const task of ordered) {
+      const row = rows[task.id]
+      if (row === undefined) continue
+      const chosen = row.action ?? 'update'
+      if (chosen === 'cancel') {
+        operations.push({ action: 'cancel_task', taskId: task.id, ...row.invalidate === true ? { invalidate: true } : {} })
+        continue
+      }
+      if (chosen === 'accept') {
+        operations.push({
+          action: 'accept_paths',
+          taskId: task.id,
+          paths: (row.paths ?? '').split(',').map((item) => item.trim()).filter(Boolean),
+        })
+        continue
+      }
+      if (chosen === 'move') {
+        operations.push({ action: 'move_phase', taskId: task.id, phaseId: (row.phase ?? '').trim(), title: (row.phase ?? '').trim() })
+        continue
+      }
+      if (chosen === 'supersede') {
+        operations.push({
+          action: 'supersede_task',
+          taskId: task.id,
+          subject: row.subject?.trim() || `${task.subject} (replacement)`,
+          ...row.assignee === undefined || row.assignee === '' ? {} : { assignee: row.assignee },
+          ...row.invalidate === true ? { invalidate: true } : {},
+        })
+        continue
+      }
+      operations.push({
+        action: 'update_task',
+        taskId: task.id,
+        ...row.subject === undefined || row.subject.trim() === '' ? {} : { subject: row.subject.trim() },
+        ...row.assignee === undefined ? {} : { assignee: row.assignee },
+        ...row.dependencies === undefined ? {} : {
+          dependencies: row.dependencies.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+        },
+        ...row.invalidate === true ? { invalidate: true } : {},
+        ...chosen === 'retry' ? { retry: true } : {},
+      })
+    }
+    return operations
+  }
+  const submit = async (): Promise<void> => {
+    if (busy) return
+    setError('')
+    setApplied('')
+    const operations = buildOperations()
+    if (operations.length === 0) {
+      setError(t('replan.empty'))
+      return
+    }
+    const trimmed = reason.trim()
+    if (trimmed === '') {
+      setError(t('replan.reasonRequired'))
+      return
+    }
+    setBusy(true)
+    try {
+      const response = await fetch(ACTIVITY_PLAN_URL, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: team.captainSessionId, teamId: team.teamId, action: 'replan', reason: trimmed, operations }),
+      })
+      const body = await response.json() as { error?: unknown; revision?: unknown; applied?: unknown }
+      if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : t('replan.failed'))
+      setApplied(t('replan.applied', { count: Number(body.applied ?? operations.length), revision: Number(body.revision ?? 0) }))
+      setRows({})
+      setReason('')
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (team.phase !== 'running') return null
+  return (
+    <section className={css.replan} aria-label={t('replan.aria')} data-replan-editor>
+      <button
+        type="button"
+        className={css.checklistToggle}
+        aria-expanded={open}
+        onClick={() => { setOpen((current) => !current) }}
+        data-replan-toggle
+      >
+        <span><Chevron open={open} />{t('replan.title')}</span>
+        <span>{t(open ? 'checklist.collapse' : 'checklist.expand')}</span>
+      </button>
+      {open && (
+        <div className={css.replanBody}>
+          <p className={css.replanHint}>{t('replan.hint')}</p>
+          {ordered.length === 0 && <span className={css.emptyHint}>{t('checklist.empty')}</span>}
+          {ordered.map((task) => {
+            const row = rows[task.id] ?? {}
+            const live = task.state === 'running'
+            const retryable = task.status === 'failed'
+            const held = task.status === 'awaiting_scope_review'
+            const editable = task.status === 'pending' || retryable
+            const chosen = row.action ?? 'update'
+            return (
+              <div key={task.id} className={css.replanRow} data-replan-row={task.id}>
+                <span className={css.checklistId}>{task.id}</span>
+                <input
+                  className={css.replanInput}
+                  value={row.subject ?? ''}
+                  placeholder={task.subject}
+                  aria-label={t('replan.subject')}
+                  data-replan-subject={task.id}
+                  disabled={!editable}
+                  onChange={(event) => { edit(task.id, { subject: event.target.value, action: chosen === 'retry' || chosen === 'supersede' || chosen === 'cancel' || chosen === 'accept' || chosen === 'move' ? chosen : 'update' }) }}
+                />
+                <input
+                  className={css.replanInput}
+                  value={row.dependencies ?? ''}
+                  placeholder={task.dependencies.join(',')}
+                  aria-label={t('replan.dependencies')}
+                  data-replan-deps={task.id}
+                  disabled={!editable}
+                  onChange={(event) => { edit(task.id, { dependencies: event.target.value, action: 'update' }) }}
+                />
+                <select
+                  className={css.replanInput}
+                  value={row.assignee ?? ''}
+                  aria-label={t('replan.assignee')}
+                  data-replan-assignee={task.id}
+                  disabled={!editable}
+                  onChange={(event) => { edit(task.id, { assignee: event.target.value }) }}
+                >
+                  <option value="">—</option>
+                  {members.map((member) => <option key={member} value={member}>{member}</option>)}
+                </select>
+                {retryable && (
+                  <button type="button" className={css.replanAction} data-replan-retry={task.id} onClick={() => { edit(task.id, { action: 'retry' }) }}>
+                    {t('replan.retry')}
+                  </button>
+                )}
+                {retryable && (
+                  <button type="button" className={css.replanAction} data-replan-supersede={task.id} onClick={() => { edit(task.id, { action: 'supersede' }) }}>
+                    {t('replan.supersede')}
+                  </button>
+                )}
+                {held && (
+                  <>
+                    <input
+                      className={css.replanInput}
+                      value={row.paths ?? ''}
+                      placeholder="src/file.ts, src/other.ts"
+                      aria-label={t('replan.paths')}
+                      data-replan-paths={task.id}
+                      onChange={(event) => { edit(task.id, { paths: event.target.value, action: 'accept' }) }}
+                    />
+                    <button type="button" className={css.replanAction} data-replan-accept={task.id} onClick={() => { edit(task.id, { action: 'accept' }) }}>
+                      {t('replan.accept')}
+                    </button>
+                  </>
+                )}
+                {editable && phases.length > 0 && (
+                  <select
+                    className={css.replanInput}
+                    value={row.phase ?? ''}
+                    aria-label={t('replan.phase')}
+                    data-replan-phase={task.id}
+                    onChange={(event) => { edit(task.id, { phase: event.target.value, action: 'move' }) }}
+                  >
+                    <option value="">—</option>
+                    {phases.map((phase) => <option key={phase.id} value={phase.id}>{phase.title ?? phase.id}</option>)}
+                  </select>
+                )}
+                {live && (
+                  <label className={css.replanInvalidate} data-replan-invalidate={task.id}>
+                    <input
+                      type="checkbox"
+                      checked={row.invalidate === true}
+                      onChange={(event) => { edit(task.id, { invalidate: event.target.checked }) }}
+                    />
+                    {t('replan.invalidate')}
+                  </label>
+                )}
+                {task.status === 'pending' && (
+                  <button type="button" className={css.replanAction} data-replan-cancel={task.id} onClick={() => { edit(task.id, { action: 'cancel' }) }}>
+                    {t('replan.cancel')}
+                  </button>
+                )}
+                {chosen !== 'update' && <span className={css.replanChosen} data-replan-chosen={chosen}>{chosen}</span>}
+              </div>
+            )
+          })}
+          <div className={css.replanFooter}>
+            <input
+              className={css.replanInput}
+              value={reason}
+              placeholder={t('replan.reason')}
+              aria-label={t('replan.reason')}
+              data-replan-reason
+              onChange={(event) => { setReason(event.target.value) }}
+            />
+            <button type="button" className={css.replanApply} disabled={busy} data-replan-apply onClick={() => { void submit() }}>
+              {busy ? t('replan.applying') : t('replan.apply')}
+            </button>
+          </div>
+          {error !== '' && <p className={css.replanError} role="alert">{error}</p>}
+          {applied !== '' && <p className={css.replanOk} role="status">{applied}</p>}
+        </div>
+      )}
+    </section>
+  )
+}
+
 /** The three read-only cuts plus the tree, switching on the stored view. */
-function TaskViews({ tasks, members, t, discarded = false }: {
+function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
   readonly discarded?: boolean
+  /** Declared phases from the plan (WP7); they drive the columns and the order. */
+  readonly manualPhases?: readonly ManualPhase[]
 }) {
   const [view, setView] = useState<ActivityViewMode>(() => initialActivityView())
   const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
@@ -934,6 +1205,7 @@ function TaskViews({ tasks, members, t, discarded = false }: {
             discarded={discarded}
             pinnedTaskId={pinnedTaskId}
             onPin={(id) => { setPinnedTaskId((current) => current === id ? null : id) }}
+            manualPhases={manualPhases}
           />
         </section>
       )}
@@ -942,7 +1214,7 @@ function TaskViews({ tasks, members, t, discarded = false }: {
           <QueueView tasks={tasks} members={members} t={t} discarded={discarded} />
         </section>
       )}
-      <TaskChecklist tasks={tasks} t={t} onFocus={focus} />
+      <TaskChecklist tasks={tasks} t={t} onFocus={focus} manualPhases={manualPhases} />
     </>
   )
 }
@@ -1184,7 +1456,8 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
         </div>}
       </section>
 
-      <TaskViews tasks={team.tasks} members={team.members} t={t} discarded={discarded} />
+      <TaskViews tasks={team.tasks} members={team.members} t={t} discarded={discarded} manualPhases={declaredPhasesOf(team)} />
+      {!historic && !discarded && <RunningPlanEditor team={team} t={t} />}
       </section>
       <Modal
         open={stopOpen}

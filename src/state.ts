@@ -17,7 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isKnownDelta, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
@@ -338,6 +338,8 @@ export function applySupersession(team: TeamState, oldId: string, newId: string)
     task.updatedAt = now
     touched.push(task.id)
   }
+  // WP7: a supersession rewrites the live graph, so the plan revision moves.
+  revisePlan(team, now)
   return {
     ok: true,
     touched,
@@ -964,8 +966,99 @@ function coerceTeamState(value: unknown, expectedId: string): TeamState | undefi
   return isTeamState(coerced, expectedId) ? coerced : undefined
 }
 
-export function isTeamTask(value: unknown): value is TeamTask {
-  if (!isRecord(value)) return false
+/** Validate one declared plan phase at the durable boundary (WP7). */
+function isTeamPlanPhase(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value['id'] === 'string'
+    && value['id'].trim() !== ''
+    && isOptionalString(value['title'])
+    && Array.isArray(value['taskIds'])
+    && value['taskIds'].every((taskId) => typeof taskId === 'string' && taskId.trim() !== '')
+}
+
+/** Validate the plan record at the durable boundary (WP7). */
+function isTeamPlan(value: unknown): boolean {
+  return isRecord(value)
+    && Number.isSafeInteger(value['revision'])
+    && (value['revision'] as number) >= 0
+    && isFiniteNumber(value['updatedAt'])
+    && isOptionalString(value['goal'])
+    && (value['phases'] === undefined
+      || (Array.isArray(value['phases']) && value['phases'].every(isTeamPlanPhase)))
+}
+
+/**
+ * The plan record of a team, materialized for the readers (WP7/S17).
+ *
+ * A team created before the plan entity existed has none; reading it as revision
+ * 0 with no phases keeps every reader simple without writing anything.
+ */
+export function planOf(team: TeamState): TeamPlan {
+  return {
+    revision: team.plan?.revision ?? 0,
+    updatedAt: team.plan?.updatedAt ?? team.createdAt,
+    ...team.plan?.goal === undefined ? {} : { goal: team.plan.goal },
+    ...team.plan?.phases === undefined ? {} : { phases: team.plan.phases },
+  }
+}
+
+/**
+ * Bump the plan revision after a graph mutation (WP7/S17).
+ *
+ * `revision` is a monotone counter, not a content hash: the panel and the event
+ * stream use it to tell "the graph changed since you last looked" from "nothing
+ * moved", so an idempotent edit still advances it.
+ * @param team - the team record to revise in place.
+ * @param now - the timestamp to record (injectable for tests).
+ * @returns the new revision.
+ */
+export function revisePlan(team: TeamState, now = Date.now()): number {
+  const current = planOf(team)
+  team.plan = { ...current, revision: current.revision + 1, updatedAt: now }
+  return team.plan.revision
+}
+
+/**
+ * Validate task references and cycles of a whole graph (WP7/S17 moved this here
+ * from the staged-plan tool, so the staged editor and the live replan batch share
+ * one rule instead of two that can drift).
+ *
+ * `requireRunnable` adds the two conditions a team needs before members are
+ * spawned: at least one member and at least one task.
+ * @param team - the team record to validate (not mutated).
+ * @param requireRunnable - also require a runnable roster and graph.
+ */
+export function validateTeamGraph(team: TeamState, requireRunnable: boolean): void {
+  const members = team.members.filter((member) => member.status !== 'removed')
+  if (requireRunnable && members.length === 0) throw new Error('add at least one member before approving the plan')
+  if (requireRunnable && team.tasks.length === 0) throw new Error('add at least one task before approving the plan')
+  const memberNames = new Set(members.map((member) => member.name))
+  const taskIds = new Set(team.tasks.map((task) => task.id))
+  for (const task of team.tasks) {
+    if (task.subject.trim() === '') throw new Error(`task "${task.id}" must have a subject`)
+    if (task.assignee !== undefined && task.assignee !== CAPTAIN_KEY && !memberNames.has(task.assignee)) {
+      throw new Error(`task "${task.id}" assignee "${task.assignee}" is not an active member`)
+    }
+    for (const dependency of task.dependencies) {
+      if (dependency === task.id) throw new Error(`task "${task.id}" cannot depend on itself`)
+      if (!taskIds.has(dependency)) throw new Error(`task "${task.id}" depends on unknown task "${dependency}"`)
+    }
+  }
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const byId = new Map(team.tasks.map((task) => [task.id, task]))
+  const visit = (taskId: string): void => {
+    if (visiting.has(taskId)) throw new Error(`task dependency graph contains a cycle at "${taskId}"`)
+    if (visited.has(taskId)) return
+    visiting.add(taskId)
+    for (const dependency of byId.get(taskId)?.dependencies ?? []) visit(dependency)
+    visiting.delete(taskId)
+    visited.add(taskId)
+  }
+  for (const task of team.tasks) visit(task.id)
+}
+
+export function isTeamTask(value: unknown): value is TeamTask {  if (!isRecord(value)) return false
   return typeof value['id'] === 'string'
     && isOptionalString(value['profileSeedId'])
     && (value['profileSeedId'] === undefined || value['profileSeedId'].trim() !== '')
@@ -1023,6 +1116,7 @@ function isTeamState(value: unknown, expectedId: string): value is TeamState {
     && (value['knownDeltas'] === undefined
       || (Array.isArray(value['knownDeltas']) && value['knownDeltas'].every(isKnownDelta)))
     && (value['escalated'] === undefined || typeof value['escalated'] === 'boolean')
+    && (value['plan'] === undefined || isTeamPlan(value['plan']))
   if (!validShape) return false
 
   const members = value['members'] as TeamMember[]

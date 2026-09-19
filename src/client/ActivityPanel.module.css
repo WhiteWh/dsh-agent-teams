@@ -1010,6 +1010,125 @@
   white-space: nowrap;
 }
 
+/* WP7: the running-mode replan editor. One row per task, one batch per submit. */
+.replan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.replanBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replanHint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.replanRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.replanInput {
+  min-width: 0;
+  flex: 1;
+  padding: 2px 4px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 9.5px;
+}
+
+.replanInput:disabled {
+  opacity: 0.55;
+}
+
+.replanAction {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 9.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.replanAction:hover {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-label-secondary);
+}
+
+.replanInvalidate {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  color: var(--dsw-alias-state-warn-primary);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.replanChosen {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-label-primary);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.replanFooter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replanApply {
+  flex: none;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-inverse, #fff);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.replanApply:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.replanError {
+  margin: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 10px;
+}
+
+.replanOk {
+  margin: 0;
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 10px;
+}
+
 .membersToggle {
   display: flex;
   width: 100%;

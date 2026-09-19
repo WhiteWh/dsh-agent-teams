@@ -18,7 +18,7 @@
 
 `dsh-agent-teams` turns the current DeepSeek Harness session into a captain that can assemble durable sub-agents, split a goal into dependency-aware tasks, and coordinate work through direct messages.
 
-Ask in natural language. The plugin provides the team protocol, 18 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
+Ask in natural language. The plugin provides the team protocol, 19 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
 
 <p align="center">
   <img src="./assets/ui.png" width="100%" alt="DeepSeek Harness conversation with the AgentTeams live activity panel, members, tasks, dependencies, and reports">
@@ -57,10 +57,12 @@ unchanged, and no existing assertion was weakened.
 | **Known deltas** | `agent_teams_pin_delta` registers a check that is red here for a reason outside the lane; a `waived` result for that check then gets its evidence filled in as `pinned delta <id>: <reason>` instead of every lane inventing one. One entry per check, removable with `unpin_delta`, printed in the `agent_teams_status` report. | `src/quality-gates.ts`, `src/tools.ts` |
 | **Required reviewers enforced** | `reviewPolicy.requiredReviewers` now gates Delivery: every listed role alias or member name needs a completed review with `verdict=pass` from that reviewer, so a profile asking for a security review can no longer clear on a single correctness pass. A review the captain owns satisfies nobody, and an absent list changes nothing. | `src/quality-gates.ts` |
 | **Several teams per workspace** | Team identity is an argument again: every team-scoped tool takes `team_id`, a missing one is answered with the caller's teams instead of guessing, `status` without an id lists them, a member of exactly one team may still omit it, and a second team needs the explicit `new_team: true`. A state-based guard refuses a fifth live team or a ninth active worker. | `src/tools.ts`, `src/state.ts`, `src/index.ts` |
-| **Plan progress and a task checklist** | One percentage per team, computed on the server and shared by the panel, the conversation card and the `agent_teams_status` text (`Progress: 62% (8/13; running 2, blocked 1, failed 0, waived 1)`). Cancelled and superseded work leaves the denominator; `byKind` (implementation 3, repair 2, rest 1) and `equal` are both reported, `taskPlanning.weights` picks the default and the panel switches it. A collapsible checklist lists every task in phase-then-depth order with its status glyph, waivers and `→ tN` replacement link, and clicking a row pins that node in the tree. | `src/progress.ts`, `src/snapshot.ts`, `src/tools.ts`, `src/client/ActivityPanel.tsx`, `src/client/AgentTeamsCard.tsx` |
+| **Plan progress and a task checklist** | One percentage per team, computed on the server and shared by the panel, the conversation card and the `agent_teams_status` text (`Progress: 62% (8/13; running 2, blocked 1, failed 0, waived 1)`). Cancelled, superseded and already-repaired work leaves the denominator; `byKind` (implementation 3, repair 2, rest 1) and `equal` are both reported, `taskPlanning.weights` picks the default and the panel switches it. A collapsible checklist lists every task in phase-then-depth order with its status glyph, waivers and `→ tN` replacement link, and clicking a row pins that node in the tree. | `src/progress.ts`, `src/snapshot.ts`, `src/tools.ts`, `src/client/ActivityPanel.tsx`, `src/client/AgentTeamsCard.tsx` |
+| **Replanning a live team** | `agent_teams_replan` repairs a running plan in one atomic batch — `add_task`, `update_task` (with `retry` and `invalidate`), `supersede_task`, `cancel_task`, `accept_paths`, `amend_task`, `move_phase` — under one reason, validated as a whole so a single bad step writes nothing. `invalidate: true` revokes the attempt a member holds, drains it, leaves `task tN replanned: …` in its mailbox, and a revoked capability is refused afterwards. Every batch bumps `plan.revision` and appends an `agent-teams/plan-revised` diff; declared phases (`taskPlanning.phases`, `create_task phase`, `move_phase`) drive the progress rows, the Phases view and the checklist; the panel ships a running-mode editor that posts the same batch to `POST /plan` with `action: 'replan'`. | `src/replan.ts`, `src/tools.ts`, `src/state.ts`, `src/index.ts`, `src/client/ActivityPanel.tsx` |
 
-Remaining plan work is tracked locally and lands in later releases: plan progress and
-the task checklist (0.2.0) and live-team replanning (0.2.0).
+Remaining plan work is tracked locally and lands in 0.2.0: the multi-team panel
+switcher plus the per-team/global scheduler caps (WP11 phases 2–3) and the release
+packaging. WP1–WP10 and WP11 phase 1 are complete on this branch.
 
 ### Verification
 

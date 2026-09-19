@@ -83,7 +83,7 @@ the pre-step count, and FAIL must stay 0.
 | S14 | WP11 phase 1 team_id addressing | done | | verify 240 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; lifecycle 145 PASS/0 FAIL (+16 multi-team checks); all 21 suites exit 0; D5 schema-optional id with a listing error, D6 guard |
 | S15 | docs + release 0.1.24 | done | | version 0.1.24; notes + release record; tag v0.1.24 with the branch marker; artifact 2 263 430 B / SHA256 `77423C11…4CBD` installed into the web profile; 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | done | | verify 261 PASS/0 FAIL (+21); qg-tdd 134 PASS/0 FAIL (+2); lifecycle 147 PASS/0 FAIL (+2); all 21 suites exit 0; D3 both modes server-side |
-| S17 | WP7 replan live team | todo | | needs S08–S10, S02; D4: nearest-ancestor phase fitting + lift-and-flag |
+| S17 | WP7 replan live team | done | | verify 288 PASS/0 FAIL (+27); qg-tdd 134 PASS/0 FAIL; lifecycle 152 PASS/0 FAIL (+5); stress 25 PASS/0 FAIL (+4); all 21 suites exit 0; tool count 18 → 19; D4 phases declared + DAG-level fallback |
 | S18 | WP11 phase 2 N teams in UI + scheduler | todo | | needs S16, S06 |
 | S19 | WP11 phase 3 team limits | todo | | |
 | S20 | docs + release 0.2.0 | todo | | |
@@ -172,6 +172,76 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S17 — WP7: replanning a live team (done)
+
+Scope (plan §WP7, owner decision D4): a running plan is repaired in one atomic batch
+instead of a cancel-and-recreate cascade. Tool count 18 → 19.
+
+- **`src/replan.ts` (new):** `replanTeam(team, operations, { reason })` is **pure** — it
+  deep-copies the parts a batch can touch, validates and applies every operation in order on
+  the copy and returns the next record plus the diff. "Any error — nothing written" is
+  therefore structural, not a promise about statement order. Seven actions: `add_task`
+  (full `create_task` contract, validated by the same `validateCreateTask`), `update_task`
+  (`retry: true` for a failed/scope-held lane, `invalidate: true` for a live one),
+  `supersede_task` (`replacement_task_id` or an inline replacement), `cancel_task`,
+  `accept_paths` (re-runs the completion gate like the tool does), `amend_task` (persists
+  the staled verdicts in the same batch) and `move_phase` (creates a phase when a title is
+  given). Cycles and unknown references are caught by `validateTeamGraph`, moved from
+  `tools.ts` to `state.ts` so the staged editor and the live batch share one rule.
+  `MAX_REPLAN_OPERATIONS = 32`.
+- **Plan entity:** `TeamState.plan` (`revision`, `updatedAt`, `goal?`, `phases?`), created
+  with the team, validated at the durable boundary, bumped by `revisePlan` on every graph
+  mutation (create/edit/supersede/accept/replan). New event
+  `agent-teams/plan-revised` with the diff (`added`/`removed`/`rebound`/`invalidated`) —
+  the runtime list `AGENT_TEAMS_EVENT_TYPES` is now the single source of the type union.
+- **`agent_teams_replan` tool** (captain-only) plus one shared runtime method
+  `replanLiveTeam` used by both the tool and the Web route, so validation, writing, the
+  event, the member drain and the scheduler kick happen once. A revoked member is drained,
+  goes `idle` (its session is kept) and receives `task tN replanned: <reason>` in its
+  mailbox before the scheduler is kicked again.
+- **Declared phases (D4):** `taskPlanning.phases` in a profile, `create_task phase`,
+  `replan move_phase`; the snapshot carries `plan` (revision + phases) and feeds
+  `planProgress` the declared phases (levels remain the fallback), the Phases view and the
+  checklist order by them.
+- **Found and fixed by the step's own test (recorded as an in-step fix, not a follow-up):**
+  a member could still start work on a replanned lane by passing its revoked `attempt_id`
+  while the task was `pending` again — the member branch only validated the capability when
+  the task still had one. Now a capability the plan revoked is refused outright. The stress
+  suite covers both directions (unrelated replan leaves the live attempt intact; replanning
+  the held lane revokes exactly that attempt and the late write is refused).
+- **Also aligned (WP8 ↔ Delivery):** `hasFollowUpRepair` is now one exported helper used by
+  both `canDeclareDelivery` and `planProgress`, and a repaired failure leaves the progress
+  denominator like `cancelled`/`superseded` (reported as `repaired`). Found by the lifecycle
+  scenario: a plan repaired in one batch could otherwise never show 100%. The
+  undefined-`reviewedTaskId`/`sourceTaskId` accident in the old inline rule is closed at the
+  same time.
+- **GUI:** `RunningPlanEditor` in the panel (running teams only, hidden for historic/
+  discarded ones): per-row subject/dependencies/assignee/move-phase editing, `Retry`,
+  `Supersede`, `Cancel`, `Accept paths` and the explicit "stop that member first" box, all
+  posted as ONE `action: 'replan'` batch with one reason to `POST /plan`. Locale keys in both
+  dictionaries.
+- **Tests:** `verify.mjs` +27 (pure applier fixtures: atomicity, cycle, live-attempt guard,
+  invalidate/member freed, supersede redirect, cancel, accept_paths, completed immutable,
+  retry, phases, revision counter, event set, tool registration, route parser, panel editor,
+  declared-phase wiring, repaired-denominator fixtures); `lifecycle-verify.mjs` +5 (the
+  owner's t5 shape: a failed review opened a repair, one batch amended + retried + added,
+  the graph finished through the same members and Delivery went `ok`); `stress-verify.mjs`
+  +4 (replan next to a live member, revoked capability refused).
+- **Green:** typecheck exit 0; build exit 0; `verify.mjs` **288 PASS / 0 FAIL**;
+  `quality-gates-tdd` **134 PASS / 0 FAIL**; `lifecycle-verify` **152 PASS / 0 FAIL**;
+  `stress-verify` **25 PASS / 0 FAIL**; all 21 suites + `verify-package` + `sync-skill --check`
+  + the language check exit 0 after the tool-count bump in `capabilities.test.mjs`
+  (18 → 19, five assertions) — logs in `.local/logs/s17b/`.
+- **Documented deviation:** the plan's WP7 status table allows `amend_task force` on a
+  *completed* task; the shipped WP2 rule (a completed contract is immutable, enforced by
+  `quality-gates-amend.test.mjs`) wins, and the post-hoc repair for a finished lane stays
+  `accept_paths`. The panel's running-mode editor is a purpose-built compact component
+  rather than a `mode: 'running'` rewrite of the 783-line `StagingPlanEditor`: same batch,
+  same route, far less surface to break.
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs` and the real-host
+  matrix. The web-routes suite mounts a stub route by design, so the real `action: 'replan'`
+  handler is covered by the unit test of its request parser plus the shared-runtime checks.
 
 ### S16 — WP8: plan progress and the task checklist (done)
 

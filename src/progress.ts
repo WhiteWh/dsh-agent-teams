@@ -14,6 +14,7 @@
  * inventing 100.
  */
 import type { TeamTask } from './types.ts'
+import { hasFollowUpRepair } from './quality-gates.ts'
 import { taskDepthsById, unsatisfiedDependencies } from './state.ts'
 
 /** The default weight of every task kind (`taskPlanning.weights` overrides it). */
@@ -72,6 +73,8 @@ export interface PlanProgress {
   readonly running: number
   readonly blocked: number
   readonly failed: number
+  /** Failed quality lanes that already have their follow-up repair (WP7). */
+  readonly repaired: number
   /** Completed tasks that carry waivers. */
   readonly waived: number
   readonly superseded: number
@@ -141,6 +144,7 @@ interface ProgressBuckets {
 function bucketOf(
   tasks: readonly { id: string; status: string; kind?: string }[],
   table: ProgressWeightTable,
+  retired: (task: { readonly id: string; readonly status: string; readonly kind?: string }) => boolean,
 ): ProgressBuckets {
   let weightTotal = 0
   let weightCompleted = 0
@@ -148,7 +152,7 @@ function bucketOf(
   let equalCompleted = 0
   let completedCount = 0
   for (const task of tasks) {
-    if (task.status === 'cancelled' || task.status === 'superseded') continue
+    if (retired(task)) continue
     const weight = weightOf(task, table)
     weightTotal += weight
     equalTotal += 1
@@ -218,12 +222,22 @@ export function planProgress(
   options: { readonly weights?: string | Readonly<Record<string, unknown>>; readonly phases?: readonly ProgressPhaseGroup[] } = {},
 ): PlanProgress {
   const table = resolveProgressWeights(options.weights)
-  const overall = bucketOf(tasks, table)
+  // A lane the team no longer owes leaves the denominator: cancelled and
+  // superseded work, plus a failed quality lane that already has its follow-up
+  // repair (the same rule Delivery uses — a repaired failure is history, and the
+  // repair itself is the work that remains).
+  const retired = (task: { readonly id: string; readonly status: string }): boolean => {
+    if (task.status === 'cancelled' || task.status === 'superseded') return true
+    if (task.status !== 'failed') return false
+    const full = tasks.find((candidate) => candidate.id === task.id)
+    return full !== undefined && hasFollowUpRepair(tasks, full)
+  }
+  const overall = bucketOf(tasks, table, retired)
   const byPhase = phaseGroupsOf(tasks, options.phases ?? []).map((group) => {
     const members = group.taskIds
       .map((taskId) => tasks.find((task) => task.id === taskId))
       .filter((task): task is TeamTask => task !== undefined)
-    const bucket = bucketOf(members, table)
+    const bucket = bucketOf(members, table, retired)
     return {
       phaseId: group.id,
       ...group.title === undefined ? {} : { title: group.title },
@@ -236,6 +250,7 @@ export function planProgress(
   let running = 0
   let blocked = 0
   let failed = 0
+  let repaired = 0
   let waived = 0
   let completed = 0
   let superseded = 0
@@ -245,7 +260,8 @@ export function planProgress(
       completed += 1
       if (task.hasWaivers === true) waived += 1
     } else if (task.status === 'failed') {
-      failed += 1
+      if (hasFollowUpRepair(tasks, task)) repaired += 1
+      else failed += 1
     } else if (task.status === 'superseded') {
       superseded += 1
     } else if (task.status === 'cancelled') {
@@ -266,6 +282,7 @@ export function planProgress(
     running,
     blocked,
     failed,
+    repaired,
     waived,
     superseded,
     cancelled,

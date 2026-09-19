@@ -67,10 +67,27 @@ export interface ActivityProgress {
   readonly running: number
   readonly blocked: number
   readonly failed: number
+  /** Failed lanes that already have their follow-up repair (WP7). */
+  readonly repaired?: number
   readonly waived: number
   readonly superseded: number
   readonly cancelled: number
   readonly byPhase: readonly ActivityProgressPhase[]
+}
+
+/** One declared plan phase (WP7), as the panel draws it. */
+export interface ActivityPlanPhase {
+  readonly id: string
+  readonly title?: string
+  readonly taskIds: readonly string[]
+}
+
+/** Plan identity of a team (WP7): the revision and its declared phases. */
+export interface ActivityPlan {
+  readonly revision: number
+  readonly updatedAt: number
+  readonly goal?: string
+  readonly phases: readonly ActivityPlanPhase[]
 }
 
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */
@@ -87,6 +104,8 @@ export interface ActivityTeam {
   readonly tasks: readonly ActivityTask[]
   /** Absent on snapshots written before WP8 and on rebuilt legacy cards. */
   readonly progress?: ActivityProgress
+  /** Absent on snapshots written before WP7. */
+  readonly plan?: ActivityPlan
   readonly messageCount: number
   readonly captainInbox: readonly ActivityMessage[]
 }

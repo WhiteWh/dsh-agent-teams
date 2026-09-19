@@ -24,7 +24,7 @@ const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'c
 const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
-const TASK_PLANNING_KEYS = ['mode', 'sharedInScope', 'weights'] as const
+const TASK_PLANNING_KEYS = ['mode', 'sharedInScope', 'weights', 'phases'] as const
 
 /**
  * Where each nested key set lives inside a profile body. Used for two things:
@@ -165,6 +165,8 @@ export interface NormalizedTeamProfile {
   sharedInScope?: string[]
   /** Progress weighting frozen into the team, from `taskPlanning.weights` (WP8/S16). */
   progressWeights?: 'equal' | Record<string, number>
+  /** Declared plan phases (`taskPlanning.phases`, WP7/S17), empty task lists. */
+  phases?: import('./types.ts').TeamPlanPhase[]
   members: NormalizedProfileMember[]
   tasks: NormalizedProfileTask[]
   reviewPolicy?: import('./types.ts').ReviewPolicy
@@ -407,13 +409,15 @@ export function resolveProfileTaskPlanning(config: TeamProfileConfig | undefined
 
 /**
  * The accepted shapes of `taskPlanning`: the original string
- * (`"captain"`/`"seed"`) and the object form that carries the shared scope and
- * the progress weights (`{ mode, sharedInScope, weights }`).
+ * (`"captain"`/`"seed"`) and the object form that carries the shared scope,
+ * the progress weights and the declared phases
+ * (`{ mode, sharedInScope, weights, phases }`).
  */
 function normalizePlanningShape(value: unknown): {
   mode: 'captain' | 'seed'
   sharedInScope?: string[]
   weights?: 'equal' | Record<string, number>
+  phases?: import('./types.ts').TeamPlanPhase[]
 } {
   if (value === 'captain') return { mode: 'captain' }
   if (value === 'seed') return { mode: 'seed' }
@@ -421,15 +425,20 @@ function normalizePlanningShape(value: unknown): {
     const record = value as Record<string, unknown>
     const mode = record['mode'] === 'captain' ? 'captain' : 'seed'
     const weights = normalizeProgressWeights(record['weights'], 'taskPlanning.weights')
+    const phases = normalizePlanPhases(record['phases'], 'taskPlanning.phases')
+    const optional = {
+      ...weights === undefined ? {} : { weights },
+      ...phases === undefined ? {} : { phases },
+    }
     const shared = record['sharedInScope']
     if (Array.isArray(shared) && shared.length > 0) {
       return {
         mode,
         sharedInScope: shared.filter((item): item is string => typeof item === 'string'),
-        ...weights === undefined ? {} : { weights },
+        ...optional,
       }
     }
-    return { mode, ...weights === undefined ? {} : { weights } }
+    return { mode, ...optional }
   }
   return { mode: 'seed' }
 }
@@ -564,6 +573,7 @@ function normalizeListedProfile(
       taskPlanning: planning.mode,
       ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
       ...planning.weights === undefined ? {} : { progressWeights: planning.weights },
+      ...planning.phases === undefined ? {} : { phases: planning.phases.map((phase) => ({ ...phase, taskIds: [...phase.taskIds] })) },
       reviewPolicy,
       members,
       tasks: [],
@@ -618,6 +628,7 @@ function normalizeListedProfile(
     taskPlanning: planning.mode,
     ...planning.sharedInScope === undefined ? {} : { sharedInScope: planning.sharedInScope },
     ...planning.weights === undefined ? {} : { progressWeights: planning.weights },
+    ...planning.phases === undefined ? {} : { phases: planning.phases.map((phase) => ({ ...phase, taskIds: [...phase.taskIds] })) },
     reviewPolicy,
     members,
     tasks: planning.mode === 'captain' ? [] : tasks,
@@ -627,11 +638,16 @@ function normalizeListedProfile(
 function normalizeTaskPlanning(
   value: unknown,
   path: string,
-): { mode: 'captain' | 'seed'; sharedInScope?: string[]; weights?: 'equal' | Record<string, number> } {
+): {
+  mode: 'captain' | 'seed'
+  sharedInScope?: string[]
+  weights?: 'equal' | Record<string, number>
+  phases?: import('./types.ts').TeamPlanPhase[]
+} {
   if (value === undefined) return { mode: 'seed' }
   if (value === 'captain' || value === 'seed') return { mode: value }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${path} must be "captain", "seed", or an object with mode/sharedInScope/weights`)
+    throw new Error(`${path} must be "captain", "seed", or an object with mode/sharedInScope/weights/phases`)
   }
   const raw = asRecord(value, path)
   assertProfileKeys(raw, TASK_PLANNING_SCOPE, path)
@@ -641,10 +657,13 @@ function normalizeTaskPlanning(
   }
   const resolvedMode = mode === 'captain' ? 'captain' as const : 'seed' as const
   const weights = normalizeProgressWeights(raw['weights'], `${path}.weights`)
+  const phases = normalizePlanPhases(raw['phases'], `${path}.phases`)
   const shared = raw['sharedInScope']
-  if (shared === undefined) {
-    return { mode: resolvedMode, ...weights === undefined ? {} : { weights } }
+  const optional = {
+    ...weights === undefined ? {} : { weights },
+    ...phases === undefined ? {} : { phases },
   }
+  if (shared === undefined) return { mode: resolvedMode, ...optional }
   if (!Array.isArray(shared) || shared.length === 0) {
     throw new Error(`${path}.sharedInScope must be a non-empty array of workspace-relative paths`)
   }
@@ -657,7 +676,42 @@ function normalizeTaskPlanning(
     }
     return item
   })
-  return { mode: resolvedMode, sharedInScope: paths, ...weights === undefined ? {} : { weights } }
+  return { mode: resolvedMode, sharedInScope: paths, ...optional }
+}
+
+/**
+ * `taskPlanning.phases` (WP7/S17): the phases a profile declares for the plan.
+ * Only ids and titles are declared here — the tasks join a phase later (`create_task
+ * phase`, `replan move_phase`), because the graph of a captain-planned team does
+ * not exist when the profile is read.
+ */
+function normalizePlanPhases(
+  value: unknown,
+  path: string,
+): import('./types.ts').TeamPlanPhase[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${path} must be a non-empty array of { id, title? } phases`)
+  }
+  const seen = new Set<string>()
+  return value.map((entry, index) => {
+    const label = `${path}[${String(index)}]`
+    const raw = asRecord(entry, label)
+    assertProfileKeys(raw, { keys: ['id', 'title'], label: path }, label)
+    const id = typeof raw['id'] === 'string' ? raw['id'].trim() : ''
+    if (id === '') throw new Error(`${label}.id must be a non-empty phase id`)
+    if (seen.has(id)) throw new Error(`${label}.id "${id}" is declared twice`)
+    seen.add(id)
+    const title = raw['title']
+    if (title !== undefined && (typeof title !== 'string' || title.trim() === '')) {
+      throw new Error(`${label}.title must be a non-empty string`)
+    }
+    return {
+      id,
+      ...title === undefined ? {} : { title: (title as string).trim() },
+      taskIds: [],
+    }
+  })
 }
 
 /**

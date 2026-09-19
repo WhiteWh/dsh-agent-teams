@@ -19,6 +19,9 @@ import { fileURLToPath } from 'node:url'
 import { artworkRevision, committedArtworkRevision } from './art-revision.mjs'
 import { serveArtwork } from '../lib/artwork.js'
 import { PROGRESS_KIND_WEIGHTS, planProgress, resolveProgressWeights } from '../lib/progress.js'
+import { replanTeam } from '../lib/replan.js'
+import { AGENT_TEAMS_EVENT_TYPES } from '../lib/event-types.js'
+import { parseReplanOperation } from '../lib/index.js'
 import { assembleTeamSnapshot } from '../lib/snapshot.js'
 import { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from '../lib/tool-names.js'
 import {
@@ -37,6 +40,7 @@ import {
   readMailbox,
   readTeam,
   removeTeamDir,
+  revisePlan,
   sanitizeKey,
   teamLockQueueKeys,
   transitionError,
@@ -2028,10 +2032,10 @@ const progressPlan = [
   { id: 't1', status: 'completed', kind: 'work', dependencies: [] },
   { id: 't2', status: 'completed', kind: 'implementation', dependencies: [] },
   { id: 't3', status: 'in_progress', kind: 'implementation', dependencies: [] },
-  { id: 't4', status: 'failed', kind: 'review', dependencies: [] },
+  { id: 't4', status: 'failed', kind: 'review', dependencies: [], reviewedTaskId: 't3' },
   { id: 't5', status: 'superseded', kind: 'work', dependencies: [] },
   { id: 't6', status: 'cancelled', kind: 'work', dependencies: [] },
-  { id: 't7', status: 'completed', kind: 'repair', dependencies: [], hasWaivers: true },
+  { id: 't7', status: 'completed', kind: 'repair', dependencies: [], sourceTaskId: 't1', hasWaivers: true },
   { id: 't8', status: 'pending', kind: 'verification', dependencies: ['t3'] },
 ]
 {
@@ -2142,6 +2146,28 @@ const progressPlan = [
       && planProgress(progressPlan, { weights: 'equal' }).mode === 'equal',
   )
   check(
+    'a repaired failure leaves the denominator and its repair carries the weight',
+    (() => {
+      const repaired = planProgress([
+        { id: 't1', status: 'completed', kind: 'implementation', dependencies: [] },
+        { id: 't2', status: 'failed', kind: 'review', dependencies: ['t1'], reviewedTaskId: 't1' },
+        { id: 't3', status: 'completed', kind: 'repair', dependencies: ['t1'], sourceTaskId: 't1' },
+      ])
+      return repaired.percentByKind === 100 && repaired.percentEqual === 100
+        && repaired.failed === 0 && repaired.repaired === 1 && repaired.completed === 2
+    })(),
+  )
+  check(
+    'an unrepaired failure still holds the plan back',
+    (() => {
+      const red = planProgress([
+        { id: 't1', status: 'completed', kind: 'implementation', dependencies: [] },
+        { id: 't2', status: 'failed', kind: 'review', dependencies: ['t1'], reviewedTaskId: 't1' },
+      ])
+      return red.percentByKind === 75 && red.percentEqual === 50 && red.failed === 1 && red.repaired === 0
+    })(),
+  )
+  check(
     'a profile resolves its weights into the frozen team snapshot',
     resolveTeamProfile({
       weighted: {
@@ -2217,6 +2243,31 @@ const progressPlan = [
       byKindSnapshot.progress.mode === 'byKind'
         && byKindSnapshot.progress.percentByKind === 55
         && byKindSnapshot.progress.percent === 55,
+    )
+    const phasedSnapshot = await assembleTeamSnapshot(
+      { logger: { warn() {} } },
+      progressRoot,
+      'verify-workspace',
+      {
+        ...progressTeam,
+        profile: undefined,
+        plan: {
+          revision: 7,
+          updatedAt: 5,
+          goal: 'phased plan',
+          phases: [{ id: 'E0', title: 'Recon', taskIds: ['t1', 't2', 't3', 't4', 't5', 't6', 't7'] }],
+        },
+      },
+      { historic: true },
+    )
+    check(
+      'the snapshot carries the plan revision and its declared phases',
+      phasedSnapshot.plan?.revision === 7
+        && phasedSnapshot.plan?.goal === 'phased plan'
+        && phasedSnapshot.plan?.phases.map(phase => phase.id).join(',') === 'E0'
+        && phasedSnapshot.progress.byPhase[0]?.phaseId === 'E0'
+        && phasedSnapshot.progress.byPhase[0]?.title === 'Recon'
+        && phasedSnapshot.progress.byPhase[1]?.phaseId === 'unphased',
     )
   } finally {
     await rm(progressRoot, { recursive: true, force: true })
@@ -2294,6 +2345,377 @@ const progressPlan = [
     agentTeamsCardSource.includes('data-card-progress')
       && agentTeamsCardSource.includes('planProgress')
       && agentTeamsCardCss.includes('.cardProgress'),
+  )
+}
+
+console.log('6d/8 replan a live team (WP7/S17)')
+{
+  const replanFixture = () => ({
+    name: 'Replan Team',
+    id: 'replan-team',
+    description: 'wp7',
+    captainSessionId: 'sess-captain',
+    createdAt: 1,
+    members: [
+      { id: 'sess-worker', name: 'worker', role: 'implementer', joinedAt: 1, status: 'idle', provider: 'p', model: 'm' },
+      { id: 'sess-reviewer', name: 'reviewer', role: 'reviewer', joinedAt: 1, status: 'idle', provider: 'p', model: 'm' },
+    ],
+    tasks: [
+      { id: 't1', subject: 'first lane', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 },
+      { id: 't2', subject: 'second lane', status: 'pending', dependencies: ['t1'], attempt: 0, kind: 'work', assignee: 'worker', createdAt: 2, updatedAt: 2 },
+    ],
+    taskSeq: 2,
+    plan: { revision: 3, updatedAt: 1 },
+  })
+  const failureOf = (fn) => {
+    try {
+      fn()
+      return ''
+    } catch (error) {
+      return String(error instanceof Error ? error.message : error)
+    }
+  }
+
+  check(
+    'an empty replan batch is refused',
+    /at least one replan operation/.test(failureOf(() => replanTeam(replanFixture(), [], { reason: 'nothing' }))),
+  )
+
+  const added = replanTeam(replanFixture(), [{
+    action: 'add_task',
+    subject: 'third lane',
+    assignee: 'worker',
+    kind: 'implementation',
+    objective: 'Ship the third lane',
+    inScope: ['src/third.ts'],
+    acceptance: ['the third lane works'],
+    verify: ['node scripts/verify.mjs'],
+  }], { reason: 'the review asked for a third lane' })
+  check(
+    'replan adds a contracted task and bumps the plan revision',
+    added.team.tasks.length === 3
+      && added.team.tasks[2]?.id === 't3'
+      && added.team.tasks[2]?.kind === 'implementation'
+      && added.team.tasks[2]?.status === 'pending'
+      && added.result.added.join(',') === 't3'
+      && added.result.revision === 4
+      && added.team.plan?.revision === 4
+      && added.result.changes[0]?.action === 'add_task'
+      && added.result.changes[0]?.taskId === 't3',
+  )
+  check(
+    'a new replan task still passes the quality contract',
+    /objective/.test(failureOf(() => replanTeam(replanFixture(), [{
+      action: 'add_task',
+      subject: 'implementation without a contract',
+      kind: 'implementation',
+      acceptance: ['done'],
+      inScope: ['src/a.ts'],
+      verify: ['pnpm test'],
+    }], { reason: 'bad lane' }))),
+  )
+
+  const beforeAtomicity = JSON.stringify(replanFixture())
+  const atomicError = failureOf(() => replanTeam(replanFixture(), [
+    { action: 'update_task', task_id: 't2', subject: 'edited subject that must not persist' },
+    { action: 'update_task', task_id: 't2', dependencies: ['t404'] },
+  ], { reason: 'half-valid batch' }))
+  check(
+    'one invalid operation leaves the whole batch unapplied',
+    /t404/.test(atomicError) && JSON.stringify(replanFixture()) === beforeAtomicity,
+  )
+
+  const edited = replanTeam(replanFixture(), [
+    { action: 'update_task', task_id: 't2', subject: 'second lane (retargeted)', dependencies: ['t1'] },
+  ], { reason: 'sharpen the lane' })
+  check(
+    'replan edits a pending task without touching the rest',
+    edited.team.tasks[1]?.subject === 'second lane (retargeted)'
+      && edited.result.rebound.join(',') === 't2'
+      && edited.team.tasks[0]?.subject === 'first lane'
+      && edited.result.revision === 4,
+  )
+  check(
+    'replan refuses a dependency cycle before writing',
+    /cycle/.test(failureOf(() => replanTeam({
+      ...replanFixture(),
+      tasks: [
+        { id: 't1', subject: 'first lane', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 },
+        { id: 't2', subject: 'second lane', status: 'pending', dependencies: ['t1'], attempt: 0, kind: 'work', createdAt: 2, updatedAt: 2 },
+        { id: 't3', subject: 'third lane', status: 'pending', dependencies: ['t2'], attempt: 0, kind: 'work', createdAt: 3, updatedAt: 3 },
+      ],
+      taskSeq: 3,
+    }, [{ action: 'update_task', task_id: 't2', dependencies: ['t3'] }], { reason: 'build a cycle' }))),
+  )
+
+  const liveFixture = () => ({
+    ...replanFixture(),
+    members: [{ id: 'sess-worker', name: 'worker', role: 'implementer', joinedAt: 1, status: 'working' }],
+    tasks: [
+      { id: 't1', subject: 'first lane', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 },
+      {
+        id: 't2',
+        subject: 'second lane',
+        status: 'in_progress',
+        dependencies: ['t1'],
+        attempt: 1,
+        attemptId: 'attempt-live',
+        kind: 'work',
+        assignee: 'worker',
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    ],
+  })
+  check(
+    'a live attempt refuses an edit without invalidate',
+    /invalidate/.test(failureOf(() => replanTeam(liveFixture(), [
+      { action: 'update_task', task_id: 't2', subject: 'silent retarget' },
+    ], { reason: 'retarget a running lane' }))),
+  )
+  const invalidated = replanTeam(liveFixture(), [
+    { action: 'update_task', task_id: 't2', subject: 'second lane (replanned)', invalidate: true },
+  ], { reason: 'the lane was pointed at the wrong contract' })
+  check(
+    'replan invalidates a live attempt and frees its member',
+    invalidated.team.tasks[1]?.status === 'pending'
+      && invalidated.team.tasks[1]?.attemptId === undefined
+      && invalidated.team.tasks[1]?.subject === 'second lane (replanned)'
+      && invalidated.result.invalidated.join(',') === 't2'
+      && invalidated.result.changes[0]?.invalidation?.memberName === 'worker'
+      && invalidated.team.members[0]?.status === 'idle'
+      && invalidated.team.members[0]?.id === 'sess-worker',
+  )
+
+  const failedFixture = () => ({
+    ...replanFixture(),
+    memberStatus: undefined,
+    tasks: [
+      { id: 't1', subject: 'first lane', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 },
+      {
+        id: 't2',
+        subject: 'red lane',
+        status: 'failed',
+        dependencies: ['t1'],
+        attempt: 1,
+        kind: 'implementation',
+        assignee: 'worker',
+        objective: 'the original objective',
+        inScope: ['src/red.ts'],
+        acceptance: ['the original criterion'],
+        verify: ['pnpm test'],
+        output: 'lane is red',
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      { id: 't3', subject: 'downstream lane', status: 'pending', dependencies: ['t2'], attempt: 0, kind: 'work', createdAt: 3, updatedAt: 3 },
+    ],
+    taskSeq: 3,
+    members: [{ id: 'sess-worker', name: 'worker', role: 'implementer', joinedAt: 1, status: 'idle' }],
+  })
+  const superseded = replanTeam(failedFixture(), [{
+    action: 'supersede_task',
+    task_id: 't2',
+    subject: 'red lane (replacement)',
+    assignee: 'worker',
+    kind: 'work',
+  }], { reason: 'the lane is red and the contract was wrong' })
+  check(
+    'replan supersedes a red lane and redirects its dependents',
+    superseded.team.tasks.find(task => task.id === 't2')?.status === 'superseded'
+      && superseded.team.tasks.find(task => task.id === 't2')?.supersededBy === 't4'
+      && superseded.team.tasks.find(task => task.id === 't3')?.dependencies.join(',') === 't4'
+      && superseded.result.added.join(',') === 't4'
+      && superseded.result.removed.join(',') === 't2'
+      && superseded.result.rebound.join(',') === 't3',
+  )
+  const cancelled = replanTeam(replanFixture(), [
+    { action: 'cancel_task', task_id: 't2', reason: 'the user dropped this lane' },
+  ], { reason: 'drop a lane the user no longer wants' })
+  check(
+    'replan cancels a pending lane without deleting it',
+    cancelled.team.tasks[1]?.status === 'cancelled'
+      && cancelled.team.tasks.length === 2
+      && cancelled.result.changes[0]?.action === 'cancel_task',
+  )
+
+  const scopeFixture = () => ({
+    ...replanFixture(),
+    tasks: [
+      {
+        id: 't1',
+        subject: 'scope lane',
+        status: 'awaiting_scope_review',
+        dependencies: [],
+        attempt: 1,
+        attemptId: 'attempt-scope',
+        kind: 'implementation',
+        assignee: 'worker',
+        objective: 'Ship the parser fix',
+        inScope: ['src/parser.ts'],
+        acceptance: ['the parser fix works'],
+        verify: ['pnpm test'],
+        changedPaths: ['src/parser-helper.ts'],
+        acceptanceResults: [{ criterion: 'the parser fix works', status: 'passed' }],
+        commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    taskSeq: 1,
+  })
+  const accepted = replanTeam(scopeFixture(), [
+    { action: 'accept_paths', task_id: 't1', paths: ['src/parser-helper.ts'] },
+  ], { reason: 'the helper belongs to the lane' })
+  check(
+    'replan accepts the paths of a held lane in the same batch',
+    accepted.team.tasks[0]?.inScope?.includes('src/parser-helper.ts') === true
+      && accepted.result.changes[0]?.action === 'accept_paths',
+  )
+  check(
+    'replan refuses paths that are not workspace-relative',
+    /workspace-relative/.test(failureOf(() => replanTeam(scopeFixture(), [
+      { action: 'accept_paths', task_id: 't1', paths: ['/etc/passwd'] },
+    ], { reason: 'bad path' }))),
+  )
+
+  // The shipped WP2 rule wins over the WP7 status table's "amend_task force on a
+  // completed task": a completed contract stays immutable, and the post-hoc
+  // repair for a finished lane is `accept_paths` (which is why force exists there).
+  const completedAmend = failureOf(() => replanTeam({
+    ...replanFixture(),
+    tasks: [
+      { id: 't1', subject: 'done lane', status: 'completed', dependencies: [], attempt: 1, kind: 'implementation', objective: 'old objective', inScope: ['src/a.ts'], acceptance: ['old'], createdAt: 1, updatedAt: 1 },
+    ],
+    taskSeq: 1,
+  }, [{
+    action: 'amend_task',
+    task_id: 't1',
+    objective: 'new objective',
+    force: true,
+  }], { reason: 'the objective was wrong' }))
+  check(
+    'replan refuses to rewrite a completed contract even with force',
+    /terminal|immutable/.test(completedAmend),
+    completedAmend,
+  )
+  const completedPaths = replanTeam({
+    ...replanFixture(),
+    tasks: [
+      { id: 't1', subject: 'done lane', status: 'completed', dependencies: [], attempt: 1, kind: 'implementation', objective: 'ship it', inScope: ['src/a.ts'], acceptance: ['works'], createdAt: 1, updatedAt: 1 },
+    ],
+    taskSeq: 1,
+  }, [{ action: 'accept_paths', task_id: 't1', paths: ['src/b.ts'] }], { reason: 'the second file belongs to the lane' })
+  check(
+    'replan widens the scope of a completed lane post-hoc',
+    completedPaths.team.tasks[0]?.inScope?.includes('src/b.ts') === true
+      && completedPaths.result.changes[0]?.action === 'accept_paths',
+  )
+
+  const retried = replanTeam(failedFixture(), [
+    { action: 'amend_task', task_id: 't2', objective: 'the repaired objective' },
+    { action: 'update_task', task_id: 't2', retry: true },
+    { action: 'add_task', subject: 'the follow-up the review asked for', assignee: 'worker' },
+  ], { reason: 'the review asked for a repaired lane and one follow-up' })
+  check(
+    'one batch repairs a wrong contract, retries the lane and adds the follow-up',
+    retried.team.tasks.find(task => task.id === 't2')?.status === 'pending'
+      && retried.team.tasks.find(task => task.id === 't2')?.objective === 'the repaired objective'
+      && retried.result.added.join(',') === 't4'
+      && retried.result.rebound.includes('t2')
+      && retried.result.changes.map(change => change.action).join(',') === 'amend_task,update_task,add_task'
+      && retried.team.plan?.revision === 4,
+  )
+  check(
+    'a cancelled lane cannot be revived by retry',
+    /cancelled/.test(failureOf(() => replanTeam({
+      ...replanFixture(),
+      tasks: [{ id: 't1', subject: 'dropped lane', status: 'cancelled', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 }],
+      taskSeq: 1,
+    }, [{ action: 'update_task', task_id: 't1', retry: true }], { reason: 'revive it' }))),
+  )
+
+  const phased = replanTeam({
+    ...replanFixture(),
+    plan: { revision: 1, updatedAt: 1, phases: [{ id: 'E0', title: 'Recon', taskIds: ['t1'] }] },
+  }, [
+    { action: 'move_phase', task_id: 't2', phase_id: 'E1', title: 'Lanes' },
+    { action: 'move_phase', task_id: 't1', phase_id: '' },
+  ], { reason: 'declare the phases the plan really uses' })
+  check(
+    'replan moves tasks between phases and creates a missing one',
+    phased.team.plan?.phases?.map(phase => `${phase.id}:${phase.taskIds.join('|')}`).join(',') === 'E0:,E1:t2'
+      && phased.result.changes.length === 2,
+  )
+  check(
+    'moving a task into an undeclared phase is refused',
+    /unknown phase/.test(failureOf(() => replanTeam(replanFixture(), [
+      { action: 'move_phase', task_id: 't2', phase_id: 'E9' },
+    ], { reason: 'typo' }))),
+  )
+
+  const planRevision = replanFixture()
+  const firstRevision = revisePlan(planRevision)
+  const secondRevision = revisePlan(planRevision)
+  check(
+    'the plan revision is a monotone counter with a timestamp',
+    firstRevision === 4 && secondRevision === 5
+      && planRevision.plan?.revision === 5
+      && typeof planRevision.plan?.updatedAt === 'number'
+      && planRevision.plan.updatedAt > 0,
+  )
+  check(
+    'the plan-revised event is part of the event set',
+    AGENT_TEAMS_EVENT_TYPES.includes('agent-teams/plan-revised'),
+  )
+  check(
+    'the replan tool is registered and takes the batch reason',
+    TEAM_TOOL_NAMES.length === 19
+      && TEAM_TOOL_NAMES.includes('agent_teams_replan')
+      && toolsSource.includes('agent_teams_replan')
+      && toolsSource.includes("'agent-teams/plan-revised'")
+      && toolsSource.includes('invalidationDetails')
+      && /replan/i.test(hostSource),
+  )
+  check(
+    'the Web plan route accepts the replan action through the shared runtime',
+    hostSource.includes("action === 'replan'")
+      && hostSource.includes('parseReplanOperation')
+      && hostSource.includes('replanLiveTeam')
+      && (() => {
+        const mapped = parseReplanOperation({
+          action: 'update_task',
+          taskId: 't2',
+          subject: 'retargeted',
+          phaseId: 'E1',
+          invalidate: true,
+          retry: true,
+        }, 0)
+        return mapped.task_id === 't2' && mapped.subject === 'retargeted' && mapped.phase_id === 'E1'
+          && mapped.invalidate === true && mapped.retry === true
+      })()
+      && failureOf(() => parseReplanOperation({ taskId: 't2' }, 1)) === 'operations[1].action is required',
+  )
+  check(
+    'the panel ships the running-mode replan editor',
+    activityPanelSource.includes('function RunningPlanEditor')
+      && activityPanelSource.includes('data-replan-editor')
+      && activityPanelSource.includes('data-replan-apply')
+      && activityPanelSource.includes('data-replan-invalidate')
+      && activityPanelSource.includes("action: 'replan'")
+      && activityPanelSource.includes('ACTIVITY_PLAN_URL')
+      && activityPanelCss.includes('.replanRow')
+      && activityPanelCss.includes('.replanApply')
+      && localesSource.includes("'replan.apply'")
+      && localesSource.includes("'replan.invalidate'")
+      && localesSource.includes("'replan.reason'"),
+  )
+  check(
+    'declared phases drive the phase board and the checklist order',
+    activityPanelSource.includes('function declaredPhasesOf')
+      && activityPanelSource.includes('manualPhases={manualPhases}')
+      && activityPanelSource.includes('phaseColumns(tasks, manualPhases)')
+      && activityPanelSource.includes('phaseBoardLayout(tasks, manualPhases)'),
   )
 }
 

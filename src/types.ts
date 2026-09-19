@@ -396,4 +396,31 @@ export interface TeamState {
   reviewPolicy?: ReviewPolicy
   /** Set when an automatic review/repair loop hits its configured ceiling. */
   escalated?: boolean
+  /**
+   * Plan-level identity of the graph (WP7/S17): a monotone revision that every
+   * graph mutation bumps, plus the optional declared phases. Absent on teams
+   * created before it existed; the readers then treat the plan as revision 0 with
+   * no declared phases.
+   */
+  plan?: TeamPlan
+}
+
+/** One declared phase of a plan (WP7): phase ids own their task ids. */
+export interface TeamPlanPhase {
+  /** Stable phase id (`E0`, `recon`, …); also the `phase` a task may be created in. */
+  id: string
+  title?: string
+  /** Task ids assigned to this phase, in display order. */
+  taskIds: string[]
+}
+
+/** Plan-level record of a team's graph (WP7). */
+export interface TeamPlan {
+  /** Monotone revision; every create/edit/supersede/accept bump it. */
+  revision: number
+  updatedAt: number
+  /** The user-facing goal the plan was written against, when known. */
+  goal?: string
+  /** Declared phases, when the profile or the captain declared any. */
+  phases?: TeamPlanPhase[]
 }
