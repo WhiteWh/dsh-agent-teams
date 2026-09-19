@@ -165,6 +165,36 @@ Delete `.dsh-scratch` at any time; recreate the profile by repeating the
   #161, and #160. Read the body of one with:
   `node -e "fetch('https://api.github.com/repos/NanmiCoder/dsh-agent-teams/issues/183').then(r=>r.text()).then(console.log)"`
 
+## Icon packs and how to see a client change without the host
+
+`assets/agent-teams/` is now 30 files: 15 `*-v2.png` mascots from
+`D:\OwlCats\AI_Tools\Иконки\sets\terminal-amber\256`, 9 `*-symbol.png` role
+symbols from `sets\role-symbols\256`, and 6 `*-symbol.png` action symbols from
+`sets\action-symbols\256`. All three packs are 256x256 8-bit RGBA, which is what
+`scripts/verify.mjs` asserts; the activity panel draws the mascot at 40px as the
+member portrait and the two symbols at 18px in the corner badge. Replace an
+icon by copying the `256` export over the packaged name — never the `64` export,
+it fails the size assertion.
+
+To inspect a client change at real size without installing the plugin anywhere,
+render the built stylesheet against the real assets in headless Chrome:
+
+```powershell
+# 1. extract the CSS module out of the built bundle (45 KB string in lib/client.js)
+#    .dsh-scratch/preview/ holds the extractor output + preview.html harness
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu `
+  --allow-file-access-from-files --hide-scrollbars --force-device-scale-factor=2 `
+  --virtual-time-budget=8000 --window-size=760,700 `
+  --screenshot="D:\OwlCats\AI_Tools\.dsh-scratch\preview\avatars.png" `
+  "file:///D:/OwlCats/AI_Tools/.dsh-scratch/preview/preview.html"
+```
+
+`--virtual-time-budget` is required: without it the screenshot fires before the
+stylesheet and the images load, and every avatar comes out blank. The harness
+mirrors the panel DOM with the real CSS-module class names and stands in the
+`--dsw-alias-*` host variables, so sizes and placement are exact while the
+palette is only approximate.
+
 ## Remotes: upstream (read-only) and fork (push target)
 
 `origin` — upstream `NanmiCoder/dsh-agent-teams`. Push туда **невозможен** (чужой
