@@ -1230,6 +1230,56 @@ console.log('quality-gates TDD — H. generated repair scope (#173)')
   )
 }
 
+console.log('quality-gates TDD — I. one task-status transition table')
+
+{
+  const stateModule = require('../lib/state.js')
+  const gatesModule = require('../lib/quality-gates.js')
+  const statuses = ['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled']
+  // The normative matrix. `state.ts` is the single owner of the table; every
+  // other module must read the same object instead of keeping a copy, or a new
+  // status would have to be added twice and the two copies would drift.
+  const expected = {
+    pending: ['claimed', 'cancelled'],
+    claimed: ['in_progress', 'failed', 'cancelled'],
+    in_progress: ['completed', 'failed', 'cancelled'],
+    completed: [],
+    failed: [],
+    cancelled: [],
+  }
+
+  const table = stateModule.TASK_TRANSITIONS
+  check(
+    'tdd.state.single-transition-table-is-shared',
+    table !== undefined && gatesModule.TASK_TRANSITIONS === table,
+    table === undefined ? 'state.TASK_TRANSITIONS is missing' : 'quality-gates must re-export the same object',
+  )
+  check(
+    'tdd.state.transition-table-covers-every-status',
+    table !== undefined
+      && Object.keys(table).length === statuses.length
+      && statuses.every((status) => Array.isArray(table[status]))
+      && statuses.every((status) => (
+        table[status].length === expected[status].length
+        && expected[status].every((next) => table[status].includes(next))
+      ))
+      && statuses.every((status) => expected[status].every((next) => (
+        stateModule.transitionError(status, next) === undefined
+      )))
+      && statuses.every((status) => statuses
+        .filter((next) => next !== status && !expected[status].includes(next))
+        .every((next) => stateModule.transitionError(status, next) !== undefined)),
+    table === undefined ? 'no table' : JSON.stringify(table),
+  )
+  check(
+    'tdd.state.completion-gate-uses-the-shared-transition-table',
+    requireFn(api.evaluateQualityCompletion, 'evaluateQualityCompletion')(
+      task({ kind: 'work', status: 'pending' }),
+      { status: 'in_progress' },
+    )?.ok === false,
+  )
+}
+
 if (failures > 0) {
   console.error(`quality-gates TDD failed: ${failures} check(s)`)
   process.exitCode = 1

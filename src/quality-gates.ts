@@ -21,6 +21,14 @@ import {
   type TeamState,
   type TeamTask,
 } from './types.ts'
+// The task-status machine has exactly one owner: `state.ts`. Reading the same
+// binding here (instead of keeping a second copy) is what keeps the completion
+// gate and `transitionError` from drifting apart when a status is added. This
+// matches the existing `state.ts` ↔ `quality-gates.ts` import cycle, and the
+// binding is only read inside functions: a module-scope copy would hit the
+// binding before `state.ts` finished initializing it.
+import { TASK_TRANSITIONS } from './state.ts'
+export { TASK_TRANSITIONS }
 
 const QUALITY_KINDS: readonly TaskKind[] = [
   'requirements',
@@ -444,15 +452,6 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
   }
 }
 
-const STATUS_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
-  pending: ['claimed', 'cancelled'],
-  claimed: ['in_progress', 'failed', 'cancelled'],
-  in_progress: ['completed', 'failed', 'cancelled'],
-  completed: [],
-  failed: [],
-  cancelled: [],
-}
-
 function openHighFindings(findings: readonly ReviewFinding[] | undefined): ReviewFinding[] {
   return (findings ?? []).filter((finding) => (
     finding.resolved !== true && (finding.severity === 'high' || finding.severity === 'blocker')
@@ -483,7 +482,7 @@ export function evaluateQualityCompletion(
 ): QualityCompletionResult {
   const nextStatus = update.status
   if (nextStatus !== undefined && nextStatus !== task.status) {
-    if (!STATUS_TRANSITIONS[task.status].includes(nextStatus)) {
+    if (!TASK_TRANSITIONS[task.status].includes(nextStatus)) {
       return { ok: false, error: `task status cannot move from "${task.status}" to "${nextStatus}"` }
     }
   }
