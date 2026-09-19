@@ -148,12 +148,15 @@ function team(partial = {}) {
     ],
     tasks: [],
     taskSeq: 0,
+    // `requiredReviewers` is deliberately absent here: since WP6.4/S12 the field is
+    // enforced, so a default list of three roles that no fixture team staffs would
+    // make every unrelated Delivery check fail for a reason it does not model. The
+    // group Q checks below set the policy explicitly.
     reviewPolicy: {
       requirementsMinRounds: 1,
       requirementsMaxRounds: 4,
       codeMaxRounds: 3,
       maxRepairAttempts: 2,
-      requiredReviewers: ['correctness', 'security', 'scope'],
     },
     ...partial,
   }
@@ -2149,6 +2152,92 @@ console.log('quality-gates TDD — P. known deltas (WP6.3)')
       && api.isKnownDelta?.({ id: 'x', check: '', expected: 'y', reason: 'z', pinnedBy: 'captain', at: 1 }) === false
       && api.isKnownDelta?.({ id: 'x', check: 'c', expected: 'y', reason: 'z', pinnedBy: '', at: 1 }) === false
       && api.isTeamTask?.({ id: 't1', subject: 'x', status: 'pending', dependencies: [], createdAt: 0, updatedAt: 0 }) === true,
+  )
+}
+
+console.log('quality-gates TDD — Q. required reviewers (WP6.4)')
+
+{
+  // Planning section 6.4: `requiredReviewers` existed in the schema and in the docs
+  // but nothing enforced it, so a profile could ask for a security review by role
+  // and get delivery from a single correctness pass.
+  const contract = implContract()
+  const shipped = {
+    id: 'impl',
+    subject: 'ship it',
+    status: 'completed',
+    dependencies: [],
+    createdAt: now(),
+    updatedAt: now(),
+    assignee: 'implementer',
+    ...contract,
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: contract.acceptance.map((criterion) => ({ criterion, status: 'passed' })),
+    commandsRun: contract.verify.map((command) => ({ command, status: 'passed' })),
+  }
+  const passedReview = (id, assignee) => ({
+    id,
+    subject: `review ${id}`,
+    kind: 'review',
+    status: 'completed',
+    verdict: 'pass',
+    reviewedTaskId: 'impl',
+    dependencies: [],
+    createdAt: now(),
+    updatedAt: now(),
+    assignee,
+    objective: 'review',
+    acceptance: ['no high findings'],
+  })
+  const policy = (requiredReviewers) => ({
+    requirementsMinRounds: 1,
+    requirementsMaxRounds: 4,
+    codeMaxRounds: 3,
+    maxRepairAttempts: 2,
+    ...requiredReviewers === undefined ? {} : { requiredReviewers },
+  })
+  const staffed = team({
+    tasks: [shipped, passedReview('r1', 'reviewer')],
+    taskSeq: 2,
+    reviewPolicy: policy(['correctness']),
+  })
+  check(
+    'tdd.reviewers.required-role-must-pass',
+    api.canDeclareDelivery?.(staffed)?.ok === true,
+    JSON.stringify(api.canDeclareDelivery?.(staffed)?.blockers),
+  )
+  const shortStaffed = { ...staffed, reviewPolicy: policy(['correctness', 'security']) }
+  const shortVerdict = api.canDeclareDelivery?.(shortStaffed)
+  check(
+    'tdd.reviewers.missing-role-blocks-delivery',
+    shortVerdict?.ok === false
+      && (shortVerdict.blockers ?? []).some((blocker) => blocker.includes('security')),
+    JSON.stringify(shortVerdict?.blockers),
+  )
+  const captainReviewed = team({
+    tasks: [shipped, passedReview('r1', 'captain')],
+    taskSeq: 2,
+    reviewPolicy: policy(['security']),
+  })
+  check(
+    'tdd.reviewers.captain-review-does-not-satisfy-a-role',
+    api.canDeclareDelivery?.(captainReviewed)?.ok === false,
+    JSON.stringify(api.canDeclareDelivery?.(captainReviewed)?.blockers),
+  )
+  const namedReviewer = team({
+    tasks: [shipped, passedReview('r1', 'reviewer')],
+    taskSeq: 2,
+    reviewPolicy: policy(['reviewer']),
+  })
+  check(
+    'tdd.reviewers.member-name-satisfies-the-list',
+    api.canDeclareDelivery?.(namedReviewer)?.ok === true,
+  )
+  const noPolicy = team({ tasks: [shipped, passedReview('r1', 'reviewer')], taskSeq: 2, reviewPolicy: policy(undefined) })
+  check(
+    'tdd.reviewers.absent-list-keeps-delivery-open',
+    api.canDeclareDelivery?.(noPolicy)?.ok === true
+      && api.canDeclareDelivery?.({ ...noPolicy, reviewPolicy: undefined })?.ok === true,
   )
 }
 

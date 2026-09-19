@@ -51,9 +51,9 @@ unchanged, and no existing assertion was weakened.
 | **Replace a lane that will not finish** | `agent_teams_supersede_task` swaps a red or abandoned task for an existing one or one created in the same call, redirects non-terminal dependents and reviews, revokes the old capability, and records `supersededBy`; a dependency on the replaced task is satisfied by its replacement, recursively. The panel draws it in its own grey tone. | `src/tools.ts`, `src/state.ts`, `src/quality-gates.ts` |
 | **Honest scope reports** | A completion that lists a path outside `inScope` is no longer refused: the task is held in `awaiting_scope_review` with its evidence, and the captain either accepts the paths (`agent_teams_accept_paths`, additive, also post-hoc on a completed task until a review freezes it) or reassigns/supersedes. A profile may declare `taskPlanning.sharedInScope` — paths every implementation/repair lane inherits and the overlap check ignores. | `src/quality-gates.ts`, `src/tools.ts`, `src/profiles.ts` |
 | **Known deltas** | `agent_teams_pin_delta` registers a check that is red here for a reason outside the lane; a `waived` result for that check then gets its evidence filled in as `pinned delta <id>: <reason>` instead of every lane inventing one. One entry per check, removable with `unpin_delta`, printed in the `agent_teams_status` report. | `src/quality-gates.ts`, `src/tools.ts` |
+| **Required reviewers enforced** | `reviewPolicy.requiredReviewers` now gates Delivery: every listed role alias or member name needs a completed review with `verdict=pass` from that reviewer, so a profile asking for a security review can no longer clear on a single correctness pass. A review the captain owns satisfies nobody, and an absent list changes nothing. | `src/quality-gates.ts` |
 
-Remaining plan work is tracked locally and lands in later releases:
-`requiredReviewers` enforcement (0.1.23), mandatory `team_id`
+Remaining plan work is tracked locally and lands in later releases: mandatory `team_id`
 addressing (0.1.24), plan progress and the task checklist (0.2.0), and live-team
 replanning (0.2.0).
 

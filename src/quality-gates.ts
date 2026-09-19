@@ -1396,6 +1396,26 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
     }
   }
 
+  // WP6.4: `reviewPolicy.requiredReviewers` is enforced, not decorative. Each entry
+  // names a reviewer the profile insists on — a role alias (matched against the
+  // reviewer member's role, case-insensitively, as a substring so
+  // "correctness" matches "correctness-reviewer") or a member name. A review the
+  // captain owns satisfies nobody: it is not an independent role.
+  for (const required of team.reviewPolicy?.requiredReviewers ?? []) {
+    const needle = required.trim().toLowerCase()
+    if (needle === '') continue
+    const satisfied = reviews.some((review) => {
+      if (review.status !== 'completed' || review.verdict !== 'pass') return false
+      const assignee = (review.assignee ?? '').trim().toLowerCase()
+      if (assignee === needle) return true
+      const reviewer = team.members.find((candidate) => candidate.name === review.assignee)
+      return reviewer !== undefined && (reviewer.role ?? '').trim().toLowerCase().includes(needle)
+    })
+    if (!satisfied) {
+      blockers.push(`no passing review from the required reviewer "${required}" (reviewPolicy.requiredReviewers)`)
+    }
+  }
+
   // Only work that actually landed can have an unaudited path. A `cancelled`
   // (and, from WP3, `superseded`) task keeps whatever `changedPaths` it had
   // reported, and feedback §6.2 was that the captain had to scrub those by hand

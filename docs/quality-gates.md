@@ -436,6 +436,21 @@ Configuration validation:
 - `requiredReviewers` may only contain known role aliases or member names.
 - Unknown fields keep being rejected by the existing profile allowlist.
 
+**`requiredReviewers` is enforced (v0.1.22, WP6.4).** The list used to be schema- and
+docs-only: a profile could demand a security review by role and Delivery would still clear
+on a single correctness pass. `canDeclareDelivery` now requires, for **every** entry, at
+least one `review` task that is `completed` with `verdict=pass` whose reviewer matches:
+
+- the member **name** equal to the entry (case-insensitive), or
+- the reviewer member's **role** containing the entry as a substring, so
+  `correctness` matches a member whose role is `correctness-reviewer`.
+
+A review the captain owns satisfies nobody: the captain is not an independent role. The
+blocker reads
+`no passing review from the required reviewer "<entry>" (reviewPolicy.requiredReviewers)`.
+An absent or empty list keeps Delivery open exactly as before, so no existing team is
+retroactively blocked.
+
 ### 5.4 Persistence validation
 
 `isTeamTask()` / `isTeamState()` must accept and validate the new optional fields:

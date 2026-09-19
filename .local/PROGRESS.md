@@ -78,7 +78,7 @@ the pre-step count, and FAIL must stay 0.
 | S09 | WP3 superseded + atomic dependency redirect | done | | verify 232 PASS/0 FAIL; qg-tdd 115 PASS/0 FAIL; lifecycle +6 checks; stress +3 checks |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
 | S11 | WP6.3 known-delta registry | done | | verify 237 PASS/0 FAIL; qg-tdd 126 PASS/0 FAIL; lifecycle +5 checks |
-| S12 | WP6.4 requiredReviewers enforced | todo | | |
+| S12 | WP6.4 requiredReviewers enforced | done | | verify 237 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; fixture default list removed (see log) |
 | S13 | docs + release 0.1.23 | todo | | 0.1.22 was taken by the F4 hotfix |
 | S14 | WP11 phase 1 team_id addressing | todo | | needs S09; D5: team_id mandatory except create and bare status; D6 minimal guard |
 | S15 | docs + release 0.1.24 | todo | | 0.1.23 was taken by the F4 hotfix |
@@ -172,6 +172,43 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S12 — WP6.4: `requiredReviewers` is enforced (done)
+
+Scope (plan §6.4, the plan's recommendation: enforce rather than delete):
+`canDeclareDelivery` requires a passing review from every entry of
+`reviewPolicy.requiredReviewers`.
+
+- **Rule:** for each entry, at least one `review` task that is `completed` with
+  `verdict=pass` whose reviewer matches. Matching follows the spec sentence
+  ("known role aliases or member names"): the member **name** equals the entry
+  case-insensitively, or the reviewer member's **role** contains the entry as a
+  substring (`correctness` matches `correctness-reviewer`). A review the captain
+  owns satisfies nobody — the captain is not an independent role. The blocker is
+  `no passing review from the required reviewer "<entry>" (reviewPolicy.requiredReviewers)`.
+  An absent or empty list keeps Delivery open, so no existing team is retroactively
+  blocked.
+- **RED first:** two of the five new group-Q labels failed (`missing-role-blocks-delivery`
+  returned no blockers at all; the captain-owned review counted as a role).
+- **GREEN:** `quality-gates-tdd` 132 PASS / 0 FAIL; `verify.mjs` 238 PASS / 0 FAIL;
+  all 21 suites exit 0.
+- **Fixture change, recorded because it touches shared test setup:** the shared
+  `team()` helper in the tdd suite carried an inert
+  `reviewPolicy.requiredReviewers: ['correctness', 'security', 'scope']` while no
+  fixture team staffs a security or scope reviewer. Once the field became live, every
+  unrelated Delivery check (dead tasks, waivers, supersession) would have failed for
+  a policy it never modelled. The default list was removed — the assertions were not
+  touched — and group Q sets the policy explicitly for each case it makes a claim
+  about. No existing assertion was weakened: nothing asserted that list's effect,
+  because nothing enforced it.
+- **Build trap (second occurrence of the S11 lesson):** the first build after the
+  rule change failed on `reviewer.role` being optional (`TS18048`) while the old
+  `lib/` was already deleted, and the tdd suite reported green against the
+  partially-emitted tree. Fixed the type narrowing, rebuilt to exit 0, and only then
+  trusted the suite.
+- **Docs:** `docs/quality-gates.md` §5.3 documents the enforcement and the matching
+  rule; `docs/usage.md` states it next to the profile example; README gained the
+  capability row and dropped the field from "remaining plan work".
 
 ### S11 — WP6.3: the known-delta registry (done)
 
