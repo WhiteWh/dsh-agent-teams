@@ -9,6 +9,7 @@ import {
   REVIEW_VERDICTS,
   TASK_KINDS,
   TERMINAL_TASK_STATUSES,
+  type AcceptanceCriterion,
   type AcceptanceResult,
   type CommandResult,
   type FindingSeverity,
@@ -20,6 +21,7 @@ import {
   type TaskStatus,
   type TeamState,
   type TeamTask,
+  type WaiverConfirmation,
 } from './types.ts'
 // The task-status machine has exactly one owner: `state.ts`. Reading the same
 // binding here (instead of keeping a second copy) is what keeps the completion
@@ -63,7 +65,8 @@ export interface CreateTaskInput {
   objective?: string
   inScope?: string[]
   outOfScope?: string[]
-  acceptance?: string[]
+  /** A plain criterion, or a `{text, mode: 'no_regression', baseline?}` object. */
+  acceptance?: (string | AcceptanceCriterion)[]
   verify?: string[]
   deliverables?: string[]
   nonGoals?: string[]
@@ -115,7 +118,7 @@ export interface PlannedFollowUpTask {
   objective?: string
   inScope?: string[]
   outOfScope?: string[]
-  acceptance?: string[]
+  acceptance?: (string | AcceptanceCriterion)[]
   verify?: string[]
   sourceTaskId?: string
   sourceFindingIds?: string[]
@@ -214,7 +217,8 @@ export function isReviewPolicy(value: unknown): value is ReviewPolicy {
     if (!Array.isArray(value['requiredReviewers'])) return false
     if (!value['requiredReviewers'].every((item) => typeof item === 'string' && item.trim() !== '')) return false
   }
-  const allowed = new Set([...numbers, 'requiredReviewers'])
+  if (value['allowWaivers'] !== undefined && typeof value['allowWaivers'] !== 'boolean') return false
+  const allowed = new Set([...numbers, 'requiredReviewers', 'allowWaivers'])
   return Object.keys(value).every((key) => allowed.has(key))
 }
 
@@ -321,6 +325,11 @@ function nonemptyStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length > 0 && value.every(nonemptyString)
 }
 
+/** A non-empty list of well-formed acceptance criteria (string or object form). */
+function isAcceptanceCriterionList(value: unknown): value is (string | AcceptanceCriterion)[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isAcceptanceCriterion)
+}
+
 function dependencyClosureContains(
   tasks: readonly TeamTask[],
   dependencies: readonly string[],
@@ -386,7 +395,7 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
     if (!nonemptyString(input.objective)) {
       return { ok: false, error: `${kind} tasks require a non-empty objective` }
     }
-    if (!nonemptyStringList(input.acceptance)) {
+    if (!isAcceptanceCriterionList(input.acceptance)) {
       return { ok: false, error: `${kind} tasks require at least one acceptance criterion` }
     }
   }
@@ -483,8 +492,7 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
       ...input.objective === undefined ? {} : { objective: input.objective },
       ...input.inScope === undefined ? {} : { inScope: input.inScope },
       ...input.outOfScope === undefined ? {} : { outOfScope: input.outOfScope },
-      ...input.acceptance === undefined ? {} : { acceptance: input.acceptance },
-      ...input.verify === undefined ? {} : { verify: input.verify },
+      ...input.acceptance === undefined ? {} : { acceptance: input.acceptance },      ...input.verify === undefined ? {} : { verify: input.verify },
       ...input.deliverables === undefined ? {} : { deliverables: input.deliverables },
       ...input.nonGoals === undefined ? {} : { nonGoals: input.nonGoals },
       ...input.reviewedTaskId === undefined ? {} : { reviewedTaskId: input.reviewedTaskId },
@@ -501,27 +509,123 @@ function openHighFindings(findings: readonly ReviewFinding[] | undefined): Revie
   ))
 }
 
-function acceptanceCovered(required: readonly string[] | undefined, results: readonly AcceptanceResult[] | undefined): boolean {
-  if (results === undefined) return false
-  const byCriterion = new Map(results.map((item) => [item.criterion, item]))
-  if ((required ?? []).every((criterion) => byCriterion.get(criterion)?.status === 'passed')) return true
-  // Structured result arrays naturally preserve the contract order. Accept a
-  // same-length all-pass report even when a model paraphrases punctuation or
-  // whitespace in `criterion`; verification evidence remains independently
-  // required below. This avoids turning display text into an opaque id.
-  return results.length === (required ?? []).length && results.every((item) => item.status === 'passed')
+/** The display text of one acceptance criterion, whichever shape it has. */
+export function acceptanceCriterionText(criterion: string | AcceptanceCriterion): string {
+  return typeof criterion === 'string' ? criterion : criterion.text
 }
 
-function verifyCovered(required: readonly string[] | undefined, results: readonly CommandResult[] | undefined): boolean {
-  if (results === undefined) return false
-  const byCommand = new Map(results.map((item) => [item.command, item]))
-  if ((required ?? []).every((command) => byCommand.get(command)?.status === 'passed')) return true
-  return results.length === (required ?? []).length && results.every((item) => item.status === 'passed')
+/** Whether one acceptance criterion demands a baseline comparison. */
+function isNoRegression(criterion: string | AcceptanceCriterion): boolean {
+  return typeof criterion !== 'string' && criterion.mode === 'no_regression'
+}
+
+/**
+ * Criterion / command text normalization for gate matching.
+ *
+ * The contract text is display text, not an opaque id, so a model that re-types
+ * it must not fail on punctuation alone: surrounding whitespace is trimmed,
+ * internal whitespace runs collapse to one space, and trailing punctuation is
+ * dropped. It is deliberately NOT a semantic comparison — the removed
+ * length-parity fallback accepted any same-length all-pass report, which let a
+ * report about entirely different criteria satisfy the contract.
+ */
+function normalizeCriterionText(value: string): string {
+  return value
+    .normalize('NFC')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/[.。,，;；:：!！?？]+$/u, '')
+    .trim()
+}
+
+/** A waiver is only honest with a stated reason; `no_regression` needs a baseline. */
+function resultCovered(status: string | undefined, evidence: string | undefined, needsBaseline: boolean): boolean {
+  if (status === 'passed') return !needsBaseline || nonemptyString(evidence)
+  if (status === 'waived') return nonemptyString(evidence)
+  return false
+}
+
+/**
+ * Whether one report covers every required acceptance criterion.
+ *
+ * A criterion counts when its matching result is `passed` (with the baseline
+ * named for a `no_regression` criterion) or `waived` with a non-empty evidence
+ * string. Matching is by normalized text — see {@link normalizeCriterionText}.
+ *
+ * @param required - the task's acceptance criteria.
+ * @param results - the submitted results.
+ * @param allowWaivers - false makes every waiver an ordinary failure.
+ * @returns the uncovered criterion texts, empty when everything is covered.
+ */
+export function uncoveredAcceptance(
+  required: readonly (string | AcceptanceCriterion)[] | undefined,
+  results: readonly AcceptanceResult[] | undefined,
+  allowWaivers = true,
+): string[] {
+  if (results === undefined) return (required ?? []).map(acceptanceCriterionText)
+  const byCriterion = new Map<string, AcceptanceResult>()
+  for (const item of results) byCriterion.set(normalizeCriterionText(item.criterion), item)
+  return (required ?? [])
+    .filter((criterion) => {
+      const match = byCriterion.get(normalizeCriterionText(acceptanceCriterionText(criterion)))
+      const status = match?.status === 'waived' && !allowWaivers ? 'failed' : match?.status
+      return !resultCovered(status, match?.evidence, isNoRegression(criterion))
+    })
+    .map(acceptanceCriterionText)
+}
+
+/** Whether one report covers every required verify command (same rules). */
+export function uncoveredCommands(
+  required: readonly string[] | undefined,
+  results: readonly CommandResult[] | undefined,
+  allowWaivers = true,
+): string[] {
+  if (results === undefined) return [...(required ?? [])]
+  const byCommand = new Map<string, CommandResult>()
+  for (const item of results) byCommand.set(normalizeCriterionText(item.command), item)
+  return (required ?? []).filter((command) => {
+    const match = byCommand.get(normalizeCriterionText(command))
+    const status = match?.status === 'waived' && !allowWaivers ? 'failed' : match?.status
+    return !resultCovered(status, match?.evidence, false)
+  })
+}
+
+/** Whether a submitted result reports at least one waiver. */
+export function reportsWaiver(results: readonly { status: string }[] | undefined): boolean {
+  return results?.some((item) => item.status === 'waived') === true
+}
+
+/** Whether one task's own latest report contains waivers. */
+export function taskHasWaivers(task: TeamTask): boolean {
+  return task.hasWaivers === true
+    || reportsWaiver(task.acceptanceResults)
+    || reportsWaiver(task.commandsRun)
+}
+
+/** Whether a review task has confirmed the waivers of the task it judged. */
+export function waiversConfirmed(team: TeamState, task: TeamTask): boolean {
+  if (!taskHasWaivers(task)) return true
+  return team.tasks.some((candidate) => (
+    taskKindOf(candidate) === 'review'
+    && candidate.reviewedTaskId === task.id
+    && candidate.status === 'completed'
+    && candidate.verdict === 'pass'
+    && nonemptyString(candidate.waiverConfirmation?.reason)
+    && (candidate.waiverConfirmation?.taskId ?? task.id) === task.id
+  ))
+}
+
+/** The ids of every task whose waivers still need a reviewer's confirmation. */
+export function unconfirmedWaivers(team: TeamState): string[] {
+  return team.tasks
+    .filter((task) => taskHasWaivers(task) && !waiversConfirmed(team, task))
+    .map((task) => task.id)
 }
 
 export function evaluateQualityCompletion(
   task: TeamTask,
   update: QualityCompletionUpdate,
+  allowWaivers = true,
 ): QualityCompletionResult {
   const nextStatus = update.status
   if (nextStatus !== undefined && nextStatus !== task.status) {
@@ -560,11 +664,23 @@ export function evaluateQualityCompletion(
     }
     if (nextStatus !== 'completed') return { ok: true }
     const acceptanceResults = update.acceptanceResults ?? task.acceptanceResults
-    if (acceptanceResults === undefined || !acceptanceCovered(task.acceptance, acceptanceResults)) {
-      return { ok: false, error: `${kind} completion requires passed acceptanceResults for every acceptance item` }
+    const uncovered = uncoveredAcceptance(task.acceptance, acceptanceResults, allowWaivers)
+    if (acceptanceResults === undefined || uncovered.length > 0) {
+      return {
+        ok: false,
+        error: uncovered.length === 0
+          ? `${kind} completion requires passed acceptanceResults for every acceptance item`
+          : `${kind} completion requires a passed or waived acceptanceResult for every acceptance item; not covered: ${uncovered.join('; ')}`,
+      }
     }
-    if (commands === undefined || !verifyCovered(task.verify, commands)) {
-      return { ok: false, error: `${kind} completion requires a passed commandsRun entry for every verify command` }
+    const uncoveredVerify = uncoveredCommands(task.verify, commands, allowWaivers)
+    if (commands === undefined || uncoveredVerify.length > 0) {
+      return {
+        ok: false,
+        error: uncoveredVerify.length === 0
+          ? `${kind} completion requires a passed commandsRun entry for every verify command`
+          : `${kind} completion requires a passed or waived commandsRun entry for every verify command; not covered: ${uncoveredVerify.join('; ')}`,
+      }
     }
     if (kind === 'implementation' || kind === 'repair') {
       const changed = update.changedPaths ?? task.changedPaths
@@ -940,6 +1056,12 @@ export function canDeclareDelivery(team: TeamState): DeliveryResult {
     }
   }
 
+  // A waiver is a claim the worker could not verify; the captain's reviewer has
+  // to accept that claim before the team may report delivery (Q1).
+  for (const id of unconfirmedWaivers(team)) {
+    blockers.push(`${id} has unconfirmed waivers`)
+  }
+
   return { ok: blockers.length === 0, blockers }
 }
 
@@ -974,15 +1096,41 @@ export function isReviewFinding(value: unknown): value is ReviewFinding {
 
 export function isAcceptanceResult(value: unknown): value is AcceptanceResult {
   if (!isRecord(value)) return false
+  const status = value['status']
+  if (status !== 'passed' && status !== 'failed' && status !== 'waived') return false
+  // A waiver is a claim that the criterion could not be measured honestly, so
+  // it is meaningless without the stated reason.
+  if (status === 'waived' && !nonemptyString(value['evidence'])) return false
   return nonemptyString(value['criterion'])
-    && (value['status'] === 'passed' || value['status'] === 'failed')
     && (value['evidence'] === undefined || typeof value['evidence'] === 'string')
+}
+
+/** Validate one acceptance criterion: a plain string, or `{text, mode?, baseline?}`. */
+export function isAcceptanceCriterion(value: unknown): value is string | AcceptanceCriterion {
+  if (nonemptyString(value)) return true
+  if (!isRecord(value)) return false
+  if (!nonemptyString(value['text'])) return false
+  if (value['mode'] !== undefined && value['mode'] !== 'pass' && value['mode'] !== 'no_regression') return false
+  if (value['baseline'] !== undefined && typeof value['baseline'] !== 'string') return false
+  return Object.keys(value).every((key) => key === 'text' || key === 'mode' || key === 'baseline')
+}
+
+/** Validate one review waiver confirmation. */
+export function isWaiverConfirmation(value: unknown): value is WaiverConfirmation {
+  if (!isRecord(value)) return false
+  if (!nonemptyString(value['taskId']) || !nonemptyString(value['reason'])) return false
+  if (value['waived'] !== undefined) {
+    if (!Array.isArray(value['waived']) || !(value['waived'] as unknown[]).every(nonemptyString)) return false
+  }
+  return Object.keys(value).every((key) => key === 'taskId' || key === 'reason' || key === 'waived')
 }
 
 export function isCommandResult(value: unknown): value is CommandResult {
   if (!isRecord(value)) return false
+  const status = value['status']
+  if (status !== 'passed' && status !== 'failed' && status !== 'waived') return false
+  if (status === 'waived' && !nonemptyString(value['evidence'])) return false
   return nonemptyString(value['command'])
-    && (value['status'] === 'passed' || value['status'] === 'failed')
     && (value['exitCode'] === undefined || (Number.isSafeInteger(value['exitCode'])))
     && (value['evidence'] === undefined || typeof value['evidence'] === 'string')
 }
@@ -1048,11 +1196,16 @@ export function hasValidQualityTaskFields(value: Record<string, unknown>): boole
   if (value['reviewedAttempt'] !== undefined && !(Number.isSafeInteger(value['reviewedAttempt']) && (value['reviewedAttempt'] as number) >= 0)) {
     return false
   }
-  const stringLists = ['inScope', 'outOfScope', 'acceptance', 'verify', 'deliverables', 'nonGoals', 'changedPaths', 'sourceFindingIds', 'coverageOf'] as const
+  const stringLists = ['inScope', 'outOfScope', 'verify', 'deliverables', 'nonGoals', 'changedPaths', 'sourceFindingIds', 'coverageOf'] as const
   for (const key of stringLists) {
     if (value[key] === undefined) continue
     if (!Array.isArray(value[key]) || !(value[key] as unknown[]).every(nonemptyString)) return false
   }
+  if (value['acceptance'] !== undefined) {
+    if (!Array.isArray(value['acceptance']) || !(value['acceptance'] as unknown[]).every(isAcceptanceCriterion)) return false
+  }
+  if (value['hasWaivers'] !== undefined && typeof value['hasWaivers'] !== 'boolean') return false
+  if (value['waiverConfirmation'] !== undefined && !isWaiverConfirmation(value['waiverConfirmation'])) return false
   if (value['findings'] !== undefined) {
     if (!Array.isArray(value['findings']) || !value['findings'].every(isReviewFinding)) return false
     const ids = (value['findings'] as ReviewFinding[]).map((finding) => finding.id)
@@ -1095,8 +1248,17 @@ export function sanitizeReviewObjective(value: string | undefined, fallback = DE
   return value.trim()
 }
 
-export function sanitizeReviewAcceptance(values: readonly string[] | undefined): string[] {
-  const cleaned = (values ?? []).map((item) => item.trim()).filter((item) => item !== '' && !looksLikeGateTestContract(item))
+/** Accept a list that the union type allows to contain plain strings or objects. */
+function acceptanceTexts(values: readonly (string | AcceptanceCriterion)[] | undefined): string[] | undefined {
+  if (values === undefined) return undefined
+  return values.map(acceptanceCriterionText)
+}
+
+/** Normalize review acceptance criteria coming from another review contract. */
+export function sanitizeReviewAcceptance(values: readonly (string | AcceptanceCriterion)[] | undefined): string[] {
+  const cleaned = (acceptanceTexts(values) ?? [])
+    .map((item) => item.trim())
+    .filter((item) => item !== '' && !looksLikeGateTestContract(item))
   return cleaned.length > 0 ? cleaned : [...DEFAULT_REVIEW_ACCEPTANCE]
 }
 

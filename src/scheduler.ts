@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { deliverToMember } from './members.ts'
 import { isCurrentMail, mailboxPrompt } from './mailbox.ts'
 import {
+  acceptanceCriterionText,
   markMailboxDelivered,
   discardMailboxMessages,
   beginTaskAttempt,
@@ -33,7 +34,7 @@ import {
   withTeamLock,
   writeTeam,
 } from './state.ts'
-import type { TeamMember, TeamState, TeamTask } from './types.ts'
+import type { AcceptanceCriterion, TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
 export const DEPENDENCY_OUTPUT_MAX_CHARS = 2_000
@@ -86,7 +87,7 @@ export interface DispatchTicket {
   readonly objective?: string
   readonly inScope?: readonly string[]
   readonly outOfScope?: readonly string[]
-  readonly acceptance?: readonly string[]
+  readonly acceptance?: readonly (string | AcceptanceCriterion)[]
   readonly verify?: readonly string[]
   readonly reviewedTaskId?: string
 }
@@ -215,15 +216,16 @@ export function assignmentPrompt(ticket: DispatchTicket, stateDir: string, teamI
     ticket.objective === undefined || ticket.objective === '' ? '' : `Objective: ${ticket.objective}`,
     ticket.inScope === undefined || ticket.inScope.length === 0 ? '' : `In scope: ${ticket.inScope.join(', ')}`,
     ticket.outOfScope === undefined || ticket.outOfScope.length === 0 ? '' : `Out of scope: ${ticket.outOfScope.join(', ')}`,
-    ticket.acceptance === undefined || ticket.acceptance.length === 0 ? '' : `Acceptance: ${ticket.acceptance.join('; ')}`,
+    ticket.acceptance === undefined || ticket.acceptance.length === 0 ? '' : `Acceptance: ${ticket.acceptance.map(acceptanceCriterionText).join('; ')}`,
     ticket.verify === undefined || ticket.verify.length === 0 ? '' : `Verify: ${ticket.verify.join('; ')}`,
     ticket.reviewedTaskId === undefined ? '' : `Reviewed task: ${ticket.reviewedTaskId}`,
   ].filter((line) => line !== '').join('\n')
   const structuredCompletion = ['implementation', 'repair', 'verification', 'integration'].includes(kind)
     ? `
-Structured completion payload (keep these arrays in contract order):
-acceptanceResults: ${JSON.stringify((ticket.acceptance ?? []).map((criterion) => ({ criterion, status: 'passed', evidence: '<what proved it>' })))}
+Structured completion payload (keep these arrays in contract order; a criterion whose text is re-typed must still match after whitespace/punctuation normalization):
+acceptanceResults: ${JSON.stringify((ticket.acceptance ?? []).map((criterion) => ({ criterion: acceptanceCriterionText(criterion), status: 'passed', evidence: '<what proved it>' })))}
 commandsRun: ${JSON.stringify((ticket.verify ?? []).map((command) => ({ command, status: 'passed', exitCode: 0, evidence: '<observed result>' })))}
+If a criterion or command cannot honestly be measured green — it is red on HEAD for a reason outside this task, or no measurement exists — submit status "waived" with evidence that names the reason and the baseline you compared against. Never write "passed" for a measurement you did not make. A graded criterion written as {text, mode:"no_regression"} needs the baseline reference in its evidence.
 ${kind === 'implementation' || kind === 'repair' ? 'changedPaths: list the actual workspace-relative POSIX paths you changed.\n' : ''}`
     : ''
   return `AgentTeams automatic task assignment from the shared task list.

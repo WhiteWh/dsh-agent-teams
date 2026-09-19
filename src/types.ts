@@ -65,16 +65,48 @@ export interface ReviewFinding {
 /** One acceptance criterion result recorded at completion. */
 export interface AcceptanceResult {
   criterion: string
-  status: 'passed' | 'failed'
+  /**
+   * `waived` means the criterion could not be measured honestly — it is red on
+   * the baseline for a reason outside this task, or no measurement exists. It
+   * counts as covered only with a non-empty {@link AcceptanceResult.evidence}
+   * naming the reason, and the captain's reviewer has to confirm it before the
+   * team may declare delivery.
+   */
+  status: 'passed' | 'failed' | 'waived'
   evidence?: string
+}
+
+/** How one acceptance criterion is judged. */
+export type AcceptanceMode = 'pass' | 'no_regression'
+
+/**
+ * One acceptance criterion. A bare string is the `pass` mode. `no_regression`
+ * means "not worse than the named baseline", so a `passed` result has to carry
+ * the baseline reference in its evidence.
+ */
+export interface AcceptanceCriterion {
+  text: string
+  mode?: AcceptanceMode
+  baseline?: string
 }
 
 /** One verification command result recorded at completion. */
 export interface CommandResult {
   command: string
-  status: 'passed' | 'failed'
+  /** `waived` requires a non-empty {@link CommandResult.evidence}, like acceptance. */
+  status: 'passed' | 'failed' | 'waived'
   exitCode?: number
   evidence?: string
+}
+
+/** What one review confirms about the waivers of the task it judged. */
+export interface WaiverConfirmation {
+  /** Task whose waivers are being confirmed. */
+  taskId: string
+  /** Why the waivers are acceptable. */
+  reason: string
+  /** Optional machine-readable list of the waived criteria/commands. */
+  waived?: string[]
 }
 
 /** Profile / team review-loop limits. */
@@ -84,6 +116,11 @@ export interface ReviewPolicy {
   codeMaxRounds?: number
   maxRepairAttempts?: number
   requiredReviewers?: string[]
+  /**
+   * Whether a member may submit `waived` results at all. Defaults to true;
+   * `false` turns a waiver into an ordinary gate failure.
+   */
+  allowWaivers?: boolean
 }
 
 /** One captain-only contract amendment recorded on a quality task. */
@@ -136,13 +173,21 @@ export interface TeamTask {
   objective?: string
   inScope?: string[]
   outOfScope?: string[]
-  acceptance?: string[]
+  /** Acceptance criteria: a plain string, or a `{text, mode?, baseline?}` object. */
+  acceptance?: (string | AcceptanceCriterion)[]
   verify?: string[]
   deliverables?: string[]
   nonGoals?: string[]
   changedPaths?: string[]
   acceptanceResults?: AcceptanceResult[]
   commandsRun?: CommandResult[]
+  /**
+   * Set when this task's latest report contains `waived` results. Delivery is
+   * blocked until a `review` task against this task confirms them.
+   */
+  hasWaivers?: boolean
+  /** Set on a `review` task when it confirms the waivers of the task it judged. */
+  waiverConfirmation?: WaiverConfirmation
   reviewedTaskId?: string
   reviewedAttempt?: number
   /** Repair source: the implementation / previous successful artifact. */

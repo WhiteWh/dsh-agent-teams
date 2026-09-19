@@ -49,13 +49,16 @@ import {
   buildCoverageMatrix,
   canDeclareDelivery,
   describeQualityLoop,
+  reportsWaiver,
   sanitizeReviewAcceptance,
   sanitizeReviewObjective,
   normalizeBlankOptionalTaskFields,
+  taskHasWaivers,
   taskKindOf,
+  waiversConfirmed,
 } from './state.ts'
 import type { ContractAmendmentInput } from './state.ts'
-import type { AcceptanceResult, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
+import type { AcceptanceResult, CommandResult, ReviewFinding, ReviewVerdict, TaskKind, WaiverConfirmation } from './types.ts'
 import {
   deliverToMember,
   installRetiredMemberGuard,
@@ -1634,11 +1637,11 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           additionalProperties: false,
           properties: {
             criterion: { type: 'string', required: true },
-            status: { type: 'string', enum: ['passed', 'failed'], required: true },
+            status: { type: 'string', enum: ['passed', 'failed', 'waived'], required: true },
             evidence: { type: 'string' },
           },
         },
-        description: 'Acceptance evidence in contract order: {criterion, status:"passed"|"failed", evidence?}. Supply one item per acceptance criterion.',
+        description: 'Acceptance evidence in contract order: {criterion, status:"passed"|"failed"|"waived", evidence?}. Supply one item per acceptance criterion; criterion text is matched after whitespace/punctuation normalization, so state it as the task states it. "waived" means the criterion could not be measured honestly (it is red on HEAD for a reason outside this task, or no measurement exists); it requires non-empty evidence naming the reason, it flags the task so a reviewer must confirm the waiver, and reviewPolicy.allowWaivers=false forbids it entirely.',
       },
       commandsRun: {
         type: 'array',
@@ -1647,12 +1650,22 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           additionalProperties: false,
           properties: {
             command: { type: 'string', required: true },
-            status: { type: 'string', enum: ['passed', 'failed'], required: true },
+            status: { type: 'string', enum: ['passed', 'failed', 'waived'], required: true },
             exitCode: { type: 'number' },
             evidence: { type: 'string' },
           },
         },
-        description: 'Verification evidence in contract order: {command, status:"passed"|"failed", exitCode?, evidence?}. Supply one item per verify command.',
+        description: 'Verification evidence in contract order: {command, status:"passed"|"failed"|"waived", exitCode?, evidence?}. Supply one item per verify command. "waived" follows the same rule as a waived acceptance criterion: non-empty evidence, reviewer confirmation, and reviewPolicy.allowWaivers=false forbids it. A "failed" command still forces the task to fail.',
+      },
+      waiverConfirmation: {
+        type: 'object',
+        description: 'Review-only: confirm the waivers of the task this review judges (reviewedTaskId). Required before delivery when that task reported waived acceptance criteria or verify commands; a review that passes while waivers stay unconfirmed leaves delivery blocked with "<id> has unconfirmed waivers".',
+        additionalProperties: false,
+        properties: {
+          taskId: { type: 'string', required: true, description: 'The reviewed task whose waivers are being confirmed.' },
+          reason: { type: 'string', required: true, description: 'Why the waivers are acceptable.' },
+          waived: { type: 'array', items: { type: 'string' }, description: 'The waived criteria/commands being accepted.' },
+        },
       },
     },
     output: {
@@ -1718,6 +1731,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const findings = parseFindings(args.findings)
         const acceptanceResults = parseAcceptanceResults(args.acceptanceResults)
         const commandsRun = parseCommandResults(args.commandsRun)
+        const waiverConfirmation = parseWaiverConfirmation(args.waiverConfirmation)
+        if (waiverConfirmation !== undefined && taskKindOf(task) !== 'review') {
+          throw new Error('waiverConfirmation is review-only: only a kind=review task confirms the waivers of the task it judges')
+        }
+        if (waiverConfirmation !== undefined && task.reviewedTaskId !== waiverConfirmation.taskId) {
+          throw new Error(`waiverConfirmation.taskId must be the task this review judges ("${task.reviewedTaskId ?? 'none'}"), not "${waiverConfirmation.taskId}"`)
+        }
         const gate = evaluateQualityCompletion(task, {
           status: args.status,
           output: args.output,
@@ -1726,7 +1746,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           changedPaths: input.changedPaths,
           acceptanceResults,
           commandsRun,
-        })
+        }, fresh.reviewPolicy?.allowWaivers !== false)
         if (!gate.ok) throw new Error(gate.error ?? 'update_task rejected by quality gates')
         if (args.status !== undefined) {
           const transition = transitionError(task.status, args.status)
@@ -1739,6 +1759,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (input.changedPaths !== undefined) task.changedPaths = input.changedPaths
         if (acceptanceResults !== undefined) task.acceptanceResults = acceptanceResults
         if (commandsRun !== undefined) task.commandsRun = commandsRun
+        if (waiverConfirmation !== undefined) task.waiverConfirmation = waiverConfirmation
+        // Track waived results on the task itself. The delivery gate re-derives
+        // this from the results, so a stale flag can never hide a waiver; the
+        // persisted field is what lets `status` and the panel show it.
+        if (reportsWaiver(task.acceptanceResults) || reportsWaiver(task.commandsRun)) task.hasWaivers = true
+        else delete task.hasWaivers
         task.updatedAt = Date.now()
         const followUp = (task.status === 'failed' && (task.verdict === 'needs_revision' || task.verdict === 'reject'))
           ? applyQualityFollowUp(fresh, task)
@@ -2026,6 +2052,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         ...task.round === undefined ? {} : { round: task.round },
         ...task.verdict === undefined ? {} : { verdict: task.verdict },
         findings_open: (task.findings ?? []).filter((finding) => finding.resolved !== true).length,
+        // WP1: waived acceptance criteria / commands are shown as their own
+        // count so a reader can see that a completed task was not fully
+        // verified, and whether its waivers are still unconfirmed.
+        waived: [
+          ...(task.acceptanceResults ?? []),
+          ...(task.commandsRun ?? []),
+        ].filter((item) => item.status === 'waived').length,
+        ...taskHasWaivers(task) && !waiversConfirmed(team, task) ? { waivers_unconfirmed: true } : {},
         ...task.profileSeedId === undefined ? {} : { seed_id: task.profileSeedId },
         ...task.output !== undefined ? { output: task.output } : {},
       }))
@@ -2345,13 +2379,17 @@ function parseAcceptanceResults(value: unknown): AcceptanceResult[] | undefined 
     if (typeof raw['criterion'] !== 'string' || raw['criterion'].trim() === '') {
       throw new Error(`acceptanceResults[${index}].criterion is required`)
     }
-    if (raw['status'] !== 'passed' && raw['status'] !== 'failed') {
-      throw new Error(`acceptanceResults[${index}].status must be passed or failed`)
+    if (raw['status'] !== 'passed' && raw['status'] !== 'failed' && raw['status'] !== 'waived') {
+      throw new Error(`acceptanceResults[${index}].status must be passed, failed or waived`)
+    }
+    const evidence = typeof raw['evidence'] === 'string' ? raw['evidence'] : undefined
+    if (raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
+      throw new Error(`acceptanceResults[${index}]: a waived criterion requires non-empty evidence naming the reason; a waiver without a reason is not accepted`)
     }
     return {
       criterion: raw['criterion'],
       status: raw['status'],
-      ...typeof raw['evidence'] === 'string' ? { evidence: raw['evidence'] } : {},
+      ...evidence === undefined ? {} : { evidence },
     }
   })
 }
@@ -2367,16 +2405,43 @@ function parseCommandResults(value: unknown): CommandResult[] | undefined {
     if (typeof raw['command'] !== 'string' || raw['command'].trim() === '') {
       throw new Error(`commandsRun[${index}].command is required`)
     }
-    if (raw['status'] !== 'passed' && raw['status'] !== 'failed') {
-      throw new Error(`commandsRun[${index}].status must be passed or failed`)
+    if (raw['status'] !== 'passed' && raw['status'] !== 'failed' && raw['status'] !== 'waived') {
+      throw new Error(`commandsRun[${index}].status must be passed, failed or waived`)
+    }
+    const evidence = typeof raw['evidence'] === 'string' ? raw['evidence'] : undefined
+    if (raw['status'] === 'waived' && (evidence === undefined || evidence.trim() === '')) {
+      throw new Error(`commandsRun[${index}]: a waived command requires non-empty evidence naming the reason; a waiver without a reason is not accepted`)
     }
     return {
       command: raw['command'],
       status: raw['status'],
       ...typeof raw['exitCode'] === 'number' ? { exitCode: raw['exitCode'] } : {},
-      ...typeof raw['evidence'] === 'string' ? { evidence: raw['evidence'] } : {},
+      ...evidence === undefined ? {} : { evidence },
     }
   })
+}
+
+/** Parse the review-only waiver confirmation payload. */
+function parseWaiverConfirmation(value: unknown): WaiverConfirmation | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('waiverConfirmation must be an object')
+  }
+  const raw = value as Record<string, unknown>
+  if (typeof raw['taskId'] !== 'string' || raw['taskId'].trim() === '') {
+    throw new Error('waiverConfirmation.taskId is required')
+  }
+  if (typeof raw['reason'] !== 'string' || raw['reason'].trim() === '') {
+    throw new Error('waiverConfirmation.reason is required: state why the waivers are acceptable')
+  }
+  const waived = Array.isArray(raw['waived'])
+    ? raw['waived'].filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    : undefined
+  return {
+    taskId: raw['taskId'].trim(),
+    reason: raw['reason'].trim(),
+    ...waived === undefined || waived.length === 0 ? {} : { waived },
+  }
 }
 
 export function applyQualityFollowUp(team: TeamState, closed: TeamTask): { created: TeamTask[]; escalated: boolean } {
@@ -2463,7 +2528,7 @@ function renderStatus(value: JsonValue): string {
       activity: string
       spawn_error?: string
     }[]
-    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number }[]
+    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
     member_inboxes: Record<string, { count: number; latest: string }>
@@ -2506,7 +2571,10 @@ function renderStatus(value: JsonValue): string {
       const kind = task.kind ? ` ${task.kind}` : ''
       const round = task.round === undefined ? '' : ` r${task.round}`
       const verdict = task.verdict === undefined ? '' : ` verdict ${task.verdict}`
-      return `  - ${task.id} [${task.status}]${kind}${round}${verdict} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
+      const waived = task.waived === undefined || task.waived === 0
+        ? ''
+        : ` waived ${task.waived}${task.waivers_unconfirmed === true ? ' (unconfirmed — delivery blocked until a review confirms them)' : ''}`
+      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${waived} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
     }),
     ...team.coverage === undefined || team.coverage.length === 0 ? [] : [
       'Coverage:',

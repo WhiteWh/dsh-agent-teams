@@ -17,11 +17,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   CAPTAIN_KEY,
+  acceptanceCriterionText,
   appendMailbox,
   createMessage,
   createTeamDir,
   findTeamByCaptain,
   findTeamByParticipant,
+  isAcceptanceCriterion,
   readMailbox,
   readTeam,
   removeTeamDir,
@@ -630,6 +632,112 @@ try {
   check('cold-resume keeps non-blank optional quality fields (#105)',
     recoveredQuality?.tasks.find((item) => item.id === 't1')?.reviewedTaskId === 't2')
   await removeTeamDir(stateRoot, dirtyQuality.id)
+
+  // WP1: the new optional result statuses and criterion shapes must survive
+  // team.json round trips, and an OLD team.json that lacks them must still
+  // load. `waived`, `hasWaivers`, `waiverConfirmation` and the object form of
+  // `acceptance` are all optional on read.
+  const waivedTeam = {
+    ...team,
+    id: 'waived-round-trip',
+    tasks: [
+      {
+        id: 't1',
+        subject: 'Implement the parser',
+        kind: 'implementation',
+        status: 'completed',
+        dependencies: [],
+        objective: 'Ship the parser',
+        inScope: ['src/parser.ts'],
+        acceptance: [
+          'parser accepts empty input',
+          { text: 'no new ui_smoke failure versus baseline', mode: 'no_regression', baseline: '059e5ae' },
+        ],
+        verify: ['pnpm test', 'ui_smoke'],
+        changedPaths: ['src/parser.ts'],
+        acceptanceResults: [
+          { criterion: 'parser accepts empty input', status: 'passed', evidence: 'unit test added' },
+          {
+            criterion: 'no new ui_smoke failure versus baseline',
+            status: 'waived',
+            evidence: 'ui_smoke is red on HEAD 059e5ae before this lane and identical after',
+          },
+        ],
+        commandsRun: [
+          { command: 'pnpm test', status: 'passed', exitCode: 0 },
+          { command: 'ui_smoke', status: 'waived', evidence: 'pre-existing failure at fxplayer.py:15593' },
+        ],
+        hasWaivers: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      {
+        id: 't2',
+        subject: 'Review the implementation',
+        kind: 'review',
+        status: 'completed',
+        dependencies: ['t1'],
+        verdict: 'pass',
+        reviewedTaskId: 't1',
+        waiverConfirmation: {
+          taskId: 't1',
+          reason: 'the failure is identical at baseline 059e5ae and outside this lane',
+          waived: ['no new ui_smoke failure versus baseline'],
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ],
+    taskSeq: 2,
+  }
+  await mkdir(join(stateRoot, waivedTeam.id, 'inbox'), { recursive: true })
+  await writeFile(join(stateRoot, waivedTeam.id, 'team.json'), JSON.stringify(waivedTeam, null, 2), 'utf8')
+  const recoveredWaived = await readTeam(stateRoot, waivedTeam.id)
+  const waivedTask = recoveredWaived?.tasks.find((item) => item.id === 't1')
+  check('waived acceptanceResults and commandsRun survive a team.json round trip',
+    waivedTask?.acceptanceResults?.[1]?.status === 'waived'
+      && waivedTask?.acceptanceResults?.[1]?.evidence?.includes('059e5ae')
+      && waivedTask?.commandsRun?.[1]?.status === 'waived'
+      && waivedTask?.hasWaivers === true)
+  check('a criterion object in acceptance survives a team.json round trip',
+    waivedTask?.acceptance?.[1]?.mode === 'no_regression'
+      && waivedTask?.acceptance?.[1]?.baseline === '059e5ae'
+      && waivedTask?.acceptance?.[0] === 'parser accepts empty input')
+  check('waiverConfirmation survives a team.json round trip',
+    recoveredWaived?.tasks.find((item) => item.id === 't2')?.waiverConfirmation?.taskId === 't1')
+  check('legacy string criteria still read',
+    isAcceptanceCriterion(waivedTask?.acceptance?.[0]) === true
+      && acceptanceCriterionText(waivedTask?.acceptance?.[0]) === 'parser accepts empty input')
+  await removeTeamDir(stateRoot, waivedTeam.id)
+
+  // A malformed waiver (no evidence) must not be silently repaired: the whole
+  // record is rejected, exactly like a malformed verdict.
+  const badWaiver = {
+    ...team,
+    id: 'bad-waiver',
+    tasks: [{
+      id: 't1',
+      subject: 'Implement',
+      kind: 'implementation',
+      status: 'completed',
+      dependencies: [],
+      objective: 'Ship it',
+      inScope: ['src/parser.ts'],
+      acceptance: ['parser accepts empty input'],
+      verify: ['pnpm test'],
+      acceptanceResults: [{ criterion: 'parser accepts empty input', status: 'waived' }],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }],
+    taskSeq: 1,
+  }
+  await mkdir(join(stateRoot, badWaiver.id, 'inbox'), { recursive: true })
+  await writeFile(join(stateRoot, badWaiver.id, 'team.json'), JSON.stringify(badWaiver, null, 2), 'utf8')
+  let badWaiverRejected = false
+  try { await readTeam(stateRoot, badWaiver.id) }
+  catch (error) { badWaiverRejected = /invalid AgentTeams state/.test(String(error)) }
+  check('a waiver without evidence is rejected at the durable boundary', badWaiverRejected)
+  await removeTeamDir(stateRoot, badWaiver.id)
 
   // Recovery only removes blank strings. Other malformed values must still
   // fail durable validation rather than silently erasing contract/scope data.

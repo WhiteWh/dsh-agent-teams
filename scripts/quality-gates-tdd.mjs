@@ -82,6 +82,17 @@ function loadStateApi() {
     sanitizeReviewObjective: state.sanitizeReviewObjective,
     normalizeBlankOptionalTaskFields: state.normalizeBlankOptionalTaskFields,
     describeQualityLoop: state.describeQualityLoop,
+    hasValidQualityTaskFields: state.hasValidQualityTaskFields,
+    isAcceptanceResult: state.isAcceptanceResult,
+    isAcceptanceCriterion: state.isAcceptanceCriterion,
+    isCommandResult: state.isCommandResult,
+    isWaiverConfirmation: state.isWaiverConfirmation,
+    acceptanceCriterionText: state.acceptanceCriterionText,
+    uncoveredAcceptance: state.uncoveredAcceptance,
+    uncoveredCommands: state.uncoveredCommands,
+    taskHasWaivers: state.taskHasWaivers,
+    waiversConfirmed: state.waiversConfirmed,
+    unconfirmedWaivers: state.unconfirmedWaivers,
   }
 }
 
@@ -439,16 +450,21 @@ rejectComplete('tdd.complete.claimed-still-cannot-jump-to-completed', task({ kin
 }
 
 {
+  // WP1 removed the length-parity fallback, which used to accept any same-length
+  // all-pass report regardless of what it was about. The replacement is
+  // normalization of the criterion text (trim, collapse whitespace, drop
+  // trailing punctuation) — display text stays usable without becoming a
+  // wildcard, which is what the old assertion actually tested.
   const result = api.evaluateQualityCompletion?.(task(implContract({
     acceptance: ['文档确实不含“回滚/rollback”相关章节或说明（故意遗漏）'],
     verify: ['! grep -qiE "回滚|rollback" file.md'],
   })), {
     status: 'completed',
     changedPaths: ['src/parser.ts'],
-    acceptanceResults: [{ criterion: '文档确实不含回滚或 rollback 说明', status: 'passed' }],
-    commandsRun: [{ command: 'grep reverse check', status: 'passed' }],
+    acceptanceResults: [{ criterion: '  文档确实不含“回滚/rollback”相关章节或说明（故意遗漏）。  ', status: 'passed' }],
+    commandsRun: [{ command: '! grep -qiE "回滚|rollback" file.md', status: 'passed' }],
   })
-  check('tdd.complete.ordered-evidence-tolerates-model-paraphrase', result?.ok === true)
+  check('tdd.complete.whitespace-and-punctuation-differences-tolerated', result?.ok === true, result?.ok === false ? result.error : '')
 }
 
 console.log('quality-gates TDD — C. path rules')
@@ -1401,6 +1417,221 @@ console.log('quality-gates TDD — J. transitive overlap skip (WP5)')
     'tdd.scope.no-dead-pending-new-condition',
     magicResult?.ok === false && String(magicResult.error ?? '').includes('overlaps'),
     magicResult?.ok === false ? magicResult.error : 'create was allowed through a stale bypass',
+  )
+}
+
+console.log('quality-gates TDD — K. waived acceptance / no-regression (WP1)')
+
+{
+  // The incident (feedback §2): two acceptance criteria of t5 pointed at checks
+  // that are red on HEAD for an external reason. The honest implementer refused
+  // to write "passed" against such a measurement, so the task was force-failed
+  // even though the lane's work was correct. `waived` is the third answer, and
+  // it is only honest with a non-empty evidence string.
+  const impl = task(implContract())
+
+  const waivedWithoutEvidence = api.evaluateQualityCompletion?.(impl, {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{ criterion: 'parser accepts empty input', status: 'waived' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  check(
+    'tdd.complete.waived-requires-evidence',
+    waivedWithoutEvidence?.ok === false,
+    waivedWithoutEvidence?.ok === false ? '' : 'a waiver without evidence was accepted',
+  )
+
+  const waivedCovered = api.evaluateQualityCompletion?.(impl, {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{
+      criterion: 'parser accepts empty input',
+      status: 'waived',
+      evidence: 'pre-existing failure on HEAD 059e5ae: ui_smoke -> fxplayer.py:15593; unchanged by this lane',
+    }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  check(
+    'tdd.complete.waived-counts-as-covered',
+    waivedCovered?.ok === true,
+    waivedCovered?.ok === false ? waivedCovered.error : '',
+  )
+
+  // no_regression needs a baseline reference in the evidence: "identical to
+  // baseline" is the claim, so the baseline has to be named.
+  const regression = task(implContract({
+    acceptance: [{ text: 'no new ui_smoke failure versus baseline', mode: 'no_regression' }],
+  }))
+  const withoutBaseline = api.evaluateQualityCompletion?.(regression, {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{ criterion: 'no new ui_smoke failure versus baseline', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  const withBaseline = api.evaluateQualityCompletion?.(regression, {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{
+      criterion: 'no new ui_smoke failure versus baseline',
+      status: 'passed',
+      evidence: 'identical at baseline 059e5ae — same 1 pre-existing failure',
+    }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  check(
+    'tdd.complete.no-regression-needs-baseline',
+    withoutBaseline?.ok === false && withBaseline?.ok === true,
+    withoutBaseline?.ok === true
+      ? 'no_regression passed without a baseline'
+      : withBaseline?.ok === false ? withBaseline.error : '',
+  )
+
+  // Q1: the profile may switch the mechanism off entirely.
+  const forbidden = api.evaluateQualityCompletion?.(task(implContract()), {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{
+      criterion: 'parser accepts empty input',
+      status: 'waived',
+      evidence: 'policy forbids this, so a waiver must not count',
+    }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  }, false)
+  check(
+    'tdd.complete.waived-rejected-when-policy-forbids',
+    forbidden?.ok === false,
+    forbidden?.ok === false ? '' : 'allowWaivers=false did not reject a waiver',
+  )
+}
+
+{
+  // The length-parity fallback is removed: it accepted ANY same-length all-pass
+  // report, so a report about different criteria could satisfy the contract.
+  const impl = task(implContract())
+  const paraphrased = api.evaluateQualityCompletion?.(impl, {
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [{ criterion: 'a completely different claim', status: 'passed' }],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  check(
+    'tdd.complete.paraphrased-criterion-rejected',
+    paraphrased?.ok === false,
+    paraphrased?.ok === false ? '' : 'an unrelated criterion satisfied the contract',
+  )
+
+  // Normalization (trim, collapsed whitespace, no trailing punctuation) still
+  // accepts the same criterion written slightly differently — display text must
+  // not become an opaque id.
+  const normalized = api.evaluateQualityCompletion?.(
+    task(implContract({ acceptance: ['文档确实不含“回滚/rollback”相关章节或说明（故意遗漏）'] })),
+    {
+      status: 'completed',
+      changedPaths: ['src/parser.ts'],
+      acceptanceResults: [{ criterion: '  文档确实不含“回滚/rollback”相关章节或说明（故意遗漏） ', status: 'passed' }],
+      commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+    },
+  )
+  check(
+    'tdd.complete.normalized-criterion-text-accepted',
+    normalized?.ok === true,
+    normalized?.ok === false ? normalized.error : '',
+  )
+
+  // A missing criterion has to be named so the member can fix the report
+  // instead of guessing which item the gate wanted.
+  const missing = api.evaluateQualityCompletion?.(
+    task(implContract({ acceptance: ['first claim', 'second claim'] })),
+    {
+      status: 'completed',
+      changedPaths: ['src/parser.ts'],
+      acceptanceResults: [{ criterion: 'first claim', status: 'passed' }],
+      commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+    },
+  )
+  check(
+    'tdd.complete.missing-criterion-names-the-criterion',
+    missing?.ok === false && String(missing.error ?? '').includes('second claim'),
+    missing?.ok === false ? missing.error : '',
+  )
+}
+
+{
+  const waived = {
+    criterion: 'ui_smoke',
+    status: 'waived',
+    evidence: 'red on HEAD 059e5ae before this lane; identical after',
+  }
+  const implementation = task({
+    ...implContract(),
+    id: 't1',
+    status: 'completed',
+    changedPaths: ['src/parser.ts'],
+    acceptanceResults: [waived],
+    commandsRun: [{ command: 'pnpm test', status: 'passed' }],
+  })
+  const unconfirmedReview = task({
+    id: 't2',
+    kind: 'review',
+    status: 'completed',
+    verdict: 'pass',
+    reviewedTaskId: 't1',
+    objective: 'Review the implementation',
+    acceptance: ['no blocker or high findings'],
+  })
+  const unconfirmed = api.canDeclareDelivery?.(team({ tasks: [implementation, unconfirmedReview], taskSeq: 2 }))
+  check(
+    'tdd.delivery.unconfirmed-waivers-block',
+    unconfirmed?.ok === false
+      && unconfirmed.blockers.some((blocker) => blocker.includes('t1') && /unconfirmed waivers/i.test(blocker)),
+    JSON.stringify(unconfirmed?.blockers),
+  )
+
+  const confirmedReview = {
+    ...unconfirmedReview,
+    waiverConfirmation: {
+      taskId: 't1',
+      reason: 'the ui_smoke failure is identical at baseline 059e5ae and outside this lane',
+      waived: ['ui_smoke'],
+    },
+  }
+  const confirmed = api.canDeclareDelivery?.(team({ tasks: [implementation, confirmedReview], taskSeq: 2 }))
+  check(
+    'tdd.delivery.confirmed-waivers-do-not-block',
+    confirmed?.ok === true,
+    JSON.stringify(confirmed?.blockers),
+  )
+
+  // Confirmation is the reviewer's own explicit claim: a review that merely
+  // passes without one leaves delivery blocked.
+  const passingWithoutConfirmation = api.canDeclareDelivery?.(team({
+    tasks: [implementation, { ...unconfirmedReview, output: 'waivers accepted, looks fine to me' }],
+    taskSeq: 2,
+  }))
+  check(
+    'tdd.delivery.a-merely-passing-review-does-not-confirm-waivers',
+    passingWithoutConfirmation?.ok === false,
+    JSON.stringify(passingWithoutConfirmation?.blockers),
+  )
+}
+
+{
+  const waivedResult = { criterion: 'ui_smoke', status: 'waived', evidence: 'identical at baseline 059e5ae' }
+  check(
+    'tdd.state.waived-result-round-trips',
+    api.hasValidQualityTaskFields?.({ acceptanceResults: [waivedResult] }) === true
+      && api.hasValidQualityTaskFields?.({ commandsRun: [{ command: 'ui_smoke', status: 'waived', evidence: 'identical at baseline' }] }) === true,
+  )
+  check(
+    'tdd.state.criterion-object-accepted',
+    api.hasValidQualityTaskFields?.({
+      acceptance: ['plain criterion', { text: 'no new failure', mode: 'no_regression', baseline: '059e5ae' }],
+    }) === true,
+  )
+  check(
+    'tdd.state.waived-without-evidence-rejected',
+    api.hasValidQualityTaskFields?.({ acceptanceResults: [{ criterion: 'ui_smoke', status: 'waived' }] }) === false,
   )
 }
 

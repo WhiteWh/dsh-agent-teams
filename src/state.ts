@@ -21,6 +21,7 @@ import { TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMess
 import { hasValidQualityTaskFields, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
+  acceptanceCriterionText,
   amendTaskContract,
   buildCoverageMatrix,
   canDeclareDelivery,
@@ -30,17 +31,27 @@ export {
   describeQualityLoop,
   evaluateQualityCompletion,
   hasValidQualityTaskFields,
+  isAcceptanceCriterion,
+  isAcceptanceResult,
+  isCommandResult,
   isQualityKind,
   isTaskRevision,
+  isWaiverConfirmation,
   normalizeBlankOptionalTaskFields,
   pathMatchesScope,
   planQualityFollowUp,
   qualityPlanningPrompt,
+  reportsWaiver,
   resumeTeamState,
   sanitizeReviewAcceptance,
   sanitizeReviewObjective,
+  taskHasWaivers,
   taskKindOf,
+  unconfirmedWaivers,
+  uncoveredAcceptance,
+  uncoveredCommands,
   validateCreateTask,
+  waiversConfirmed,
 } from './quality-gates.ts'
 export type { ContractAmendmentInput } from './quality-gates.ts'
 
