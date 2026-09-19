@@ -391,6 +391,11 @@ export interface Swimlane<T extends PhaseTask> {
  * A task is `queued` when every dependency reached `completed`, and `blocked`
  * otherwise (with the offending ids surfaced as {@link Swimlane.blockedBy}) —
  * that pair is what answers "why is the team standing still".
+ *
+ * Since v0.1.22 the panel no longer renders this projection: the owner dropped
+ * the Agents view because the member tree above carries the same information.
+ * The projection stays as tested model code (see FOLLOWUPS F5) — either a future
+ * view renders it again, or it goes together with its checks.
  */
 export function agentSwimlanes<T extends PhaseTask>(
   tasks: readonly T[],
@@ -607,8 +612,8 @@ export function agentColor(name: string): string {
   return AGENT_COLORS[Math.abs(hash) % AGENT_COLORS.length] ?? AGENT_COLORS[0]
 }
 
-/** The three read-only cuts plus the original dependency tree. */
-export type ActivityViewMode = 'tree' | 'phases' | 'agents' | 'queues'
+/** The two read-only cuts plus the original dependency tree. */
+export type ActivityViewMode = 'tree' | 'phases' | 'queues'
 
 /** Persisted per-browser choice of panel view, next to the panel geometry. */
 export const ACTIVITY_VIEW_STORAGE_KEY = 'dsh-agent-teams:activity-panel:view:v1'
@@ -636,9 +641,15 @@ export interface PhaseBoardLayout<T extends PhaseTask> {
   readonly edges: readonly PhaseEdge[]
 }
 
-/** Parse a persisted view choice, falling back to the dependency tree. */
+/**
+ * Parse a persisted view choice, falling back to the dependency tree.
+ *
+ * A stored `agents` — the swimlane view the panel no longer renders, because the
+ * member tree above already carries the same information — falls back to the
+ * tree rather than leaving the tab strip without a selected tab.
+ */
 export function parseActivityView(raw: string | null | undefined): ActivityViewMode {
-  return raw === 'phases' || raw === 'agents' || raw === 'queues' ? raw : 'tree'
+  return raw === 'phases' || raw === 'queues' ? raw : 'tree'
 }
 
 /**

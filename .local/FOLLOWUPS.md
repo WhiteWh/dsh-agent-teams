@@ -54,6 +54,21 @@ JSON-экспорт конфига, потому что у плагина нет
 смене арта (сервер уже игнорирует query: `pathname.split('/').pop()`), либо
 `no-cache` + `ETag` вместо `max-age`. Hard reload лечит только текущий браузер.
 
+### F5 · `src/client/activity-model.ts` · `agentSwimlanes` больше не рендерится
+**Найдено:** 2026-09-20, при удалении вида Agents по просьбе владельца.
+**Симптом:** проекция `agentSwimlanes` (+ тип `Swimlane`) осталась в модели и
+покрыта пятью проверками, но ни один компонент её не использует — панель теперь
+рисует только дерево, Phases и Queues. В бандл она не попадает (tree-shaking),
+так что это вопрос гигиены исходников, а не размера пакета.
+**Почему не удалено сразу:** удаление означало бы снять пять зелёных проверок в
+одном коммите с UI-правкой; владелец просил убрать раздел, а не проекцию.
+**Предлагается:** либо вернуть вид (проекция уже написана и протестирована), либо
+удалить `agentSwimlanes`/`Swimlane` и их проверки
+(`agent swimlanes keep one row per member plus an unassigned row`,
+`swimlane buckets split completed, running, queued and blocked work`,
+`swimlane marks finished work as completed`, `queue reports the blocking
+dependency by id` — часть проверок опирается на те же хелперы).
+
 ## Закрытые
 
 ### F4 · арт-маршрут кэшировался на сутки по неизменяемому URL · закрыто в 0.1.22

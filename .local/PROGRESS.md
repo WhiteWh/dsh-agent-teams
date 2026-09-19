@@ -585,6 +585,40 @@ the owner to clear a cache.
   with the real `256` pack files (`Chrome --headless=new`, 3× scale,
   `.local/tmp/preview/compact.{html,png}`) — every mark stays distinguishable at
   12 px, so the sizes are measured rather than guessed.
+- **Owner UI round 2 (same release, still before the first restart):** four
+  changes from the deployment screenshot review.
+  1. **Phases scrolled twice** — the phase titles had their own `overflow-x`
+     scroller (`.phaseColumns`) while the canvas had `.dagViewport`, so a scrolled
+     header row drifted away from its columns. One scroller now
+     (`.phaseBoardScroll`) holds a `.phaseHeaderRow` (each header at the very `x`
+     the layout gave its column) plus the canvas. Check: `phase headers and the
+     board share one scroller`.
+  2. **DAG node heads lost the symbol** (owner: unreadable next to a 9.5px id) —
+     both heads are text + the small dot again, and the role mark survives only in
+     the assignment line and the Queues rows. Check: `the dependency boards keep
+     their node heads text-only` (asserts exactly two `compactSymbol` uses).
+  3. **Agents view removed** (owner: the member tree above already carries it) —
+     `ActivityViewMode` is `tree | phases | queues`, `parseActivityView('agents')`
+     falls back to `tree`, the `AgentSwimlanes` component and the whole
+     `.swimlane*` CSS block are gone (the queue row's dot became `.queueDot`), and
+     the seven now-unused locale keys were dropped from both dictionaries. The
+     model projection `agentSwimlanes` stays and is logged as FOLLOWUPS F5, so
+     nobody has to guess whether it is dead or pending.
+     Check: `the panel offers the tree and the two surviving cuts only`.
+  4. **The members-tree portrait spans the whole block** (owner: half a column was
+     empty beside `Captain assigned`) — the assignment line moved inside the
+     member row (a `span`, since a `div` is invalid in a `button`) and the avatar
+     spans both grid rows, capped at 76px; the name keeps its width and the role
+     text yields first. Check: `the member portrait spans the whole block in the
+     members tree`. Rendered from the built stylesheet with real artwork before
+     shipping (`.local/logs/release-0.1.22/preview/members-tree.png`).
+  `verify.mjs` **226 PASS / 0 FAIL**, all 20 suites and both policy checks green.
+- **Artifact (rebuilt after the UI round):**
+  `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`, 2 238 424 bytes, SHA256
+  `ED94A24A…E7B3`; the three superseded builds (`6A6524EB…381F`, `4DF0EC6E…33C3`,
+  `5AB07C2E…38EE`) never reached a restart. The reinstall note from the previous
+  round still applies: remove before re-adding the same `file:` spec, then restore
+  the `dsh.profile.bundles` order.
 - **Artifact (rebuilt after the compact marks):**
   `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`, 2 240 640 bytes, SHA256
   `5AB07C2E…38EE`; the two superseded builds (`6A6524EB…381F` at 2 238 040 bytes,

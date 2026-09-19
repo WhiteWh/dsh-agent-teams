@@ -41,11 +41,26 @@ installed in `martty`), and the whale art the panel drew is the pack from
   was redundant beside a row that already names the role in words, so the avatar
   keeps the live action mark only and the captain avatar drops its role mark too.
 - The role symbol became the **compact** mark: 12 px in the slots where neither
-  the mascot nor a label fits — a DAG node head, the task-detail assignment line
-  and a Queues row — resolved through one `ownerSymbolUrl()` helper (a captain
-  owner gets the lead mark; an unclaimed task or an unmatched role keeps the
-  coloured dot). The collapsed panel pill shows the action symbol instead of a
-  plain dot, which is the same busy/idle meaning with a readable mark.
+  the mascot nor a label fits — the task-detail assignment line and a Queues row —
+  resolved through one `ownerSymbolUrl()` helper (a captain owner gets the lead
+  mark; an unclaimed task or an unmatched role keeps the coloured dot). The
+  collapsed panel pill shows the action symbol instead of a plain dot, which is
+  the same busy/idle meaning with a readable mark.
+- The dependency boards (Tree, Phases) keep their node heads **text-only**: a
+  12 px mark beside a 9.5 px task id was the least readable spot in the panel
+  (owner report), so the heads keep their small dot.
+- The **Phases** view scrolls as one board: its phase titles used to live in a
+  separate horizontal scroller from the node canvas, so a scrolled header row
+  drifted away from the columns it named. Headers and canvas now share one
+  scroller and each header sits at the exact `x` the layout gave its column.
+- The **Agents** view is **removed**: the member tree above already carries the
+  roster, states and per-member buckets. The panel offers the tree plus Phases and
+  Queues; a browser holding the removed preference falls back to the tree, and the
+  view's locale keys were dropped rather than left dangling.
+- In the members tree the portrait spans the **whole block** (the assignment line
+  is a row of the same element, capped at 76 px), so the icon reaches the
+  `Captain assigned` line instead of leaving half a column empty; the narrower
+  text column yields the role text first and keeps the member name.
 
 ## Verification on the release machine (Windows, Node 24.15.0, pnpm 10.33.0)
 
@@ -53,7 +68,7 @@ installed in `martty`), and the whale art the panel drew is the pack from
 | --- | --- | --- |
 | typecheck | `pnpm typecheck` | exit 0 (both programs) |
 | build + revision gate | `pnpm build` | exit 0, `artwork revision: 5a90736f927c` |
-| offline suite | `node scripts/verify.mjs` | **222 PASS / 0 FAIL** (was 214; eight net new checks) |
+| offline suite | `node scripts/verify.mjs` | **226 PASS / 0 FAIL** (was 214; twelve net new checks) |
 | quality gates | `node scripts/quality-gates-tdd.mjs` | 106 PASS / 0 FAIL |
 | behaviour suites | `fallback-tdd`, `member-failure-tdd`, `lifecycle-verify`, `stress-verify`, `harness-compat-tdd`, `stability-tdd` | all exit 0 |
 | host auth + routes | `node scripts/web-routes-verify.mjs` | exit 0 |
@@ -67,12 +82,16 @@ pack revision`, `the artwork route ignores the cache-busting query`,
 `the artwork route serves allowlisted names only`, `the corner badge draws the
 activity mark only, from the symbol pack`, `the role symbol pack stays resolvable
 for the compact slots`, `compact surfaces resolve an owner through the role
-symbol pack`, `the compact surfaces draw the symbol packs and keep a fallback`.
+symbol pack`, `the compact surfaces draw the symbol packs and keep a fallback`,
+`the dependency boards keep their node heads text-only`, `the panel offers the
+tree and the two surviving cuts only`, `the member portrait spans the whole block
+in the members tree`, `phase headers and the board share one scroller`.
 
-The compact marks were also rendered outside the host, at 3× device scale, with
-the real `256` pack files (`Chrome --headless=new`, 12/13/18 px side by side and
-a mock DAG node, queue row and collapsed pill): every role and action symbol stays
-distinguishable at 12 px, so the sizes shipped are the sizes measured.
+The compact marks were also rendered outside the host, at 2–3× device scale, with
+the real `256` pack files (`Chrome --headless=new`): all nine role and six action
+symbols stay distinguishable at 12 px, and the members-tree layout was rendered
+from the built stylesheet with the real artwork before shipping
+(`.local/logs/release-0.1.22/preview/{compact-marks,members-tree}.png`).
 
 Two existing checks were adapted rather than weakened: the badge assertions read
 the URL path without the query before matching `-symbol.png`, the
@@ -98,16 +117,16 @@ reverted, the package rebuilt, and the suite re-run green (222 PASS / 0 FAIL).
 
 | Item | Value |
 | --- | --- |
-| Artifact | `dsh-agent-teams-0.1.22.tgz`, 2 240 640 bytes |
-| SHA-256 | `5AB07C2E3DEBF0C9946479434955CCEE21AF9C82203C8461FA33304D4D0838EE` |
+| Artifact | `dsh-agent-teams-0.1.22.tgz`, 2 238 424 bytes |
+| SHA-256 | `ED94A24ACD765C46660823D39E252E7C24039727A09EC70FF21AD5331D77E7B3` |
 | Profile | `web` (`dsh plugin --profile web add --save-exact file:D:/OwlCats/AI_Tools/dsh-agent-teams-0.1.22.tgz`) |
-| Installed check | version 0.1.22, `lib/client.js`, `lib/index.js`, `lib/artwork.js`, `lib/client/artwork.js`, `lib/client/art-revision.js` byte-identical to the source build, `ART_REVISION = 5a90736f927c`, `member-engineer-v2.png` 39 838 bytes (amber pack), panel bundle carries `compactSymbol`/`ownerSymbolUrl` and no `badgeDot`, `dsh --profile web --dump-config` resolves `id: agent-teams` |
+| Installed check | version 0.1.22, `lib/client.js`, `lib/index.js`, `lib/artwork.js`, `lib/client/artwork.js`, `lib/client/art-revision.js` byte-identical to the source build, `ART_REVISION = 5a90736f927c`, `member-engineer-v2.png` 39 838 bytes (amber pack), the panel bundle carries `compactSymbol`/`ownerSymbolUrl`/`phaseBoardScroll` and no `badgeDot` or `view.agents`, `dsh --profile web --dump-config` resolves `id: agent-teams` |
 | Reinstall note | re-adding the *same* `file:` spec makes pnpm skip resolution (`Lockfile is up to date`), so the package is removed first; the `dsh.profile.bundles` order is restored afterwards to `dsh-base, dsh-web-app, @nanmicoder/dsh-agent-teams, dsh-agent-status-bar` |
 | Restart | the host loads the plugin only on restart; the browser then requests the revisioned URLs, so no cache clearing is needed |
 | Rollback | `dsh plugin --profile web add --save-exact file:D:/OwlCats/AI_Tools/dsh-agent-teams-0.1.21.tgz`, and restore `pnpm-workspace.yaml.bak-2026-09-20-pre-0.1.22` / `package.json.bak-2026-09-20-pre-0.1.22` / `pnpm-lock.yaml.bak-2026-09-20-pre-0.1.22` in the profile |
 
-The artifact was rebuilt twice before the first restart — the earlier digests
-(`6A6524EB…381F`, then `4DF0EC6E…33C3`) never ran in a host.
+The artifact was rebuilt three times before the first restart — the earlier
+digests (`6A6524EB…381F`, `4DF0EC6E…33C3`, `5AB07C2E…38EE`) never ran in a host.
 
 Publication to the registry is a separate, maintainer-approved step; this record
 covers the artifact and the profile installation only.

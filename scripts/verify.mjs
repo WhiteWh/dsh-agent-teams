@@ -480,6 +480,18 @@ check(
     && activityPanelCss.includes('.badgeSymbol'),
   'a compact surface lost its mark, or the badge fell back to a plain dot',
 )
+// A DAG node head is 9.5px type beside a 5px dot: a 12px role mark there was the
+// least readable spot in the panel (owner report), so the two node heads stay
+// text-and-dot and the marks live only in the two surfaces that can carry them
+// (the task-detail assignment line and a Queues row).
+check(
+  'the dependency boards keep their node heads text-only',
+  (activityPanelSource.match(/css\.compactSymbol/gu) ?? []).length === 2
+    && (activityPanelSource.match(/css\.dagNodeHead/gu) ?? []).length === 2
+    && (activityPanelSource.match(/css\.dagNodeDot/gu) ?? []).length === 2
+    && !/dagNodeHead[\s\S]{0,200}compactSymbol/u.test(activityPanelSource),
+  'a DAG node head still draws a symbol, or a compact surface lost its own',
+)
 // The names in this pack did not change when the art was redrawn: the whale and
 // the amber terminal are both `member-engineer-v2.png`. A browser that cached
 // the old bytes therefore kept drawing them for the whole `cache-control`
@@ -1412,8 +1424,66 @@ check(
   parseActivityView('phases') === 'phases'
     && parseActivityView('queues') === 'queues'
     && parseActivityView(null) === 'tree'
-    && parseActivityView('nonsense') === 'tree',
+    && parseActivityView('nonsense') === 'tree'
+    // The Agents view was dropped (the member tree above already carries it), so
+    // a browser that stored that choice must land on the tree, not on a tab that
+    // no longer exists.
+    && parseActivityView('agents') === 'tree',
 )
+// The panel offers the tree and two read-only cuts. The removed view must be
+// gone from the switcher, the markup, the stylesheet and the locale keys, and
+// its model projection must not be reachable from the panel.
+check(
+  'the panel offers the tree and the two surviving cuts only',
+  activityPanelSource.includes("['tree', 'phases', 'queues']")
+    && !activityPanelSource.includes('AgentSwimlanes')
+    && !activityPanelSource.includes('data-agent-swimlanes')
+    && !activityPanelSource.includes('agents.aria')
+    && !activityPanelCss.includes('.swimlane')
+    && !Object.hasOwn(agentTeamsEn, 'view.agents')
+    && !Object.hasOwn(agentTeamsZh, 'view.agents'),
+  `views in switcher: ${activityPanelSource.includes("['tree', 'phases', 'queues']") ? 'tree/phases/queues' : 'unexpected'}`,
+)
+// The members tree spends the block height on the portrait: the assignment line
+// is a row of the same button and the avatar spans both rows, so the icon is not
+// a 42px stamp with half a column empty beside it (owner report). The name also
+// keeps its width — the narrowed text column yields the role text instead.
+{
+  const rowOpen = activityPanelSource.indexOf('className={css.memberRow}')
+  const assignmentAt = activityPanelSource.indexOf('css.assignmentLine', rowOpen)
+  const rowClose = activityPanelSource.indexOf('</button>', rowOpen)
+  check(
+    'the member portrait spans the whole block in the members tree',
+    rowOpen !== -1
+      && assignmentAt > rowOpen
+      && assignmentAt < rowClose
+      && activityPanelCss.includes('grid-area: 1 / 1 / span 2 / auto')
+      && activityPanelCss.includes('grid-area: 2 / 2 / auto / span 2')
+      && activityPanelCss.includes('max-height: 76px')
+      && /\.memberRow \.memberName \{\s*flex: none;/u.test(activityPanelCss),
+    `row=${String(rowOpen)} assignment=${String(assignmentAt)} close=${String(rowClose)}`,
+  )
+}
+// The phase titles and the board are one coordinate system, so they must share
+// one scroller. Two scrollers let the header row drift away from its own columns
+// — the defect the owner hit — and the header cells have to sit at the very same
+// `x` the layout gave that column's nodes.
+{
+  const scrollAt = activityPanelSource.indexOf('css.phaseBoardScroll')
+  const headerAt = activityPanelSource.indexOf('css.phaseHeaderRow')
+  const canvasAt = activityPanelSource.indexOf('data-layout="phases"')
+  check(
+    'phase headers and the board share one scroller',
+    scrollAt !== -1
+      && scrollAt < headerAt
+      && headerAt < canvasAt
+      && activityPanelSource.includes('style={{ left: column.x, width: COMPACT_DAG_NODE_WIDTH }}')
+      && !activityPanelSource.includes('css.phaseColumns')
+      && !activityPanelCss.includes('.phaseColumns')
+      && activityPanelCss.includes('.phaseBoardScroll'),
+    `scroll=${scrollAt} header=${headerAt} canvas=${canvasAt}`,
+  )
+}
 
 const panelBounds = { width: 1440, height: 900, anchorRight: 1440 }
 const dockedPanel = resolvePanelGeometry(DEFAULT_PANEL_LAYOUT, panelBounds)

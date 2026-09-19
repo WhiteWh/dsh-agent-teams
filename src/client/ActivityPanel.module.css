@@ -540,6 +540,13 @@
   gap: 6px;
 }
 
+/* The portrait now spans the full block height, which narrows the text column;
+   the name keeps its width and the role text yields instead — the name is the
+   identity, the role is the description. */
+.memberRow .memberName {
+  flex: none;
+}
+
 .captainName,
 .memberName {
   overflow: hidden;
@@ -850,8 +857,9 @@
 
 .memberRow {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  gap: 2px 8px;
   align-items: center;
   width: 100%;
   min-width: 0;
@@ -868,6 +876,28 @@
   transition: background-color 120ms ease, transform 120ms ease;
 }
 
+/* Placement inside the member row: the portrait spans both rows (the head line
+   and the assignment line), so the block height is spent on the icon instead of
+   an empty half column next to the chips. */
+.memberRow > .memberAvatar {
+  grid-area: 1 / 1 / span 2 / auto;
+  align-self: stretch;
+  max-height: 76px;
+  justify-content: flex-start;
+}
+
+.memberRow > .memberInfo {
+  grid-area: 1 / 2;
+}
+
+.memberRow > .memberCount {
+  grid-area: 1 / 3;
+}
+
+.memberRow > .assignmentLine {
+  grid-area: 2 / 2 / auto / span 2;
+}
+
 .memberRow:hover,
 .memberRow[data-activity='working'] {
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, var(--dsw-alias-bg-layer-1));
@@ -877,9 +907,18 @@
   transform: scale(0.995);
 }
 
+/* The portrait fills its grid cell; the square mascot then takes the cell height
+   as its width, so the column is exactly as wide as the mark is tall. */
 .memberAvatar {
-  width: 42px;
-  height: 42px;
+  width: auto;
+  height: auto;
+  min-height: 48px;
+}
+
+.memberRow .memberArt {
+  width: auto;
+  height: 100%;
+  object-fit: contain;
 }
 
 .memberAvatar[data-unread='true']::after {
@@ -978,7 +1017,7 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
-  padding: 0 6px 0 60px;
+  padding: 0;
 }
 
 .assignmentLabel {
@@ -2124,17 +2163,27 @@
   gap: 6px;
 }
 
-.phaseColumns {
-  display: flex;
+/* One scroller for the phase headers and the node canvas. They are the same
+   coordinate system — each header sits at the column x its nodes use — so a
+   second scrollbar let the header row drift away from its own columns, which is
+   the defect this replaced. */
+.phaseBoardScroll {
   min-width: 0;
-  gap: 26px;
   overflow-x: auto;
+  padding-bottom: 4px;
   scrollbar-width: thin;
 }
 
+.phaseHeaderRow {
+  position: relative;
+  min-width: 100%;
+  height: 30px;
+}
+
 .phaseColumn {
+  position: absolute;
+  top: 0;
   display: flex;
-  flex: none;
   flex-direction: column;
   gap: 1px;
   padding-bottom: 3px;
@@ -2157,93 +2206,13 @@
   line-height: 13px;
 }
 
-.swimlanes {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.swimlane {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 7px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  transition: background-color 140ms ease;
-}
-
-.swimlane[data-idle='true'] {
-  opacity: 0.62;
-}
-
-.swimlane[data-unassigned='true'] {
-  border: 1px dashed var(--dsw-alias-border-l2);
-  background: transparent;
-}
-
-.swimlaneHead {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  max-width: 96px;
-}
-
-.swimlaneDot {
+/* Identity dot for the dense lists: the fallback where a member's role matched
+   no symbol, so the row still carries a stable per-member colour. */
+.queueDot {
   flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
-}
-
-.swimlaneName {
-  overflow: hidden;
-  color: var(--dsw-alias-label-primary);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.swimlaneCount {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
-  line-height: 13px;
-}
-
-.swimlaneChips {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-wrap: wrap;
-  gap: 3px;
-}
-
-.swimlaneChips .assignmentChip[data-bucket='blocked'] {
-  opacity: 0.55;
-}
-
-.swimlaneChips .assignmentChip[data-bucket='queued'] {
-  background: transparent;
-  border: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-secondary);
-}
-
-.swimlaneState {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 9px;
-  line-height: 13px;
-  white-space: nowrap;
-}
-
-.swimlaneState[data-busy='true'] {
-  color: var(--dsw-alias-state-business-primary);
 }
 
 .queueView {

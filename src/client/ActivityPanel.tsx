@@ -36,7 +36,6 @@ import {
   activityPanelShouldAutoExpand,
   agentColor,
   agentQueue,
-  agentSwimlanes,
   compactDagLayout,
   compactModelLabel,
   COMPACT_DAG_NODE_HEIGHT,
@@ -441,19 +440,7 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
                     onFocus={() => { setKeyboardTaskId(task.id) }}
                     onBlur={() => { setKeyboardTaskId(null) }}
                   >
-                    <span className={css.dagNodeHead}>
-                      {ownerSymbolUrl(task.assignee, members) !== null
-                        ? (
-                          <img
-                            className={css.compactSymbol}
-                            src={ownerSymbolUrl(task.assignee, members) ?? ''}
-                            alt=""
-                            aria-hidden
-                          />
-                        )
-                        : <span className={css.dagNodeDot} />}
-                      {task.id}
-                    </span>
+                    <span className={css.dagNodeHead}><span className={css.dagNodeDot} />{task.id}</span>
                     <span className={css.dagNodeLabel}>
                       {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
                     </span>
@@ -543,19 +530,10 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
       onMouseEnter={onHover === undefined ? undefined : () => { onHover(task.id) }}
       onMouseLeave={onHover === undefined ? undefined : () => { onHover(null) }}
     >
-      <span className={css.dagNodeHead}>
-        {ownerSymbolUrl(task.assignee, members) !== null
-          ? (
-            <img
-              className={css.compactSymbol}
-              src={ownerSymbolUrl(task.assignee, members) ?? ''}
-              alt=""
-              aria-hidden
-            />
-          )
-          : <span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />}
-        {task.id}
-      </span>
+      {/* The node head stays text: a 12px role mark next to a 9.5px id was the
+          least readable spot in the panel (owner report), and the assignment is
+          already named in the task detail line below the board. */}
+      <span className={css.dagNodeHead}><span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />{task.id}</span>
       <span className={css.dagNodeLabel}>
         {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
       </span>
@@ -581,21 +559,29 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin 
   if (tasks.length === 0) return null
   return (
     <div className={css.phaseBoardViewport} data-phase-board>
-      <div className={css.phaseColumns}>
-        {layout.columns.map((column) => {
-          const count = layout.nodes.filter((node) => node.x === column.x).length
-          const title = column.title ?? (column.phaseId === 'unphased'
-            ? t('phase.unphased')
-            : t('phase.column', { order: column.order + 1 }))
-          return (
-            <div key={column.phaseId} className={css.phaseColumn} style={{ width: COMPACT_DAG_NODE_WIDTH }} data-phase-id={column.phaseId}>
-              <span className={css.phaseColumnHead} title={title}>{title}</span>
-              <span className={css.phaseColumnCount}>{t('phase.count', { count })}</span>
-            </div>
-          )
-        })}
-      </div>
-      <div className={css.dagViewport}>
+      {/* Headers and canvas live in one scroller so the phase titles cannot
+          drift away from the columns they name; each header sits at the same
+          x the layout gave that column's nodes. */}
+      <div className={css.phaseBoardScroll} data-phase-scroll>
+        <div className={css.phaseHeaderRow} style={{ width: layout.width }}>
+          {layout.columns.map((column) => {
+            const count = layout.nodes.filter((node) => node.x === column.x).length
+            const title = column.title ?? (column.phaseId === 'unphased'
+              ? t('phase.unphased')
+              : t('phase.column', { order: column.order + 1 }))
+            return (
+              <div
+                key={column.phaseId}
+                className={css.phaseColumn}
+                style={{ left: column.x, width: COMPACT_DAG_NODE_WIDTH }}
+                data-phase-id={column.phaseId}
+              >
+                <span className={css.phaseColumnHead} title={title}>{title}</span>
+                <span className={css.phaseColumnCount}>{t('phase.count', { count })}</span>
+              </div>
+            )
+          })}
+        </div>
         <div className={css.dagCanvas} data-layout="phases" style={{ width: layout.width, height: layout.height }}>
           <svg className={css.dagEdges} width={layout.width} height={layout.height} aria-hidden>
             {layout.edges.map((edge) => (
@@ -621,66 +607,6 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin 
         </div>
       </div>
       <p className={css.viewHint}>{t('phase.autoHint')}</p>
-    </div>
-  )
-}
-
-/** Agents view: one swimlane per member, chips in execution order. */
-function AgentSwimlanes({ tasks, members, t, discarded = false }: {
-  readonly tasks: readonly ActivityTask[]
-  readonly members: readonly ActivityMember[]
-  readonly t: AgentTeamsTranslate
-  readonly discarded?: boolean
-}) {
-  const lanes = useMemo(() => agentSwimlanes(tasks, members), [tasks, members])
-  if (members.length === 0 && lanes.length === 0) return <span className={css.emptyHint}>{t('agents.empty')}</span>
-  return (
-    <div className={css.swimlanes} data-agent-swimlanes>
-      {lanes.map((lane) => {
-        const label = lane.member === undefined ? t('agents.unassigned') : lane.member.name
-        const busy = lane.running.length > 0
-        const chips = [
-          ...lane.completed.map((task) => ({ task, bucket: 'completed' as const })),
-          ...lane.running.map((task) => ({ task, bucket: 'running' as const })),
-          ...lane.queued.map((task) => ({ task, bucket: 'queued' as const })),
-          ...lane.blocked.map((task) => ({ task, bucket: 'blocked' as const })),
-        ]
-        return (
-          <div
-            key={lane.member?.id || label}
-            className={css.swimlane}
-            data-agent={label}
-            data-idle={!busy}
-            data-unassigned={lane.member === undefined}
-          >
-            <span className={css.swimlaneHead}>
-              <span className={css.swimlaneDot} style={{ background: agentColor(lane.member === undefined ? '' : label) }} />
-              <span className={css.swimlaneName}>{label}</span>
-              <span className={css.swimlaneCount}>{lane.member === undefined
-                ? t('phase.count', { count: chips.length })
-                : `${lane.member.done ?? 0}/${lane.member.total ?? 0}`}</span>
-            </span>
-            <span className={css.swimlaneChips}>
-              {chips.length === 0 && <span className={css.taskEmpty}>{t('queue.idle.noTasks')}</span>}
-              {chips.map(({ task, bucket }) => (
-                <span
-                  key={task.id}
-                  className={css.assignmentChip}
-                  data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
-                  data-bucket={bucket}
-                  data-task-model={taskModelLabel(task, members) || undefined}
-                  title={bucket === 'blocked' && lane.blockedBy.length > 0
-                    ? t('agents.blockedTooltip', { tasks: lane.blockedBy.join(t('format.listSeparator')) })
-                    : taskTitle(task, taskModelLabel(task, members))}
-                >
-                  {task.id}
-                </span>
-              ))}
-            </span>
-            <span className={css.swimlaneState} data-busy={busy}>{t(busy ? 'agents.busy' : 'agents.idle')}</span>
-          </div>
-        )
-      })}
     </div>
   )
 }
@@ -747,7 +673,7 @@ function QueueView({ tasks, members, t, discarded = false }: {
                       aria-hidden
                     />
                   )
-                  : <span className={css.swimlaneDot} style={{ background: agentColor(member.name) }} />}
+                  : <span className={css.queueDot} style={{ background: agentColor(member.name) }} />}
                 {member.name}
               </span>
               <span role="cell" className={css.queueCell} title={member.currentTask ?? ''}>
@@ -778,17 +704,15 @@ function ViewSwitcher({ view, onChange, t }: {
   readonly onChange: (view: ActivityViewMode) => void
   readonly t: AgentTeamsTranslate
 }) {
-  const modes: readonly ActivityViewMode[] = ['tree', 'phases', 'agents', 'queues']
+  const modes: readonly ActivityViewMode[] = ['tree', 'phases', 'queues']
   const labelKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
     tree: 'view.tree',
     phases: 'view.phases',
-    agents: 'view.agents',
     queues: 'view.queues',
   }
   const hintKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
     tree: 'view.tree.hint',
     phases: 'view.phases.hint',
-    agents: 'view.agents.hint',
     queues: 'view.queues.hint',
   }
   return (
@@ -843,11 +767,6 @@ function TaskViews({ tasks, members, t, discarded = false }: {
             pinnedTaskId={pinnedTaskId}
             onPin={(id) => { setPinnedTaskId((current) => current === id ? null : id) }}
           />
-        </section>
-      )}
-      {view === 'agents' && (
-        <section className={css.dependencySection} aria-label={t('agents.aria')} data-agents-section>
-          <AgentSwimlanes tasks={tasks} members={members} t={t} discarded={discarded} />
         </section>
       )}
       {view === 'queues' && (
@@ -1065,33 +984,38 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
                       : memberStatusText(member, team.tasks, t)}</span>
                   </span>
                   <span className={css.memberCount}>{member.done}/{member.total}</span>
-                </button>
-                <div className={css.assignmentLine}>
-                  <span className={css.assignmentLabel}>{t(discarded
-                    ? 'assignment.discarded'
-                    : team.phase === 'staged'
-                      ? 'assignment.staged'
-                      : 'assignment.label')}</span>
-                  <span className={css.assignmentTasks}>
-                    {owned.length === 0
-                      ? <span className={css.taskEmpty}>{t('assignment.empty')}</span>
-                      : owned.map((task) => {
-                          const model = taskModelLabel(task, team.members)
-                          const shortModel = compactModelLabel(model)
-                          return (
-                            <span
-                              key={task.id}
-                              className={css.assignmentChip}
-                              data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
-                              data-task-model={model || undefined}
-                              title={taskTitle(task, model)}
-                            >
-                              {task.state === 'running' && shortModel !== '' ? `${task.id} · ${shortModel}` : task.id}
-                            </span>
-                          )
-                        })}
+                  {/* The assignment line is a row of this button rather than a
+                      sibling of it: that is what lets the portrait span the whole
+                      block instead of leaving half a column empty (owner report).
+                      A div is not valid inside a button, so it is a span with a
+                      flex layout. */}
+                  <span className={css.assignmentLine}>
+                    <span className={css.assignmentLabel}>{t(discarded
+                      ? 'assignment.discarded'
+                      : team.phase === 'staged'
+                        ? 'assignment.staged'
+                        : 'assignment.label')}</span>
+                    <span className={css.assignmentTasks}>
+                      {owned.length === 0
+                        ? <span className={css.taskEmpty}>{t('assignment.empty')}</span>
+                        : owned.map((task) => {
+                            const model = taskModelLabel(task, team.members)
+                            const shortModel = compactModelLabel(model)
+                            return (
+                              <span
+                                key={task.id}
+                                className={css.assignmentChip}
+                                data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
+                                data-task-model={model || undefined}
+                                title={taskTitle(task, model)}
+                              >
+                                {task.state === 'running' && shortModel !== '' ? `${task.id} · ${shortModel}` : task.id}
+                              </span>
+                            )
+                          })}
+                    </span>
                   </span>
-                </div>
+                </button>
               </div>
             )
           })}
