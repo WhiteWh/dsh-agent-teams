@@ -79,7 +79,7 @@ the pre-step count, and FAIL must stay 0.
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | done | | verify 235 PASS/0 FAIL; qg-tdd 121 PASS/0 FAIL; lifecycle +3 checks (S08 check adapted to the new hold) |
 | S11 | WP6.3 known-delta registry | done | | verify 237 PASS/0 FAIL; qg-tdd 126 PASS/0 FAIL; lifecycle +5 checks |
 | S12 | WP6.4 requiredReviewers enforced | done | | verify 237 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; fixture default list removed (see log) |
-| S13 | docs + release 0.1.23 | todo | | 0.1.22 was taken by the F4 hotfix |
+| S13 | docs + release 0.1.23 | done | | version 0.1.23; notes + release record; tag v0.1.23 with the branch marker; artifact packed and installed into the web profile |
 | S14 | WP11 phase 1 team_id addressing | todo | | needs S09; D5: team_id mandatory except create and bare status; D6 minimal guard |
 | S15 | docs + release 0.1.24 | todo | | 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | todo | | needs S09; D3: server-side byKind/equal modes |
@@ -172,6 +172,33 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S13 — docs + release 0.1.23 (done)
+
+- **Release mechanics:** `package.json` 0.1.22 → 0.1.23; `release-notes/v0.1.23.md`;
+  README gained the release paragraph, the version table and the install command, and
+  dropped the shipped work packages from "remaining plan work" (only `team_id` and the
+  0.2.0 items remain); `readme-version.mjs` reports "match 0.1.23";
+  `compatibility.json` deliberately unchanged (the host matrix did not move).
+- **Release record:** `docs/releases/v0.1.23/README.md` with the per-step table, the
+  verification matrix, the new checks per suite, the artifact digest and the
+  deployment/rollback rows.
+- **Local suite (logs in `.local/logs/s13/`):** typecheck exit 0; build exit 0;
+  `verify.mjs` **237 PASS / 0 FAIL**; `quality-gates-tdd` **132 PASS / 0 FAIL**; the
+  other 19 suites and both policy checks exit 0; `readme-version`, `verify-package` and
+  `release-metadata.test.mjs` pass.
+- **Artifact:** `.local/dist/nanmicoder-dsh-agent-teams-0.1.23.tgz`, 2 257 086 bytes,
+  SHA256 `C2FD504D…68E8`; copied to `D:\OwlCats\AI_Tools\dsh-agent-teams-0.1.23.tgz` for
+  the profile install.
+- **Deployed** into `C:\Users\whitl\.dsh\profiles\web` (remove → add, then the
+  `bundles` order restored): installed version 0.1.23, `lib/{client,index,tools,
+  quality-gates,state}.js` byte-identical to this checkout, `TEAM_TOOL_NAMES` = 18 with
+  the four new tools, `dsh --profile web --dump-config` resolves `id: agent-teams`.
+  Backups: `*.bak-2026-09-20-pre-0.1.23`.
+- **Tag:** annotated `v0.1.23` with the branch marker, pushed to the fork together with
+  the branch (see the Release tags section for the rule).
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs`, and the
+  real-host matrix.
 
 ### S12 — WP6.4: `requiredReviewers` is enforced (done)
 

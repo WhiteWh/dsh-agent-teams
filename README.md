@@ -26,6 +26,8 @@ Ask in natural language. The plugin provides the team protocol, 18 coordination 
 
 ## Releases
 
+[v0.1.23](./release-notes/v0.1.23.md) is the contract-and-recovery release: the captain can amend the whole contract (or a `work` task's brief) and retry a `failed` lane, `agent_teams_supersede_task` replaces a lane that will not finish and redirects dependents and reviews atomically, an honest report of a path outside `inScope` holds the task in `awaiting_scope_review` until the captain accepts the paths with `agent_teams_accept_paths` (additive, and post-hoc on a completed task), `taskPlanning.sharedInScope` keeps sibling lanes out of a false overlap, `agent_teams_pin_delta` registers a check that is red for an outside reason so a waiver cites it instead of inventing a reason, and `reviewPolicy.requiredReviewers` is now enforced by Delivery. New statuses: `awaiting_scope_review` and `superseded`; the tool set grew to 18.
+
 [v0.1.22](./release-notes/v0.1.22.md) is a packaging fix for the activity panel artwork. The panel addresses its images by file name, and those names survived the redraw from the whale pack to the amber terminal pack — so a browser that had cached `member-engineer-v2.png` kept drawing the old whale for the whole `cache-control` lifetime, and a freshly deployed panel looked unchanged. Every artwork URL now carries a content revision (`?v=<pack revision>`) derived from the packaged bytes, and both `pnpm build` and `scripts/verify.mjs` fail when the committed revision goes stale. No state, tool signature or quality-gate rule changed.
 
 [v0.1.21](./release-notes/v0.1.21.md) makes acceptance criteria waivable: a member can report a check that is red on the baseline as `waived` with evidence instead of forcing the task to fail, and Delivery stays blocked until a review confirms the waiver. It also removes the list-length fallback that let an unrelated all-pass report satisfy a contract, makes scope-overlap serialization transitive, drops cancelled tasks from the Delivery path audit, turns a misplaced profile key into a fix ("`requiredReviewers` belongs under `reviewPolicy`"), adds `node scripts/doctor.mjs --profiles`, and gives the activity panel three read-only views over the same state: **Phases**, **Agents** and **Queues**. Recommended host: DeepSeek Harness `0.1.5-rc.1`; the three older supported host targets are retained.
@@ -98,14 +100,14 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.22`. Harness remains a prerelease.**
+**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.23`. Harness remains a prerelease.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended installation** | **`0.1.5-rc.1`** | **`0.1.22`** |
-| Retaining an older RC | `0.1.2-rc.1` | `0.1.22` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.22` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.22` |
+| **Recommended installation** | **`0.1.5-rc.1`** | **`0.1.23`** |
+| Retaining an older RC | `0.1.2-rc.1` | `0.1.23` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.23` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.23` |
 
 ### 1. Install DeepSeek Harness
 
@@ -121,12 +123,12 @@ Skip this if you already run this version. Alpha is opt-in: select an exact Alph
 Install into the `web` profile. Replace the profile name if needed:
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.22
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.23
 ```
 
 **After installation, stop and restart Harness for that profile, then refresh the browser.**
 
-The default npm `latest` tag points to `0.1.22`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.1.19/README.md).
+The default npm `latest` tag points to `0.1.23`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.1.19/README.md).
 
 > Desktop users must check the app's embedded Harness core; upgrading the global CLI does not upgrade it. For older `0.1.0-*` / `0.1.1-*` or unlisted hosts, keep a working pair and follow the [older-version and diagnostic guide](./docs/maintenance-workflow.md).
 

@@ -1,0 +1,33 @@
+AgentTeams 0.1.23 — branch agent-teams-hardening (fork release)
+
+Fork release on the `agent-teams-hardening` branch. This is not an upstream
+NanmiCoder tag: the branch carries a plan-driven hardening pass on top of
+upstream `main` (0.1.20), and its releases are shipped from here.
+
+What this release is: plan steps S08–S12 (WP2, WP3, WP4, WP6.3, WP6.4) — the
+captain's contract became editable and a red lane recoverable.
+
+- amend_task covers the whole contract plus the brief of a work task, accepts a
+  failed task, and force stales the passing verdict; the transition table
+  legalizes the failed -> pending retry reassign_task always performed.
+- superseded status, applySupersession and agent_teams_supersede_task with an
+  atomic redirect of dependents and reviews, plus recursive satisfaction through
+  supersededBy.
+- awaiting_scope_review plus agent_teams_accept_paths (additive, post-hoc) and
+  taskPlanning.sharedInScope excluded from the overlap check.
+- knownDeltas registry with pin_delta/unpin_delta and automatic waiver evidence.
+- reviewPolicy.requiredReviewers enforced by canDeclareDelivery.
+
+Tool set 14 -> 18; new statuses awaiting_scope_review and superseded; new events
+agent-teams/task-superseded and agent-teams/delta-pinned.
+
+Artifact: `dsh-agent-teams-0.1.23.tgz`, 2 257 086 bytes,
+SHA-256 C2FD504D974049977D5DAC46A8D15E9F36D9F6A6A8FE7DF440A4F78A91EC68E8.
+Local verification: scripts/verify.mjs 237 PASS / 0 FAIL, quality-gates-tdd 132
+PASS / 0 FAIL, all 21 suites and both documentation-policy checks green. The whole
+`pnpm verify` chain, the compatibility spawn test and the real-host matrix are left
+for CI.
+
+Install into a profile with:
+  dsh plugin --profile <name> add --save-exact file:<path>/dsh-agent-teams-0.1.23.tgz
+or from the registry once published as 0.1.23.

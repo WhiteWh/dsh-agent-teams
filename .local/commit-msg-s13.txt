@@ -1,0 +1,21 @@
+docs(release): 0.1.23 — amend, supersede, honest scope, known deltas (S13)
+
+Version 0.1.23 with release notes and a release record for plan steps S08-S12:
+amend_task covering the whole contract and a failed retry, the superseded status
+with an atomic dependency/review redirect, awaiting_scope_review with
+accept_paths and taskPlanning.sharedInScope, the known-delta registry, and
+requiredReviewers enforcement. Tool set 14 -> 18, new statuses
+awaiting_scope_review and superseded.
+
+README: release paragraph, version table, install command and the remaining-plan
+list (only team_id and the 0.2.0 items are left). readme-version reports
+"match 0.1.23"; compatibility.json is deliberately unchanged.
+
+Artifact: dsh-agent-teams-0.1.23.tgz, 2 257 086 bytes,
+SHA-256 C2FD504D974049977D5DAC46A8D15E9F36D9F6A6A8FE7DF440A4F78A91EC68E8,
+installed into the web profile (remove + add, bundles order restored, installed
+lib byte-identical to this checkout, 18 tools registered).
+
+Local suite: verify.mjs 237 PASS/0 FAIL, quality-gates-tdd 132 PASS/0 FAIL, all 21
+suites and both policy checks exit 0. Tagged v0.1.23 with the branch marker and
+pushed to the fork.
