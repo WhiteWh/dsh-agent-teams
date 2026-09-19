@@ -45,6 +45,17 @@ function symbolFor(artName: string): string {
 /** Captain role symbol for the corner badge (always the lead symbol). */
 export const LEAD_SYMBOL = symbolFor('team-lead-v2.png')
 
+/**
+ * Role text that means "this member is the lead".
+ *
+ * Checked against the role alone, not against `name + role`: a member may
+ * legitimately be *called* Lead while holding an ordinary role, and the symbol
+ * pack has a dedicated lead mark that such a member must not steal. The
+ * vocabulary mirrors the lead aliases used elsewhere in the plugin and keeps
+ * the CJK terms the existing role table already matches.
+ */
+const LEAD_ROLE = /lead|captain|队长|组长/u
+
 /** Status action artwork per member activity. */
 export const ACTION_ART: Record<'working' | 'idle' | 'unknown', string> = {
   working: `${ART_BASE}action-working-v2.png`,
@@ -72,6 +83,9 @@ export const ACTION_SYMBOL: Record<'working' | 'idle' | 'unknown', string> = {
  * @returns the role symbol URL, or null when unmatched.
  */
 export function memberSymbolUrl(name: string, role: string): string | null {
+  // Match case-insensitively, like the role table below: role text reaches this
+  // function as written by the captain ("Team Lead", "Captain"), never folded.
+  if (LEAD_ROLE.test(role.toLowerCase())) return LEAD_SYMBOL
   const identity = `${name} ${role}`.toLowerCase()
   for (const [pattern, art] of ROLE_ART) {
     if (pattern.test(identity)) return symbolFor(art)

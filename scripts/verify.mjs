@@ -391,6 +391,25 @@ check(
     && memberSymbolUrl('Lead', 'Team Lead') === LEAD_SYMBOL,
   `resolved symbols = ${JSON.stringify(eightRoleSymbols)}`,
 )
+// A member whose role text marks it as the lead (the captain's own row in the
+// panel, or a member explicitly created as `lead`/`captain`) must get the lead
+// symbol. The lead vocabulary has to accept the bare word too, otherwise the
+// badge silently disappears for exactly the role the pack was drawn for.
+check(
+  'a lead-role member resolves to the lead symbol',
+  memberSymbolUrl('Lead', 'Team Lead') === LEAD_SYMBOL
+    && memberSymbolUrl('alice', 'lead') === LEAD_SYMBOL
+    && memberSymbolUrl('bob', 'Team Leader') === LEAD_SYMBOL
+    && memberSymbolUrl('carol', 'Captain') === LEAD_SYMBOL
+    && memberSymbolUrl('队长', '队长') === LEAD_SYMBOL,
+)
+// ...but the role text decides, not the name: a member merely *called* "Lead"
+// with an ordinary role keeps its own role symbol.
+check(
+  'an ordinary role is not mistaken for the lead by name alone',
+  memberSymbolUrl('Lead', 'Backend Engineer') !== LEAD_SYMBOL
+    && memberSymbolUrl('Lead', 'Backend Engineer') === memberSymbolUrl('Other', 'Backend Engineer'),
+)
 // The defect this pair replaced: the corner badge drew the same mascot art as
 // the avatar, which is a smudge at 18px. Both marks must come from the symbol
 // packs, and the panel must not fall back to the mascot for either one.

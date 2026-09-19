@@ -6,30 +6,6 @@
 
 ## Открытые
 
-### F0 · `src/client/artwork.ts` · `memberSymbolUrl('Lead', 'Team Lead')` → `null`
-**Найдено:** при проверке после языковой правки (не мой коммит).
-**Коммит-источник:** `370548f feat(client): amber terminal mascots, dedicated symbol packs for the corner badge`.
-**Симптом:** `scripts/verify.mjs` падает на
-`canonical eight-member roster resolves to eight distinct corner symbols`
-(1 FAIL, 211 PASS). Восемь ролей резолвятся корректно, ломается последнее условие:
-
-```
-LEAD_SYMBOL                              = "/plugins/dsh-agent-teams/assets/team-lead-symbol.png"
-memberSymbolUrl('Lead', 'Team Lead')     = null
-memberSymbolUrl('Lead','Team Lead') === LEAD_SYMBOL  -> false
-```
-
-**Почему вне scope:** это работа соседнего агента по иконкам (`src/client/` +
-`assets/agent-teams/`); правило ветки — не чинить чужой шаг, а записать.
-**Что предлагается:** научить `memberSymbolUrl` возвращать `LEAD_SYMBOL` для
-lead-роли (`/lead|team lead|captain/i`) либо убрать это условие из ассерта, если
-lead-символ намеренно резолвится отдельной функцией. Проверка воспроизведения:
-
-```sh
-cmd /c ".local\pnpm.cmd exec node scripts/verify.mjs"
-node -e "import('./lib/client/artwork.js').then(m => console.log(m.memberSymbolUrl('Lead','Team Lead'), m.LEAD_SYMBOL))"
-```
-
 ### F1 · `src/scheduler.ts` · `installTeamScheduler` · порядок выбора задачи
 **Найдено:** S07, при написании t5-replay (`0108c81` уже исправил половину).
 **Симптом:** `recoverOwned` перекрывал `nextReadyTask`, поэтому участник с
@@ -63,6 +39,22 @@ JSON-экспорт конфига, потому что у плагина нет
 сказано «export the provider config as JSON».
 
 ## Закрытые
+
+### F0 · `memberSymbolUrl` не знал lead-роль · закрыто
+**Симптом:** `scripts/verify.mjs` падал на
+`canonical eight-member roster resolves to eight distinct corner symbols`:
+`memberSymbolUrl('Lead', 'Team Lead')` возвращал `null` вместо `LEAD_SYMBOL`
+(1 FAIL / 211 PASS).
+**Причина:** функция не имела lead-ветки, хотя `LEAD_SYMBOL` экспортируется и
+используется панелью напрямую. Вторая, менее очевидная причина: первая версия
+проверки сравнивала роль как есть, а роль приходит с заглавной буквы
+(`Team Lead`), тогда как таблица `ROLE_ART` работает по `toLowerCase()`.
+**Исправлено:** lead-ветка `/lead|captain|队长|组长/u` проверяется по
+`role.toLowerCase()` **до** таблицы ролей и только по роли, а не по
+`name + role`, чтобы участник с именем `Lead` и обычной ролью не забирал
+lead-символ. Регрессии: `a lead-role member resolves to the lead symbol`,
+`an ordinary role is not mistaken for the lead by name alone`.
+**Результат:** `verify.mjs` 214 PASS / 0 FAIL.
 
 ### Принятые чужие PR-ы · 2026-09-20 · коммит `4490366` · откат `backup/pre-pr-adoption-2d451b5`
 

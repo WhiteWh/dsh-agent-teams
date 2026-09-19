@@ -28,6 +28,55 @@ Ask in natural language. The plugin provides the team protocol, 14 coordination 
 
 [v0.1.21](./release-notes/v0.1.21.md) makes acceptance criteria waivable: a member can report a check that is red on the baseline as `waived` with evidence instead of forcing the task to fail, and Delivery stays blocked until a review confirms the waiver. It also removes the list-length fallback that let an unrelated all-pass report satisfy a contract, makes scope-overlap serialization transitive, drops cancelled tasks from the Delivery path audit, turns a misplaced profile key into a fix ("`requiredReviewers` belongs under `reviewPolicy`"), adds `node scripts/doctor.mjs --profiles`, and gives the activity panel three read-only views over the same state: **Phases**, **Agents** and **Queues**. Recommended host: DeepSeek Harness `0.1.5-rc.1`; the three older supported host targets are retained.
 
+### What this branch changes
+
+This fork is the [upstream `main` checkout](./release-notes/v0.1.20.md) plus a plan-driven hardening pass. Every
+change below is covered by a test written first, and the whole branch keeps the
+upstream contract: existing `team.json` files still load, tool signatures are
+unchanged, and no existing assertion was weakened.
+
+| Work package | Change | Where |
+| --- | --- | --- |
+| **Acceptance waivers** | `waived` as a third result status, with mandatory evidence; the reviewer confirms it through `waiverConfirmation` and otherwise Delivery reports `<id> has unconfirmed waivers`. `reviewPolicy.allowWaivers: false` turns the mechanism off. `no_regression` criteria (`{text, mode, baseline}`) pass on "identical to the named baseline". The old length-parity fallback is gone, so criteria are matched by normalized text rather than by array position. | `src/quality-gates.ts`, `src/tools.ts` |
+| **Transitive scope serialization** | The `inScope` overlap check walks the dependency closure instead of only direct edges, so a replacement task can be created while its downstream subtree still points at the task it replaces. A shared ancestor alone is still a real conflict. | `src/quality-gates.ts` |
+| **Clean delivery reports** | The path audit follows completed work only; `changedPaths` left behind by a cancelled task no longer reddens Delivery. | `src/quality-gates.ts` |
+| **Actionable profile errors** | A misplaced key now names its nesting, and `node scripts/doctor.mjs --profiles <config.json>` lints every configured profile without booting a host. | `src/profiles.ts`, `scripts/doctor.mjs` |
+| **Three read-only panel views** | **Phases** (columns by declared phase, otherwise dependency level, with edges between columns), **Agents** (one swimlane per member in execution order, blocked chips dimmed with the blocking task in the tooltip) and **Queues** (who holds what, what is next, and the grouped idle reason). The choice is remembered per browser. | `src/client/activity-model.ts`, `src/client/ActivityPanel.tsx` |
+| **One task-status table** | The transition table lives once, in `src/state.ts`; the completion gate reads it instead of keeping a copy that can drift. | `src/state.ts`, `src/quality-gates.ts` |
+| **Scheduler attempt integrity** | A member's own fresh attempt is no longer mistaken for a lost owner and re-claimed underneath it (which used to drop `in_progress` back to `claimed` and make the member's next `update_task` fail as stale), and fresh ready work now outranks re-claiming an attempt the member already holds. | `src/scheduler.ts` |
+
+Remaining plan work is tracked locally and lands in later releases: contract
+amendment extensions and `retry` from `failed` (0.1.22), `superseded` with an
+atomic dependency redirect (0.1.22), post-hoc path acceptance and
+`awaiting_scope_review` (0.1.22), the known-delta registry (0.1.22),
+`requiredReviewers` enforcement (0.1.22), mandatory `team_id` addressing
+(0.1.23), plan progress and the task checklist (0.2.0), and live-team replanning
+(0.2.0).
+
+### Verification
+
+| Layer | Result |
+| --- | --- |
+| `pnpm typecheck`, `pnpm build` | pass |
+| `scripts/verify.mjs` | 214 PASS / 0 FAIL (upstream baseline on this machine: 181) |
+| `scripts/quality-gates-tdd.mjs` | 106 PASS / 0 FAIL |
+| the remaining suites (`lifecycle`, `stress`, `web-routes`, `capabilities`, `harness-compat`, …) | all exit 0 |
+| `readme-version`, `release-metadata`, `verify-package`, `sync-skill --check` | pass |
+| replay of the reported `t5` incident on the real compiled tools | 7/7 |
+
+The real-host matrix (`scripts/harness-runtime-verify.mjs`) and the full
+`pnpm verify` chain are left to CI: the local sandbox cannot spawn the child
+processes they need.
+
+### Documentation language
+
+All documentation, release notes and comments are English. `README_ZH.md` and the
+dated audit records under `docs/` are frozen legacy: they are excluded from the
+code index, no longer synced with a version bump, and not maintained. The plugin's
+own UI strings still follow the Harness locale, so the panel remains bilingual at
+runtime; that dictionary is product behaviour, not documentation. New documents are
+English-only.
+
 ## Why AgentTeams?
 
 | Capability | What it changes |
