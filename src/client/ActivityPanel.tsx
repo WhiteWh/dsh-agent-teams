@@ -222,7 +222,11 @@ function WorkGlyph({ active }: { readonly active: boolean }) {
  * The text label next to it stays the accessible answer.
  */
 function WorkBar({ active }: { readonly active: boolean }) {
-  const rows = [0, 1, 2, 3, 4]
+  // Owner request (2026-09-20, round 3): three rows, not five — the plaque was
+  // sized for the retired two-line member row, and space-between still spreads
+  // the rows over the node's height, so the wave stays readable while the node
+  // gets shorter.
+  const rows = [0, 1, 2]
   const columns = [0, 1, 2]
   return (
     <span className={css.workBar} data-active={active} data-work-bar={active} aria-hidden>

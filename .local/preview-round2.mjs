@@ -65,7 +65,7 @@ console.log('layout:', JSON.stringify({
 }))
 
 const dot = (row) => [0, 1, 2].map(() => `<span class="${classes.workBarDot}" style="animation-delay:${(row * 0.12).toFixed(2)}s"></span>`).join('')
-const plaque = (active) => `<span class="${classes.workBar}" data-active="${active}" data-work-bar="${active}">${[0, 1, 2, 3, 4]
+const plaque = (active) => `<span class="${classes.workBar}" data-active="${active}" data-work-bar="${active}">${[0, 1, 2]
   .map((row) => `<span class="${classes.workBarRow}">${dot(row)}</span>`).join('')}</span>`
 
 const art = 'file:///D:/OwlCats/AI_Tools/dsh-agent-teams/assets/agent-teams/'

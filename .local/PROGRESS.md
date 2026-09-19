@@ -88,7 +88,8 @@ the pre-step count, and FAIL must stay 0.
 | S19 | WP11 phase 3 team limits | done | | verify 291 PASS/0 FAIL (+2); lifecycle 155 PASS/0 FAIL (+3); all 22 suites exit 0; four configured keys + slot summary in status |
 | S20 | docs + release 0.2.0 | done | | version 0.2.0; notes + release record; artifact 2 317 040 B / SHA256 `FBBA6EBA…12EE` installed into the web profile; tag v0.2.0 with the branch marker; all 22 suites exit 0 |
 | S21 | owner UI round + release 0.2.1 | done | | work plaque (full-node height, 3 dots wide) in the members tree; `cfe9338` UI commit + `09ac60e` release; verify 293 PASS/0 FAIL; artifact 2 318 783 B / SHA256 `2F73FAF8…D411` installed; tag v0.2.1 |
-| S22 | owner UI round 2 + release 0.2.2 | done | | compact one-line member node, phase columns as chains, hatched cancelled nodes, tree/queues views and their model projections deleted; declared-phase regression fixed; verify 271 PASS/0 FAIL; tag v0.2.2 |
+| S22 | owner UI round 2 + release 0.2.2 | done | | compact one-line member node, phase columns as chains, hatched cancelled nodes, tree/queues views and their model projections deleted; declared-phase regression fixed; progress block reduced to one bar; verify 271 PASS/0 FAIL; full `pnpm verify` exit 0; artifact 2 301 430 B / SHA256 `A8B2FF78…C48B` installed; tag v0.2.2 |
+| S23 | round 3.1: three-row work plaque | done | | `WorkBar` rows 5 → 3; new check `the work plaque is three dot rows tall` (RED first: `rows=0, 1, 2, 3, 4`); verify 272 PASS/0 FAIL; full `pnpm verify` exit 0 |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -231,6 +232,27 @@ Releases: **0.2.3** after S23+S24 (client only), **0.3.0** after S25+S26 (state 
 tool behaviour change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S23 — round 3.1: the work plaque is three dot rows tall (done)
+
+Owner request (round 3, item 1): "сделай уплотнение анимированных точек … по
+вертикали — x3 строчек должно быть примерно". The five rows dated from the retired
+two-line member row.
+
+- **RED first:** new check `the work plaque is three dot rows tall` in
+  `verify.mjs` — it slices the `WorkBar` body and asserts three rows, three columns,
+  and that the stylesheet still spreads them over the node (`justify-content:
+  space-between`, `min-height: 22px`). It failed with the diagnostic
+  `rows=0, 1, 2, 3, 4` before the change.
+- **GREEN:** `WorkBar`'s row list is `[0, 1, 2]`. The dots (3 px, round), the
+  0.12 s per-row stagger, the idle slot opacity and `align-self: stretch` are
+  untouched, so the wave still reads top-to-bottom and the plaque still spans the
+  node — it is simply shorter.
+- **Local suite:** typecheck exit 0; build exit 0; `verify.mjs` green including the
+  three plaque checks.
+- **Visual check:** `.local/preview-round2.mjs` re-rendered after its own template
+  was corrected to three rows (the first render still drew five and was misleading);
+  `.local/logs/ui-round2/phase-board.png` shows three rows of three dots per plaque.
 
 ### S22 — owner UI round 2: compact member node, phases as chains, one graph view (done)
 

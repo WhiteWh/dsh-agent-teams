@@ -1572,6 +1572,21 @@ check(
       && /\.workBar\[data-active='true'\] \.workBarDot \{/u.test(activityPanelCss)
       && activityPanelSource.includes('animationDelay: `${String(row * 0.12)}s`'),
   )
+  // Owner request (2026-09-20, round 3): the five rows were sized for the old
+  // two-line member row; a one-line node needs about three, so the plaque is
+  // compacted vertically while the wave and the idle slot stay as they are.
+  const barOpen = activityPanelSource.indexOf('function WorkBar')
+  const barBody = activityPanelSource.slice(barOpen, activityPanelSource.indexOf('function CollapsedBadge', barOpen))
+  check(
+    'the work plaque is three dot rows tall',
+    barOpen !== -1
+      && barBody.includes('const rows = [0, 1, 2]')
+      && !barBody.includes('[0, 1, 2, 3, 4]')
+      && barBody.includes('const columns = [0, 1, 2]')
+      && /\.workBar \{[^}]*justify-content: space-between/u.test(activityPanelCss)
+      && /\.workBar \{[^}]*min-height: 22px/u.test(activityPanelCss),
+    `rows=${/const rows = \[([^\]]*)\]/u.exec(barBody)?.[1] ?? '?'}`,
+  )
   // Owner request (2026-09-20, round 2): the member node is one compact line —
   // role icon, status icon with its word, name, model badge, task chips — ending
   // in the plaque. The retired role words and status sentence must not return.
