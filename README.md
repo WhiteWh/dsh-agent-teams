@@ -26,6 +26,8 @@ Ask in natural language. The plugin provides the team protocol, 19 coordination 
 
 ## Releases
 
+[v0.2.0](./release-notes/v0.2.0.md) closes the hardening plan: `agent_teams_replan` repairs a running plan in one atomic batch (add/update/retry/supersede/cancel/accept/amend/move) instead of a cancel-and-recreate cascade, `invalidate: true` revokes the attempt a member holds and a revoked capability is refused afterwards, the plan became an entity (`plan.revision`, declared phases, an `agent-teams/plan-revised` diff), one server-computed percentage is shared by the panel, the card and the status text (with a task checklist and a running-mode planner/editor), and several teams are usable at once: a team switcher in the panel, a workspace-wide scheduler sweep and four configurable limits (`maxTeamsPerWorkspace`, `maxTeamsPerSession`, `maxWorkersPerTeam`, `maxConcurrentWorkersGlobal`) with a slot summary in `agent_teams_status`. Nineteen tools.
+
 [v0.1.24](./release-notes/v0.1.24.md) makes team identity an argument again: every team-scoped tool takes a `team_id`, a missing one is answered with the caller's teams instead of guessing, `agent_teams_status` without an id lists them, a member of exactly one team still omits it, and a second team in the same workspace needs the explicit `new_team: true`. A state-based guard refuses a fifth live team or a ninth active worker. No status, gate rule or tool name changed.
 
 [v0.1.23](./release-notes/v0.1.23.md) is the contract-and-recovery release: the captain can amend the whole contract (or a `work` task's brief) and retry a `failed` lane, `agent_teams_supersede_task` replaces a lane that will not finish and redirects dependents and reviews atomically, an honest report of a path outside `inScope` holds the task in `awaiting_scope_review` until the captain accepts the paths with `agent_teams_accept_paths` (additive, and post-hoc on a completed task), `taskPlanning.sharedInScope` keeps sibling lanes out of a false overlap, `agent_teams_pin_delta` registers a check that is red for an outside reason so a waiver cites it instead of inventing a reason, and `reviewPolicy.requiredReviewers` is now enforced by Delivery. New statuses: `awaiting_scope_review` and `superseded`; the tool set grew to 18.
@@ -106,14 +108,14 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.24`. Harness remains a prerelease.**
+**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.2.0`. Harness remains a prerelease.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended installation** | **`0.1.5-rc.1`** | **`0.1.24`** |
-| Retaining an older RC | `0.1.2-rc.1` | `0.1.24` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.24` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.24` |
+| **Recommended installation** | **`0.1.5-rc.1`** | **`0.2.0`** |
+| Retaining an older RC | `0.1.2-rc.1` | `0.2.0` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.2.0` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.2.0` |
 
 ### 1. Install DeepSeek Harness
 
@@ -129,12 +131,12 @@ Skip this if you already run this version. Alpha is opt-in: select an exact Alph
 Install into the `web` profile. Replace the profile name if needed:
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.24
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.2.0
 ```
 
 **After installation, stop and restart Harness for that profile, then refresh the browser.**
 
-The default npm `latest` tag points to `0.1.24`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.1.24/README.md).
+The default npm `latest` tag points to `0.2.0`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.2.0/README.md).
 
 > Desktop users must check the app's embedded Harness core; upgrading the global CLI does not upgrade it. For older `0.1.0-*` / `0.1.1-*` or unlisted hosts, keep a working pair and follow the [older-version and diagnostic guide](./docs/maintenance-workflow.md).
 

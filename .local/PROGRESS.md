@@ -86,7 +86,7 @@ the pre-step count, and FAIL must stay 0.
 | S17 | WP7 replan live team | done | | verify 288 PASS/0 FAIL (+27); qg-tdd 134 PASS/0 FAIL; lifecycle 152 PASS/0 FAIL (+5); stress 25 PASS/0 FAIL (+4); all 21 suites exit 0; tool count 18 → 19; D4 phases declared + DAG-level fallback |
 | S18 | WP11 phase 2 N teams in UI + scheduler | done | | verify 288 PASS/0 FAIL; multi-team 14 PASS/0 FAIL (new suite, in the chain); lifecycle 152; stress 30 PASS/0 FAIL (+5); all 22 suites exit 0; liveCaptainTeam removed |
 | S19 | WP11 phase 3 team limits | done | | verify 291 PASS/0 FAIL (+2); lifecycle 155 PASS/0 FAIL (+3); all 22 suites exit 0; four configured keys + slot summary in status |
-| S20 | docs + release 0.2.0 | todo | | |
+| S20 | docs + release 0.2.0 | done | | version 0.2.0; notes + release record; artifact 2 317 040 B / SHA256 `FBBA6EBA…12EE` installed into the web profile; tag v0.2.0 with the branch marker; all 22 suites exit 0 |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -172,6 +172,41 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S20 — docs + release 0.2.0 (done)
+
+- **Release mechanics:** `package.json` 0.1.24 → 0.2.0 (targeted edit — the file is never
+  re-serialized, see the S18 language-check trap); `release-notes/v0.2.0.md` (the plan's
+  close-out: replan, the plan entity, progress, several teams, configured limits, upgrade
+  notes); README gained the v0.2.0 paragraph, the version table moved to 0.2.0, the install
+  command and the "default `latest`" line follow, and the release-verification link points at
+  `docs/releases/v0.2.0/README.md`; `compatibility.json` deliberately unchanged.
+- **Release record:** `docs/releases/v0.2.0/README.md` — the per-step table (S16–S19), the
+  verification matrix, the checks added across the release, the artifact digest and the
+  deployment/rollback rows. `.socraticodecontextartifacts.json`'s `latest-release-notes`
+  artifact moved to `v0.2.0.md`.
+- **Local suite (logs in `.local/logs/s20b/`):** typecheck exit 0; build exit 0;
+  `verify.mjs` **291 PASS / 0 FAIL**; `quality-gates-tdd` **134 PASS / 0 FAIL**;
+  `lifecycle-verify` **155 PASS / 0 FAIL**; `multi-team-panel-tdd` **14 PASS / 0 FAIL**;
+  `stress-verify` **30 PASS / 0 FAIL**; all 22 suites, `verify-package`, `sync-skill --check`
+  and the language check exit 0; `readme-version` reports "match 0.2.0"; `release-metadata`
+  passes.
+- **Artifact:** `.local/dist/nanmicoder-dsh-agent-teams-0.2.0.tgz`, 2 317 040 bytes, SHA256
+  `FBBA6EBA90F96A277C4B8E2865A83B3E018D98E529FE4D616E98EBD8148C12EE`; copied to
+  `D:\OwlCats\AI_Tools\dsh-agent-teams-0.2.0.tgz` for the profile install.
+- **Deployed** into `C:\Users\whitl\.dsh\profiles\web` (a different `file:` spec resolved
+  normally; the `bundles` order was already correct): installed version 0.2.0, the nine
+  runtime `lib/*.js` files byte-identical to this checkout, `TEAM_TOOL_NAMES` = 19 with
+  `agent_teams_replan`, the installed prompt carries the replan rule,
+  `dsh --profile web --dump-config` still resolves `id: agent-teams`. Backups:
+  `*.bak-2026-09-20-pre-0.2.0`; rollback target is the 0.1.24 tarball.
+- **Tag:** annotated `v0.2.0` with the branch marker and the artifact facts, pushed to the
+  fork together with the branch (see the tag policy section above).
+- **Owner action:** restart the harness so the running `dsh web` process loads 0.2.0; the
+  browser needs a refresh (the panel gained the switcher, the progress block, the checklist
+  and the running-mode editor; artwork URLs keep their revision).
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs`, the real-host
+  matrix and the manual scratch-profile look at the new panel surfaces.
 
 ### S19 — WP11 phase 3: configurable limits and slot reporting (done)
 

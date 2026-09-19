@@ -57,8 +57,8 @@
     },
     {
       "name": "latest-release-notes",
-      "path": "./release-notes/v0.1.24.md",
-      "description": "What shipped in the version this checkout is on: v0.1.24 makes team identity an argument (`team_id` on every team-scoped tool, a missing id answered with the caller's teams, `new_team: true` for a second team, the team list in `agent_teams_status`, state-based workspace guards). It links back to release-notes/v0.1.23.md - amendable contracts and the retry of a failed lane, `superseded`, `awaiting_scope_review` with `accept_paths` and `sharedInScope`, the known-delta registry, enforced `requiredReviewers` - which in turn points at v0.1.21 for acceptance waivers. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
+      "path": "./release-notes/v0.2.0.md",
+      "description": "What shipped in the version this checkout is on: v0.2.0 closes the hardening plan - `agent_teams_replan` repairs a running plan in one atomic batch (add/update/retry/supersede/cancel/accept/amend/move) with `invalidate` for a lane a member holds, the plan became an entity (`plan.revision`, declared phases, an `agent-teams/plan-revised` diff), one server-computed percentage is shared by the panel, the card and the status text, and several teams are usable at once (a panel switcher, a workspace-wide scheduler sweep, four configurable limits and a slot summary). It links back to release-notes/v0.1.24.md for `team_id` addressing and to v0.1.23.md for amend/supersede/scope/known-deltas, which points at v0.1.21 for acceptance waivers. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
     },
     {
       "name": "dsh-plugin-development-skill",
