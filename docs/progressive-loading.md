@@ -1,45 +1,45 @@
-# AgentTeams 固定协议与业务工具
+# AgentTeams fixed protocol and business tools
 
-AgentTeams 保留原有 14 个业务工具，删除 `agent_teams_open`。精简的核心规则从首次请求起固定在 system 中，创建、批准、继续、暂停或归档团队都不切换这段提示词和工具定义。无需加载工具，也没有额外的激活调用。
+AgentTeams keeps its original 14 business tools and removes `agent_teams_open`. The trimmed core rules are fixed in the system prompt from the first request onward; creating, approving, continuing, pausing or archiving a team never swaps that prompt section or the tool definitions. Nothing has to be loaded, and there is no extra activation call.
 
-这项修改针对两个问题：
+This change addresses two problems:
 
-- #146：已有团队时继续当前工作，按需用 `agent_teams_status` 查状态，避免重复创建成员和任务。即使模型误调用 create，错误也引导它继续已有团队，不再提示先结束旧团队。创建权限与防止重复建队的保护仍然保留。
-- #138：精简固定说明，并按队长/成员身份提供需要的团队工具。没有通过中途增加工具、替换 system 来节省初始请求字节。
+- #146: when a team already exists, continue the current work and check state with `agent_teams_status` as needed, instead of recreating members and tasks. Even if the model calls create by mistake, the error guides it back to the existing team rather than telling it to end the old one first. The creation permission and the duplicate-team protection are both retained.
+- #138: a trimmed fixed instruction, plus only the team tools the captain/member identity needs. No initial-request bytes were saved by adding tools mid-flight or replacing the system prompt.
 
-| 会话身份 | 固定团队工具 | 固定 system 内容 |
+| Session identity | Fixed team tools | Fixed system content |
 |---|---|---|
-| 普通会话、队长、冷恢复的队长 | 原有 14 个业务工具 | 触发边界、审批、协作、attempt、质量门禁、暂停/恢复、收尾规则及已配置模板目录 |
-| 成员 | claim、update、send_message、status | 成员规则和原有 persona |
+| ordinary session, captain, cold-resumed captain | the original 14 business tools | trigger boundary, approval, collaboration, attempt, quality gates, pause/resume, wrap-up rules and the configured template directory |
+| member | claim, update, send_message, status | member rules and the original persona |
 
-普通编程/研究工具照常保留。成员身份来自持久化成员 ID、退休成员索引或插件正在执行的可信成员创建登记，不凭可自由填写的 label 判断。工具限制同时适用于原生 schema 和 PTC SDK，不能解除用户或 preset 的限制。
+Ordinary coding/research tools are kept as usual. Member identity comes from a durable member id, the retired-member index, or a trusted member-creation registration this plugin is performing — never from a freely writable label. The tool restriction applies to both the native schema and the PTC SDK, and it cannot lift a user or preset restriction.
 
-Slash command、明确的自然语言请求和已有团队续聊均直接适用核心协议。解释、否定或引用 AgentTeams 本身不构成开工请求。无团队时创建 staged 计划并等待审批；已有团队继续工作。模板目录固定包含名称、人数、规划模式和最多 240 字符的协议/用途摘要，最多列出 16 个模板。完整配置在创建团队时读取并冻结到团队状态中，目录摘要不替代完整配置。
+A slash command, an explicit natural-language request and continuing an existing team all use the core protocol directly. Explaining, declining or quoting AgentTeams itself is not a request to start work. With no team, a staged plan is created and awaits approval; with an existing team, work continues. The template directory always contains the name, size, planning mode and a protocol/purpose summary of at most 240 characters, listing at most 16 templates. The full configuration is read when a team is created and frozen into the team state; the directory summary does not replace the full configuration.
 
-核心规则不依赖工具结果，因此旧 13 工具白名单可以直接规划，代码模式丢弃返回值、结果被裁剪或会话历史被压缩后仍能读到规则。HMR 清理插件资源并恢复会话身份；部署新版本或修改配置本身可能改变前缀，稳定性约束针对同一版本和配置下的业务生命周期。
+The core rules do not depend on a tool result, so a legacy 13-tool allowlist can plan directly, and the rules remain readable after code mode discards a return value, a result is truncated, or session history is compacted. HMR cleans plugin resources and restores session identity; deploying a new version or changing configuration can itself change the prefix, so the stability guarantee applies to a business lifecycle under one version and configuration.
 
-## 为什么撤回渐进加载
+## Why progressive loading was withdrawn
 
-早期实现先暴露 open，再增加业务工具并替换 system。用户的长会话实测显示切换后缓存读显著下降，因此已撤回。随后保留 open 作为查询辅助工具也没有必要：当前状态已有 status，模板已有固定目录。最终直接删除 open，避免重复功能和额外模型往返。
+An early implementation exposed `open` first, then added the business tools and replaced the system prompt. A user's long-session measurement showed cache reads dropping significantly after the switch, so it was withdrawn. Keeping `open` afterwards as a query helper was unnecessary too: state already has `status`, and templates already have a fixed directory. In the end `open` was deleted outright to avoid duplicate functionality and an extra model round trip.
 
-本插件保证业务状态不主动改写 system/tools；这不能保证供应商的每次缓存命中。请求字节数也不等于 token、缓存命中率或费用，不能凭工具数量声称成本降低。
+This plugin guarantees that business state does not actively rewrite system/tools; that cannot guarantee every provider cache hit. Request byte counts are also not tokens, cache-hit rate or cost, so a lower tool count must not be claimed as a cost reduction.
 
-## Web 批准通知
+## Web approval notification
 
-Web 的 Approve & Run 提交批准并启动调度后，通过 `captain.steer` 追加插件来源的控制消息。队长空闲时开始一轮，运行时在后续步骤收到消息。消息说明已经批准，不要再次批准或重复派工；处理报告/用户工作后，在只剩等待时结束轮次，成员报告自动唤醒队长。模型自己调用 approve 已有工具返回，不额外发第二份通知。
+After the Web **Approve & Run** submits the approval and starts scheduling, a control message with a plugin source is appended through `captain.steer`. An idle captain starts a turn; a running captain receives the message at a later step. The message states that approval has happened, that it must not be approved again or the work dispatched twice, and that after handling reports/user work it should end the turn when only waiting remains, because member reports wake the captain automatically. When the model calls approve itself, the existing tool result is returned and no second notification is sent.
 
-批准通知失败会记录日志，已经提交的批准不会被误报成失败；当前没有跨进程持久化重试保证。
+A failed approval notification is logged, and an already-committed approval is never misreported as a failure; there is currently no cross-process durable retry guarantee.
 
-## 验证标准与证据
+## Verification criteria and evidence
 
-`pnpm verify:capabilities` 使用真实 scoped registry、prompt assembly 和 WorkerThreadCodeRuntime，覆盖固定规则、14 工具直接业务调用、重复创建保留原团队、用户 restriction、取消/失败、可信成员身份、暂停、冷恢复、HMR、PTC/both SDK 和实际结果裁剪。
+`pnpm verify:capabilities` uses the real scoped registry, prompt assembly and WorkerThreadCodeRuntime, covering the fixed rules, direct business calls to the 14 tools, duplicate creation retaining the original team, a user restriction, cancel/failure, trusted member identity, pause, cold resume, HMR, PTC/both SDKs and actual result truncation.
 
-`scripts/harness-runtime-verify.mjs` 将打包产物安装到隔离 profile，通过发布版 CLI 和真实 Loader 启动。只有外部 LLM 是确定性 fixture；工具、会话、持久化、调度和成员创建均走生产实现。
+`scripts/harness-runtime-verify.mjs` installs the packaged artifact into an isolated profile and boots it through the published CLI and the real Loader. Only the external LLM is a deterministic fixture; tools, sessions, persistence, scheduling and member creation all run the production implementation.
 
-- `progressive-entry` 保留历史场景名，覆盖中文/英文自然语言、原始 slash、宿主 command registry、profile alias、`--profile` 六条路径。模型请求只包含 14 个团队工具，直接创建 staged 计划。测试继续已有计划、显式批准、成员执行和回报、归档、普通续聊和归档后状态检查。自然语言路径先进行 30 轮普通对话，再逐次检查 system/tools 哈希不变。
-- `protocol-compatibility` 用 13 工具白名单直接使用模板、恢复同一会话，并调用宿主 `compactNow` 后修改原计划。另一条路径用真实代码运行时丢弃 status 返回、实际裁剪和压缩，再修改并归档同一团队。逐次检查核心规则和前缀。
-- `web-approval` 通过真实 HTTP 路由和宿主鉴权批准，检查批准通知、队长结束等待轮次、成员报告再次唤醒，以及重复/失败批准不产生成功通知。
-- 保留 lifecycle、fallback、failure、captain-idle-wakeup 和两组冷恢复场景。
+- `progressive-entry` keeps its historical scenario name and covers six paths: Chinese/English natural language, a raw slash command, the host command registry, a profile alias and `--profile`. The model request contains only the 14 team tools and directly creates a staged plan. The test continues an existing plan, approves explicitly, runs and reports member work, archives, resumes ordinary conversation, and checks status after archiving. The natural-language path first runs 30 ordinary conversation turns, then checks after each one that the system/tools hashes are unchanged.
+- `protocol-compatibility` uses a 13-tool allowlist to use a template directly, resume the same session, and modify the original plan after calling the host's `compactNow`. Another path uses the real code runtime to discard a status return, truncate and compact, then modify and archive that same team. The core rules and the prefix are checked each time.
+- `web-approval` approves through a real HTTP route and host authentication, checking the approval notification, the captain ending its waiting turn, a member report waking it again, and that a duplicate or failed approval produces no success notification.
+- The lifecycle, fallback, failure, captain-idle-wakeup and two cold-resume scenarios are retained.
 
 ```sh
 pnpm build
@@ -51,8 +51,8 @@ node scripts/harness-runtime-verify.mjs \
   --report-dir /tmp/agentteams-runtime-rc1
 ```
 
-对 `compatibility.json` 每个支持版本使用独立 runtime/report 目录验证同一产物。报告保留请求快照、请求哈希、产物/fixture 哈希和业务断言。确定性 fixture 证明链路与请求内容，不证明真实模型理解或业务质量。
+Verify the same artifact for every supported version in `compatibility.json`, each with its own runtime/report directory. A report keeps the request snapshot, request hash, artifact/fixture hashes and the business assertions. A deterministic fixture proves the chain and the request content, not real model comprehension or business quality.
 
-删除 open 后的验证结果见 [no-open-verification.json](./no-open-verification.json)。真实模型使用隔离的小应用，外部检查三名成员报告、任务状态、实际写入来源、队长汇总顺序和源文件字节。单个真实案例不能证明任意业务、长期费用或统计成功率相等。
+The verification results after deleting `open` are in [no-open-verification.json](./no-open-verification.json). The real-model run used an isolated small application and externally checked three member reports, task state, the actual write sources, the captain's summary order and the source file bytes. A single real case cannot prove equality for arbitrary business, long-term cost or a statistical success rate.
 
-[旧固定协议报告](./progressive-loading-verification.json)和[先前真实模型对照](./agent-teams-real-model-verification.json)是仍包含 open 的历史产物证据，不代表当前 13 工具版本。删除 open 的本地验证记录使用暂未升号的 `0.1.16-rc.1` 开发包，以 SHA-256 区分，不能与 npm 上的 rc.1 混淆。本次发布版本为 `0.1.16-rc.3`，GitHub Actions 会重新打包并验证该发布版本的同一份产物。
+The [legacy fixed-protocol report](./progressive-loading-verification.json) and the [earlier real-model comparison](./agent-teams-real-model-verification.json) are historical artifact evidence that still contains `open` and do not represent the current 13-tool version. The local verification record for the `open` deletion used the not-yet-bumped `0.1.16-rc.1` development package, distinguished by SHA-256, and must not be confused with the `rc.1` on npm. The released version for this change is `0.1.16-rc.3`; GitHub Actions repacks and verifies that same artifact for the released version.
