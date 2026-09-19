@@ -57,8 +57,8 @@
     },
     {
       "name": "latest-release-notes",
-      "path": "./release-notes/v0.2.0.md",
-      "description": "What shipped in the version this checkout is on: v0.2.0 closes the hardening plan - `agent_teams_replan` repairs a running plan in one atomic batch (add/update/retry/supersede/cancel/accept/amend/move) with `invalidate` for a lane a member holds, the plan became an entity (`plan.revision`, declared phases, an `agent-teams/plan-revised` diff), one server-computed percentage is shared by the panel, the card and the status text, and several teams are usable at once (a panel switcher, a workspace-wide scheduler sweep, four configurable limits and a slot summary). It links back to release-notes/v0.1.24.md for `team_id` addressing and to v0.1.23.md for amend/supersede/scope/known-deltas, which points at v0.1.21 for acceptance waivers. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
+      "path": "./release-notes/v0.2.1.md",
+      "description": "What shipped in the version this checkout is on: v0.2.1 is a client-only panel-visual release - work in the members tree is the node's own height (a plaque three dots wide running down the member row with a top-to-bottom wave while that member works) instead of the compact six-dot mark inside its text. It links back to release-notes/v0.2.0.md, which closes the hardening plan: `agent_teams_replan` (atomic live replan with `invalidate`), the plan entity (`plan.revision`, declared phases, an `agent-teams/plan-revised` diff), one server-computed percentage shared by the panel/card/status text, several teams at once with a panel switcher, a workspace-wide scheduler sweep and four configurable limits. That in turn points at v0.1.24.md for `team_id` addressing and at v0.1.23.md for amend/supersede/scope/known-deltas. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
     },
     {
       "name": "dsh-plugin-development-skill",
