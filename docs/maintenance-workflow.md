@@ -121,6 +121,29 @@ The runtime platform of the automatic matrix is Ubuntu. Windows currently covers
 
 The current GitHub workflow grants OIDC write permission only to the publish job; PR and acceptance jobs have repository read access and need no real model key. The added GitHub artifact actions are pinned to reviewed commits: upload `ea165f8d65b6e75b540449e92b4886f43607fa02`, download `d3f86a106a0bac45b974a628896c90dbdf5c8093`. The download action only warns on a digest mismatch, so this workflow additionally enforces a SHA-256 check on the candidate file.
 
+## Release tags on this branch
+
+Every release gets an **annotated** tag, pushed to the fork:
+
+```sh
+git tag -a v<package.version> -F <message-file>     # message starts with the branch marker
+git push fork v<package.version>
+```
+
+- The tag name is exactly `v<package.version>` from `package.json`, as the release
+  rules above require. Backfilled tags follow the same shape (`v0.1.21`, `v0.1.22`).
+- The message must open with `AgentTeams <version> — branch agent-teams-hardening
+  (fork release)`. Our tags are **not** upstream NanmiCoder tags — upstream stops
+  at `v0.1.20` — and the marker is what keeps the two lines distinguishable in a
+  clone that has both remotes.
+- The tag points at the commit whose build produced the shipped artifact, and the
+  message carries the artifact file name, size and SHA-256 plus the local
+  verification result. A documentation or local-notes commit that lands after the
+  artifact does not move the tag: rewriting a pushed tag would break the
+  immutability rule above.
+- Tags are created after the artifact is packed and installed, never before, so
+  the digest in the message is the digest that actually ran.
+
 ## Closing conditions for issues and PRs
 
 State each follow-up separately:

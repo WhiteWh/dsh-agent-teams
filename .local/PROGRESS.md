@@ -88,6 +88,27 @@ the pre-step count, and FAIL must stay 0.
 | S19 | WP11 phase 3 team limits | todo | | |
 | S20 | docs + release 0.2.0 | todo | | |
 
+## Release tags (owner instruction, 2026-09-20)
+
+Every release is tagged, and the tag carries the branch marker. Rules recorded
+in `docs/maintenance-workflow.md` § "Release tags on this branch" and in
+`.local/SETUP.md`:
+
+- annotated tag `v<package.version>`, pushed to `fork`;
+- message opens with `AgentTeams <version> — branch agent-teams-hardening (fork
+  release)`, because our tags are not upstream NanmiCoder tags (upstream stops at
+  `v0.1.20`);
+- the tag points at the commit whose build produced the shipped artifact, and the
+  message carries the artifact name, size, SHA-256 and the local verification
+  result;
+- created after the artifact is packed and installed, never before; a later
+  documentation commit does not move a pushed tag.
+
+Backfilled on 2026-09-20: `v0.1.21` → `12f245b` (the last commit of the 0.1.21
+line — the tree the deployed 0.1.21 artifact was built from, with the release step
+`74fc749` and the adopted PRs/artwork before it) and `v0.1.22` → `9f81203`. Both
+tags are in `fork`.
+
 ## Left for CI (cannot run on this machine)
 
 - `pnpm verify` end to end (it is a chain of suites; each suite is run
