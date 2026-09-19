@@ -1,6 +1,6 @@
 # PROGRESS — dsh-agent-teams improvement plan (WP1–WP11)
 
-> Local working file. Branch `toolkit-fix` off `87c95c9` (upstream main, v0.1.20).
+> Local working file. Branch `agent-teams-hardening` off `87c95c9` (upstream main, v0.1.20).
 > Executor: single agent, strictly linear, one step per commit.
 > Plan: `D:/OwlCats/AI_Tools/Docs/AGENT_TEAMS_IMPROVEMENT_PLAN.md` §3.
 > Spec: `docs/quality-gates.md` §9.1 (tests first).
@@ -39,7 +39,7 @@ node scripts/readme-version.mjs        # README.md only (English)
 node .local/lang-check.mjs             # fails on CJK in any English-only path
 ```
 
-## Baseline (measured 2026-09-19 on this machine, branch toolkit-fix @ 87c95c9)
+## Baseline (measured 2026-09-19 on this machine, branch agent-teams-hardening @ 87c95c9)
 
 | Suite | Command | Result |
 | --- | --- | --- |
