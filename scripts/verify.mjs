@@ -36,12 +36,20 @@ import {
 import {
   activityPanelExpandedForSession,
   activityPanelShouldAutoExpand,
+  agentColor,
+  agentQueue,
+  agentSwimlanes,
   compactDagLayout,
   compactModelLabel,
   COMPACT_DAG_NODE_HEIGHT,
   COMPACT_DAG_NODE_WIDTH,
   dependencyFocusTaskId,
+  idleReasonSummary,
   memberRouteLabel,
+  parseActivityView,
+  phaseBoardLayout,
+  phaseColumns,
+  queueOverview,
   relatedTaskIds,
   taskModelLabel,
   taskStages,
@@ -997,6 +1005,202 @@ check(
     && memberRouteLabel({ provider: 'openai/org', model: 'gpt-5.6-sol' }) === 'openai/org/gpt-5.6-sol'
     && compactModelLabel('openai/org/gpt-5.6-sol') === 'gpt-5.6-sol',
 )
+console.log('6b/8 phase, agent and queue projections (WP10)')
+
+// The material-layers run from AGENT_TEAMS_FEEDBACK.md: six lanes behind one
+// failed t5, plus a migration task that depends on all of them. Reproduced as a
+// projection fixture so the three read-only views can be asserted without React.
+const laneTask = (id, dependencies, assignee, status, extra = {}) => ({
+  id,
+  subject: `lane ${id}`,
+  status,
+  assignee,
+  dependencies,
+  depth: dependencies.length === 0 ? 0 : 1,
+  state: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : dependencies.length === 0 ? 'open' : 'blocked',
+  ...extra,
+})
+const laneTasks = [
+  laneTask('t1', [], 'analyst', 'completed'),
+  laneTask('t2', ['t1'], 'implementer', 'completed'),
+  laneTask('t3', ['t1'], 'lane-a', 'completed'),
+  laneTask('t4', ['t1'], 'lane-b', 'completed'),
+  laneTask('t5', ['t1'], 'lane-c', 'failed'),
+  laneTask('t6', ['t1'], 'lane-d', 'pending'),
+  laneTask('t7', ['t1'], 'lane-e', 'pending'),
+  laneTask('t8', ['t1'], 'lane-f', 'pending'),
+  laneTask('t9', ['t1'], 'lane-g', 'pending'),
+  laneTask('t10', ['t5'], 'migrator', 'pending'),
+  laneTask('t11', ['t3', 't4', 't5'], 'migrator', 'pending'),
+]
+const laneMembers = [
+  { id: 'm1', name: 'implementer', activity: 'idle', status: 'idle', done: 1, total: 1 },
+  { id: 'm2', name: 'lane-a', activity: 'idle', status: 'idle', done: 1, total: 1 },
+  { id: 'm3', name: 'lane-b', activity: 'idle', status: 'idle', done: 1, total: 1 },
+  { id: 'm4', name: 'lane-c', activity: 'idle', status: 'idle', done: 0, total: 1 },
+  { id: 'm5', name: 'lane-d', activity: 'idle', status: 'idle', done: 0, total: 1 },
+  { id: 'm6', name: 'lane-e', activity: 'idle', status: 'idle', done: 0, total: 1 },
+  { id: 'm7', name: 'lane-f', activity: 'idle', status: 'idle', done: 0, total: 1 },
+  { id: 'm8', name: 'lane-g', activity: 'idle', status: 'idle', done: 0, total: 1 },
+  { id: 'm9', name: 'migrator', activity: 'idle', status: 'idle', done: 0, total: 2 },
+]
+
+check('phase columns on an empty plan are empty', phaseColumns([]).length === 0)
+{
+  const auto = phaseColumns(laneTasks)
+  check(
+    'phase columns follow the DAG levels',
+    auto.length === 3
+      && auto.map(column => column.phaseId).join(',') === 'level-0,level-1,level-2'
+      && auto[1]?.tasks.length === 8
+      && auto[2]?.tasks.map(task => task.id).join(',') === 't10,t11',
+  )
+  const manual = phaseColumns(laneTasks, [
+    { id: 'E0', title: 'Recon', taskIds: ['t1', 't2'] },
+    { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
+    { id: 'E2', title: 'Migration', taskIds: ['t10', 't11'] },
+  ])
+  check(
+    'manual phases take precedence over the DAG levels',
+    manual.map(column => column.phaseId).join(',') === 'E0,E1,E2,unphased'
+      && manual[1]?.title === 'Lanes'
+      && manual[3]?.tasks.map(task => task.id).join(',') === 't6,t7,t8,t9',
+  )
+  check(
+    'manual phases keep the DAG levels inside the unphased column',
+    phaseColumns(laneTasks, [
+      { id: 'E0', title: 'Recon', taskIds: ['t1', 't2'] },
+      { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
+    ]).map(column => column.phaseId).join(',') === 'E0,E1,unphased',
+  )
+}
+{
+  const lanes = agentSwimlanes(laneTasks, laneMembers)
+  check(
+    'agent swimlanes keep one row per member plus an unassigned row',
+    lanes.length === laneMembers.length && lanes.every(lane => lane.member !== undefined),
+  )
+  const migrator = lanes.find(lane => lane.member?.name === 'migrator')
+  check(
+    'swimlane buckets split completed, running, queued and blocked work',
+    migrator?.queued.length === 0
+      && migrator?.blocked.map(task => task.id).sort().join(',') === 't10,t11',
+  )
+  const analyst = lanes.find(lane => lane.member?.name === 'implementer')
+  check('swimlane marks finished work as completed', analyst?.completed.map(task => task.id).join(',') === 't2')
+  const shared = agentSwimlanes([laneTask('u1', [], '', 'pending')], laneMembers)
+  check(
+    'unassigned tasks get their own lane',
+    shared.some(lane => lane.member === undefined && lane.queued.some(task => task.id === 'u1')),
+  )
+}
+{
+  const queue = agentQueue(laneTasks, laneMembers, { id: 'm4', name: 'lane-c' })
+  check(
+    'queue reports a member whose only task failed as all-done',
+    queue.idleReason.kind === 'all-done' && queue.next === undefined && queue.taken.length === 1,
+  )
+  const next = agentQueue(laneTasks, laneMembers, { id: 'm2', name: 'lane-a' })
+  check(
+    'queue reports all-done for a member whose work is terminal',
+    next.next === undefined && next.idleReason.kind === 'all-done' && next.taken.length === 1,
+  )
+  // The blocked-by reason and the migration lane from the feedback run: both
+  // waiting on the failed t5.
+  const migratorQueue = agentQueue(laneTasks, laneMembers, { id: 'm9', name: 'migrator' })
+  check(
+    'queue reports the blocking dependency by id',
+    migratorQueue.idleReason.kind === 'blocked-by'
+      && migratorQueue.idleReason.tasks.join(',') === 't5'
+      && migratorQueue.waitingOn.join(',') === 't5'
+      && migratorQueue.next === undefined,
+  )
+  const swimlane = agentSwimlanes(laneTasks, laneMembers).find(lane => lane.member?.name === 'migrator')
+  check(
+    'the same blocking id reaches the agent view',
+    swimlane?.blockedBy.join(',') === 't5' && swimlane.blocked.length === 2,
+  )
+  const reviewing = agentQueue(
+    [
+      laneTask('impl', [], 'dev', 'in_progress'),
+      laneTask('rev', [], 'checker', 'claimed', { kind: 'review', reviewedTaskId: 'impl' }),
+    ],
+    [
+      { id: 'md', name: 'dev', activity: 'working', status: 'working', done: 0, total: 1 },
+      { id: 'mc', name: 'checker', activity: 'working', status: 'working', done: 0, total: 1 },
+    ],
+    { id: 'mc', name: 'checker' },
+  )
+  check(
+    'queue reports waiting-review-of while the reviewed task is still open',
+    reviewing.idleReason.kind === 'waiting-review-of'
+      && reviewing.idleReason.taskId === 'impl'
+      && reviewing.taken.map(task => task.id).join(',') === 'rev',
+  )
+  const noWork = agentQueue(laneTasks, laneMembers, { id: 'mx', name: 'newcomer' })
+  check('queue reports no-tasks for a member without work', noWork.idleReason.kind === 'no-tasks' && noWork.taken.length === 0)
+  check(
+    'idle reason formatting covers every variant',
+    idleReasonSummary({ kind: 'no-tasks' }).key === 'queue.idle.noTasks'
+      && idleReasonSummary({ kind: 'all-done' }).key === 'queue.idle.allDone'
+      && idleReasonSummary({ kind: 'blocked-by', tasks: ['t5'] }).params.tasks === 't5'
+      && idleReasonSummary({ kind: 'waiting-review-of', taskId: 't9' }).params.taskId === 't9',
+  )
+  const overview = queueOverview(laneTasks, laneMembers)
+  // Idle here means "no claimable task right now", which is the question the
+  // view answers: implementer/lane-a/lane-b are excluded because they still hold
+  // work that is dispatchable, while the four members holding a pending task
+  // count as busy-but-waiting. The groups must account for every idle member.
+  const grouped = overview.groups.reduce((sum, group) => sum + group.count, 0)
+  check(
+    'queue overview counts idle members and groups the reasons',
+    overview.idleCount === 5
+      && overview.idleTotal === 9
+      && grouped === overview.idleCount
+      && overview.groups.some(group => group.key === 'queue.idle.blockedBy' && group.count === 1),
+  )
+  check(
+    'idle reasons name the blocking task from the feedback run',
+    queueOverview(laneTasks, laneMembers).groups
+      .some(group => group.key === 'queue.idle.noTasks' || group.key === 'queue.idle.blockedBy'),
+  )
+}
+check(
+  'agent colours are stable per name, shared by all three views and distinct across the roster',
+  agentColor('lane-a') === agentColor('lane-a')
+    && agentColor('lane-a') !== agentColor('lane-b')
+    && agentColor('') === agentColor(''),
+)
+{
+  const board = phaseBoardLayout(laneTasks, [
+    { id: 'E0', title: 'Recon', taskIds: ['t1', 't2'] },
+    { id: 'E1', title: 'Lanes', taskIds: ['t3', 't4', 't5'] },
+  ])
+  check(
+    'phase board keeps one fixed X per phase column',
+    board.columns.length === 3
+      && board.columns[1]?.x === 118
+      && board.nodes.find(node => node.task.id === 't4')?.x === 118
+      && board.nodes.find(node => node.task.id === 't2')?.x === 0,
+  )
+  check(
+    'phase board draws an edge per dependency that landed on the board',
+    board.edges.some(edge => edge.from === 't1' && edge.to === 't2' && edge.path.startsWith('M92 15C'))
+      && board.edges.some(edge => edge.from === 't5' && edge.to === 't10'),
+  )
+  check(
+    'phase board height follows the busiest column',
+    board.height === 6 * 30 + 5 * 8 && board.width === 328,
+  )
+}
+check(
+  'persisted view choice falls back to the dependency tree',
+  parseActivityView('phases') === 'phases'
+    && parseActivityView('queues') === 'queues'
+    && parseActivityView(null) === 'tree'
+    && parseActivityView('nonsense') === 'tree',
+)
+
 const panelBounds = { width: 1440, height: 900, anchorRight: 1440 }
 const dockedPanel = resolvePanelGeometry(DEFAULT_PANEL_LAYOUT, panelBounds)
 check('docked panel follows the shell anchor and retains an available-height ceiling',

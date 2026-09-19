@@ -2041,6 +2041,274 @@
   line-height: 14px;
 }
 
+/* ── WP10: view switcher, phases, agents, queues (read-only cuts) ── */
+
+.viewSwitcher {
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+}
+
+.viewTab {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.viewTab:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.viewTab[data-active='true'] {
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.viewTab:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.viewHint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.phaseBoardViewport {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.phaseColumns {
+  display: flex;
+  min-width: 0;
+  gap: 26px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.phaseColumn {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--dsw-alias-border-l3);
+}
+
+.phaseColumnHead {
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phaseColumnCount {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9px;
+  line-height: 13px;
+}
+
+.swimlanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.swimlane {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  transition: background-color 140ms ease;
+}
+
+.swimlane[data-idle='true'] {
+  opacity: 0.62;
+}
+
+.swimlane[data-unassigned='true'] {
+  border: 1px dashed var(--dsw-alias-border-l2);
+  background: transparent;
+}
+
+.swimlaneHead {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 96px;
+}
+
+.swimlaneDot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.swimlaneName {
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swimlaneCount {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  line-height: 13px;
+}
+
+.swimlaneChips {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.swimlaneChips .assignmentChip[data-bucket='blocked'] {
+  opacity: 0.55;
+}
+
+.swimlaneChips .assignmentChip[data-bucket='queued'] {
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.swimlaneState {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9px;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.swimlaneState[data-busy='true'] {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.queueView {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.queueHeadline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+}
+
+.queueIdleCount {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.queueGroup {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.queueGroup[data-reason='queue.idle.blockedBy'] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.queueTable {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.queueRow {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  grid-template-columns: minmax(58px, 1.1fr) minmax(40px, 0.8fr) minmax(40px, 0.8fr) minmax(56px, 1.3fr);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.queueRow[data-head] {
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.queueRow[data-idle='true']:not([data-head]) {
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, var(--dsw-alias-bg-layer-1));
+}
+
+.queueMember {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueCell {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueReason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueReason[data-reason='queue.idle.blockedBy'] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .panel,
   .badge,

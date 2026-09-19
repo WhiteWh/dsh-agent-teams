@@ -31,18 +31,27 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import {
+  ACTIVITY_VIEW_STORAGE_KEY,
   activityPanelExpandedForSession,
   activityPanelShouldAutoExpand,
+  agentColor,
+  agentQueue,
+  agentSwimlanes,
   compactDagLayout,
   compactModelLabel,
   COMPACT_DAG_NODE_HEIGHT,
   COMPACT_DAG_NODE_WIDTH,
   dependencyFocusTaskId,
+  idleReasonSummary,
   memberRouteLabel,
+  parseActivityView,
+  phaseBoardLayout,
+  queueOverview,
   relatedTaskIds,
   taskModelLabel,
   teamIsActive,
   usesParallelTaskGrid,
+  type ActivityViewMode,
 } from './activity-model.ts'
 import {
   ACTIVITY_HALT_URL,
@@ -112,6 +121,12 @@ function initialPanelLayout(): PanelLayout {
 function initialPanelBounds(): PanelBounds {
   if (typeof window === 'undefined') return { width: 1440, height: 900, anchorRight: 1440 }
   return { width: window.innerWidth, height: window.innerHeight, anchorRight: window.innerWidth }
+}
+
+/** Persisted panel view; the dependency tree is the default. */
+function initialActivityView(): ActivityViewMode {
+  if (typeof window === 'undefined') return 'tree'
+  return parseActivityView(window.localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY))
 }
 
 /** Initial-letter fallback for unmatched roles. */
@@ -471,6 +486,334 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
   )
 }
 
+/** Node button shared by the tree and the phase board. */
+function TaskNode({ task, members, t, style, parallel = false, discarded = false, pinned = false, focused = true, dimmed = false, onClick, onHover }: {
+  readonly task: ActivityTask
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly style: CSSProperties
+  readonly parallel?: boolean
+  readonly discarded?: boolean
+  readonly pinned?: boolean
+  readonly focused?: boolean
+  readonly dimmed?: boolean
+  readonly onClick?: () => void
+  readonly onHover?: (id: string | null) => void
+}) {
+  const model = taskModelLabel(task, members)
+  const shortModel = compactModelLabel(model)
+  return (
+    <button
+      type="button"
+      className={css.dagNode}
+      style={{ ...style, ...(parallel ? { height: COMPACT_DAG_NODE_HEIGHT } : { width: COMPACT_DAG_NODE_WIDTH, height: COMPACT_DAG_NODE_HEIGHT }) }}
+      data-task-id={task.id}
+      data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
+      data-task-model={model || undefined}
+      data-agent={task.assignee || 'unassigned'}
+      data-focused={focused}
+      data-dimmed={dimmed}
+      aria-pressed={pinned}
+      title={taskTitle(task, model)}
+      onClick={onClick}
+      onMouseEnter={onHover === undefined ? undefined : () => { onHover(task.id) }}
+      onMouseLeave={onHover === undefined ? undefined : () => { onHover(null) }}
+    >
+      <span className={css.dagNodeHead}><span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />{task.id}</span>
+      <span className={css.dagNodeLabel}>
+        {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
+      </span>
+      {task.state === 'running' && (
+        <span className={css.dagRunningState} aria-label={t('task.runningAria')}>
+          <WorkGlyph active />
+        </span>
+      )}
+    </button>
+  )
+}
+
+/** Phases view: fixed column per phase, dependency edges between columns. */
+function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly discarded?: boolean
+  readonly pinnedTaskId?: string | null
+  readonly onPin?: (id: string) => void
+}) {
+  const layout = useMemo(() => phaseBoardLayout(tasks), [tasks])
+  if (tasks.length === 0) return null
+  return (
+    <div className={css.phaseBoardViewport} data-phase-board>
+      <div className={css.phaseColumns}>
+        {layout.columns.map((column) => {
+          const count = layout.nodes.filter((node) => node.x === column.x).length
+          const title = column.title ?? (column.phaseId === 'unphased'
+            ? t('phase.unphased')
+            : t('phase.column', { order: column.order + 1 }))
+          return (
+            <div key={column.phaseId} className={css.phaseColumn} style={{ width: COMPACT_DAG_NODE_WIDTH }} data-phase-id={column.phaseId}>
+              <span className={css.phaseColumnHead} title={title}>{title}</span>
+              <span className={css.phaseColumnCount}>{t('phase.count', { count })}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div className={css.dagViewport}>
+        <div className={css.dagCanvas} data-layout="phases" style={{ width: layout.width, height: layout.height }}>
+          <svg className={css.dagEdges} width={layout.width} height={layout.height} aria-hidden>
+            {layout.edges.map((edge) => (
+              <path
+                key={`${edge.from}:${edge.to}`}
+                d={edge.path}
+                data-active={pinnedTaskId !== undefined && pinnedTaskId !== null && (edge.from === pinnedTaskId || edge.to === pinnedTaskId)}
+              />
+            ))}
+          </svg>
+          {layout.nodes.map(({ task, x, y }) => (
+            <TaskNode
+              key={task.id}
+              task={task}
+              members={members}
+              t={t}
+              style={{ left: x, top: y }}
+              discarded={discarded}
+              pinned={pinnedTaskId === task.id}
+              onClick={onPin === undefined ? undefined : () => { onPin(task.id) }}
+            />
+          ))}
+        </div>
+      </div>
+      <p className={css.viewHint}>{t('phase.autoHint')}</p>
+    </div>
+  )
+}
+
+/** Agents view: one swimlane per member, chips in execution order. */
+function AgentSwimlanes({ tasks, members, t, discarded = false }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly discarded?: boolean
+}) {
+  const lanes = useMemo(() => agentSwimlanes(tasks, members), [tasks, members])
+  if (members.length === 0 && lanes.length === 0) return <span className={css.emptyHint}>{t('agents.empty')}</span>
+  return (
+    <div className={css.swimlanes} data-agent-swimlanes>
+      {lanes.map((lane) => {
+        const label = lane.member === undefined ? t('agents.unassigned') : lane.member.name
+        const busy = lane.running.length > 0
+        const chips = [
+          ...lane.completed.map((task) => ({ task, bucket: 'completed' as const })),
+          ...lane.running.map((task) => ({ task, bucket: 'running' as const })),
+          ...lane.queued.map((task) => ({ task, bucket: 'queued' as const })),
+          ...lane.blocked.map((task) => ({ task, bucket: 'blocked' as const })),
+        ]
+        return (
+          <div
+            key={lane.member?.id || label}
+            className={css.swimlane}
+            data-agent={label}
+            data-idle={!busy}
+            data-unassigned={lane.member === undefined}
+          >
+            <span className={css.swimlaneHead}>
+              <span className={css.swimlaneDot} style={{ background: agentColor(lane.member === undefined ? '' : label) }} />
+              <span className={css.swimlaneName}>{label}</span>
+              <span className={css.swimlaneCount}>{lane.member === undefined
+                ? t('phase.count', { count: chips.length })
+                : `${lane.member.done ?? 0}/${lane.member.total ?? 0}`}</span>
+            </span>
+            <span className={css.swimlaneChips}>
+              {chips.length === 0 && <span className={css.taskEmpty}>{t('queue.idle.noTasks')}</span>}
+              {chips.map(({ task, bucket }) => (
+                <span
+                  key={task.id}
+                  className={css.assignmentChip}
+                  data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)}
+                  data-bucket={bucket}
+                  data-task-model={taskModelLabel(task, members) || undefined}
+                  title={bucket === 'blocked' && lane.blockedBy.length > 0
+                    ? t('agents.blockedTooltip', { tasks: lane.blockedBy.join(t('format.listSeparator')) })
+                    : taskTitle(task, taskModelLabel(task, members))}
+                >
+                  {task.id}
+                </span>
+              ))}
+            </span>
+            <span className={css.swimlaneState} data-busy={busy}>{t(busy ? 'agents.busy' : 'agents.idle')}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Queues view: who holds what, what is next, and why they are standing still. */
+function QueueView({ tasks, members, t, discarded = false }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly discarded?: boolean
+}) {
+  const overview = useMemo(() => queueOverview(tasks, members), [tasks, members])
+  const rows = useMemo(() => members.map((member) => ({
+    member,
+    queue: agentQueue(tasks, members, member),
+  })), [tasks, members])
+  const reasonText = (key: ReturnType<typeof idleReasonSummary>['key'], params: Record<string, string>): string => (
+    key === 'queue.idle.blockedBy'
+      ? t('queue.idle.blockedBy', { tasks: params.tasks ?? '' })
+      : key === 'queue.idle.waitingReview'
+        ? t('queue.idle.waitingReview', { taskId: params.taskId ?? '' })
+        : t(key)
+  )
+  return (
+    <div className={css.queueView} data-queue-view>
+      <div className={css.queueHeadline}>
+        <span className={css.queueIdleCount} data-idle-count={overview.idleCount} data-idle-total={overview.idleTotal}>
+          {overview.idleCount === 0
+            ? t('queue.idle.none')
+            : t('queue.idleHeadline', { idle: overview.idleCount, total: overview.idleTotal })}
+        </span>
+        {overview.groups.map((group) => (
+          <span key={group.key} className={css.queueGroup} data-reason={group.key}>
+            {reasonText(group.key, {})} × {group.count}
+          </span>
+        ))}
+      </div>
+      <div className={css.queueTable} role="table" aria-label={t('queue.aria')}>
+        <div className={css.queueRow} role="row" data-head>
+          <span role="columnheader">{t('queue.member')}</span>
+          <span role="columnheader">{t('queue.current')}</span>
+          <span role="columnheader">{t('queue.next')}</span>
+          <span role="columnheader">{t('queue.idleReason')}</span>
+        </div>
+        {rows.map(({ member, queue }) => {
+          const summary = idleReasonSummary(queue.idleReason)
+          const current = queue.taken.find((task) => task.status === 'in_progress' || task.status === 'claimed')
+          const working = queue.next !== undefined
+          return (
+            <div
+              key={member.id || member.name}
+              className={css.queueRow}
+              role="row"
+              data-agent={member.name}
+              data-idle={!working}
+            >
+              <span role="cell" className={css.queueMember}>
+                <span className={css.swimlaneDot} style={{ background: agentColor(member.name) }} />
+                {member.name}
+              </span>
+              <span role="cell" className={css.queueCell} title={member.currentTask ?? ''}>
+                {discarded
+                  ? t('queue.current.none')
+                  : current === undefined ? t('queue.current.none') : current.id}
+              </span>
+              <span role="cell" className={css.queueCell}>
+                {working ? queue.next?.id : t('queue.current.none')}
+              </span>
+              <span role="cell" className={css.queueReason} data-reason={summary.key}>
+                {working ? t('agents.busy') : reasonText(summary.key, {
+                  tasks: summary.params.tasks ?? '',
+                  taskId: summary.params.taskId ?? '',
+                })}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** Switch between the dependency tree and the three read-only cuts. */
+function ViewSwitcher({ view, onChange, t }: {
+  readonly view: ActivityViewMode
+  readonly onChange: (view: ActivityViewMode) => void
+  readonly t: AgentTeamsTranslate
+}) {
+  const modes: readonly ActivityViewMode[] = ['tree', 'phases', 'agents', 'queues']
+  const labelKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
+    tree: 'view.tree',
+    phases: 'view.phases',
+    agents: 'view.agents',
+    queues: 'view.queues',
+  }
+  const hintKey: Record<ActivityViewMode, AgentTeamsLocaleKey> = {
+    tree: 'view.tree.hint',
+    phases: 'view.phases.hint',
+    agents: 'view.agents.hint',
+    queues: 'view.queues.hint',
+  }
+  return (
+    <div className={css.viewSwitcher} role="tablist" aria-label={t('view.aria')}>
+      {modes.map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          role="tab"
+          aria-selected={view === mode}
+          className={css.viewTab}
+          data-view={mode}
+          data-active={view === mode}
+          title={t(hintKey[mode])}
+          onClick={() => { onChange(mode) }}
+        >
+          {t(labelKey[mode])}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The three read-only cuts plus the tree, switching on the stored view. */
+function TaskViews({ tasks, members, t, discarded = false }: {
+  readonly tasks: readonly ActivityTask[]
+  readonly members: readonly ActivityMember[]
+  readonly t: AgentTeamsTranslate
+  readonly discarded?: boolean
+}) {
+  const [view, setView] = useState<ActivityViewMode>(() => initialActivityView())
+  const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
+  const select = (next: ActivityViewMode): void => {
+    setView(next)
+    try {
+      window.localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, next)
+    } catch {
+      // A blocked localStorage only costs the preference, never the switch.
+    }
+  }
+  return (
+    <>
+      <ViewSwitcher view={view} onChange={select} t={t} />
+      {view === 'tree' && <DependencyMap tasks={tasks} members={members} t={t} discarded={discarded} />}
+      {view === 'phases' && (
+        <section className={css.dependencySection} aria-label={t('phase.aria')} data-phase-section>
+          <PhaseBoard
+            tasks={tasks}
+            members={members}
+            t={t}
+            discarded={discarded}
+            pinnedTaskId={pinnedTaskId}
+            onPin={(id) => { setPinnedTaskId((current) => current === id ? null : id) }}
+          />
+        </section>
+      )}
+      {view === 'agents' && (
+        <section className={css.dependencySection} aria-label={t('agents.aria')} data-agents-section>
+          <AgentSwimlanes tasks={tasks} members={members} t={t} discarded={discarded} />
+        </section>
+      )}
+      {view === 'queues' && (
+        <section className={css.dependencySection} aria-label={t('queue.aria')} data-queues-section>
+          <QueueView tasks={tasks} members={members} t={t} discarded={discarded} />
+        </section>
+      )}
+    </>
+  )
+}
+
 function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic = false }: {
   readonly team: ActivityTeam
   readonly modelDirectory?: ModelDirectory
@@ -705,7 +1048,7 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
         </div>}
       </section>
 
-      <DependencyMap tasks={team.tasks} members={team.members} t={t} discarded={discarded} />
+      <TaskViews tasks={team.tasks} members={team.members} t={t} discarded={discarded} />
       </section>
       <Modal
         open={stopOpen}

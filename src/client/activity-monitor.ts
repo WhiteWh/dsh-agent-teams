@@ -32,6 +32,8 @@ export interface ActivityTask {
   readonly kind?: string
   readonly round?: number
   readonly verdict?: string
+  readonly attempt?: number
+  readonly reviewedTaskId?: string
 }
 
 /** One captain-inbox preview row. */

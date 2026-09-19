@@ -53,6 +53,10 @@ export interface TeamActivityTask {
   readonly kind?: string
   readonly round?: number
   readonly verdict?: string
+  /** Execution generation; the queue view shows whether a task was ever started. */
+  readonly attempt?: number
+  /** Set on a review task: the task it judges (WP10's waiting-review reason). */
+  readonly reviewedTaskId?: string
 }
 
 /** One captain-inbox preview row. */
@@ -188,6 +192,8 @@ export async function assembleTeamSnapshot(
       ...task.kind === undefined ? {} : { kind: task.kind },
       ...task.round === undefined ? {} : { round: task.round },
       ...task.verdict === undefined ? {} : { verdict: task.verdict },
+      ...task.attempt === undefined ? {} : { attempt: task.attempt },
+      ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
     })),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),
