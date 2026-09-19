@@ -15,6 +15,9 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { artworkRevision, committedArtworkRevision } from './art-revision.mjs'
+import { serveArtwork } from '../lib/artwork.js'
 import {
   CAPTAIN_KEY,
   acceptanceCriterionText,
@@ -79,7 +82,8 @@ import {
   resizePanelLayout,
   resolvePanelGeometry,
 } from '../lib/client/panel-geometry.js'
-import { ACTION_SYMBOL, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl } from '../lib/client/artwork.js'
+import { ACTION_ART, ACTION_SYMBOL, LEAD_ART, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl } from '../lib/client/artwork.js'
+import { ART_REVISION } from '../lib/client/art-revision.js'
 import { parseAgentTeamsCreateArgs } from '../lib/client/agent-teams-card-definition.js'
 import {
   AGENT_TEAMS_LOCALE_NAMESPACE,
@@ -206,6 +210,7 @@ const clientIndexSource = await readFile(new URL('../src/client/index.tsx', impo
 const agentTeamsCardCss = await readFile(new URL('../src/client/AgentTeamsCard.module.css', import.meta.url), 'utf8')
 const agentTeamsCardSource = await readFile(new URL('../src/client/AgentTeamsCard.tsx', import.meta.url), 'utf8')
 const artworkSource = await readFile(new URL('../src/client/artwork.ts', import.meta.url), 'utf8')
+const artworkHostSource = await readFile(new URL('../src/artwork.ts', import.meta.url), 'utf8')
 const hostSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
 const toolsSource = await readFile(new URL('../src/tools.ts', import.meta.url), 'utf8')
 const localesSource = await readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
@@ -315,6 +320,10 @@ const expectedArtwork = [
   'action-sleeping-symbol.png', 'action-sending-symbol.png',
 ].sort()
 const artworkDir = new URL('../assets/agent-teams/', import.meta.url)
+// Every artwork URL carries the pack revision as `?v=<revision>` so a redrawn
+// pack cannot stay behind a browser cache. The badge and avatar rules below are
+// about the file the URL names, so they read the path without the query.
+const artworkPath = url => String(url).split('?')[0]
 const packagedArtwork = (await readdir(artworkDir)).sort()
 check(
   'artwork directory contains exactly the V2 captain, eight members, and six actions',
@@ -347,7 +356,7 @@ check(
 )
 check(
   'client mapping and host allowlist reference every artwork asset',
-  expectedArtwork.every(name => artworkSource.includes(name) || hostSource.includes(name))
+  expectedArtwork.every(name => artworkSource.includes(name) || artworkHostSource.includes(name))
     && artworkSource.includes('member-data-v2.png')
     && artworkSource.includes('member-operator-v2.png')
     // The corner badge must resolve its symbol from the role table rather than
@@ -387,7 +396,7 @@ const eightRoleSymbols = [
 check(
   'canonical eight-member roster resolves to eight distinct corner symbols',
   eightRoleSymbols.every(Boolean) && new Set(eightRoleSymbols).size === 8
-    && eightRoleSymbols.every(url => url.endsWith('-symbol.png'))
+    && eightRoleSymbols.every(url => artworkPath(url).endsWith('-symbol.png'))
     && memberSymbolUrl('Lead', 'Team Lead') === LEAD_SYMBOL,
   `resolved symbols = ${JSON.stringify(eightRoleSymbols)}`,
 )
@@ -415,12 +424,103 @@ check(
 // packs, and the panel must not fall back to the mascot for either one.
 check(
   'the small corner badge draws both marks from the symbol packs',
-  Object.values(ACTION_SYMBOL).every(url => url.endsWith('-symbol.png'))
+  Object.values(ACTION_SYMBOL).every(url => artworkPath(url).endsWith('-symbol.png'))
     && Object.values(ACTION_SYMBOL).every(url => !url.includes('-v2.png'))
     && !activityPanelSource.includes('ACTION_ART[')
     && activityPanelSource.includes('ACTION_SYMBOL[member.activity]')
     && activityPanelSource.includes('src={memberSymbolUrl(member.name, member.role)'),
   `action symbols = ${JSON.stringify(ACTION_SYMBOL)}`,
+)
+// The names in this pack did not change when the art was redrawn: the whale and
+// the amber terminal are both `member-engineer-v2.png`. A browser that cached
+// the old bytes therefore kept drawing them for the whole `cache-control`
+// lifetime, and the panel looked like it had never been updated. The fix is a
+// revision in the URL, so the pack content — not the deployment — decides when
+// a browser refetches. These three checks are what keep the pair honest: the
+// committed revision must describe the packaged bytes, a redrawn file must move
+// the revision, and every URL the client builds must carry it.
+const packRevision = await artworkRevision()
+const committedRevision = await committedArtworkRevision()
+check(
+  'the committed artwork revision describes the packaged images',
+  committedRevision !== undefined && committedRevision === packRevision && ART_REVISION === packRevision,
+  `committed ${committedRevision ?? '(missing)'}, built ${ART_REVISION ?? '(missing)'}, pack ${packRevision}`,
+)
+const redrawnRevision = await (async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-teams-artwork-'))
+  try {
+    for (const name of expectedArtwork) {
+      await writeFile(join(dir, name), await readFile(new URL(name, artworkDir)))
+    }
+    const before = await artworkRevision(dir)
+    const target = join(dir, 'member-engineer-v2.png')
+    const bytes = await readFile(target)
+    bytes[bytes.length - 1] ^= 0xff
+    await writeFile(target, bytes)
+    return { before, after: await artworkRevision(dir) }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})()
+check(
+  'a redrawn artwork file changes the revision',
+  redrawnRevision.before === packRevision && redrawnRevision.after !== redrawnRevision.before,
+  `copied pack ${redrawnRevision.before} -> redrawn ${redrawnRevision.after}, packaged ${packRevision}`,
+)
+const revisionedArtworkUrls = [
+  LEAD_ART, LEAD_SYMBOL,
+  ...Object.values(ACTION_ART),
+  ...Object.values(ACTION_SYMBOL),
+  ...eightRoleArtwork,
+  ...eightRoleSymbols,
+]
+check(
+  'every artwork URL carries the pack revision',
+  revisionedArtworkUrls.every(url => typeof url === 'string'
+    && url.startsWith('/plugins/dsh-agent-teams/assets/')
+    && url.endsWith(`?v=${packRevision}`)
+    && artworkPath(url).endsWith('.png')),
+  `unrevisioned = ${JSON.stringify(revisionedArtworkUrls.filter(url => typeof url !== 'string'
+    || !url.endsWith(`?v=${packRevision}`)))}`,
+)
+// The other half of the contract: the host route has to ignore the query the
+// client now appends, and it must still resolve the file by its allowlisted
+// name only. Both are exercised on the production handler, not on a copy.
+const artworkRoute = async (requestUrl) => {
+  const seen = { status: 0, headers: {}, body: undefined }
+  await serveArtwork(fileURLToPath(artworkDir), { url: requestUrl }, {
+    writeHead(status, headers) {
+      seen.status = status
+      seen.headers = headers ?? {}
+    },
+    end(body) {
+      seen.body = body
+    },
+  })
+  return seen
+}
+const servedWithQuery = await artworkRoute(`/plugins/dsh-agent-teams/assets/member-engineer-v2.png?v=${packRevision}`)
+const servedWithoutQuery = await artworkRoute('/plugins/dsh-agent-teams/assets/member-engineer-v2.png')
+check(
+  'the artwork route ignores the cache-busting query',
+  servedWithQuery.status === 200
+    && servedWithQuery.headers['content-type'] === 'image/png'
+    && servedWithQuery.headers['cache-control'] === 'public, max-age=86400'
+    && Buffer.from(servedWithQuery.body).equals(Buffer.from(servedWithoutQuery.body ?? []))
+    && Buffer.from(servedWithQuery.body).equals(await readFile(new URL('member-engineer-v2.png', artworkDir))),
+  `status=${servedWithQuery.status} headers=${JSON.stringify(servedWithQuery.headers)}`,
+)
+const rejectedArtwork = [
+  '/plugins/dsh-agent-teams/assets/not-packaged.png',
+  '/plugins/dsh-agent-teams/assets/../package.json',
+  '/plugins/dsh-agent-teams/assets/%2e%2e%2fpackage.json',
+  '/plugins/dsh-agent-teams/assets/',
+]
+const rejectedStatuses = await Promise.all(rejectedArtwork.map(async url => (await artworkRoute(url)).status))
+check(
+  'the artwork route serves allowlisted names only',
+  rejectedStatuses.every(status => status === 404),
+  `statuses = ${JSON.stringify(rejectedStatuses)} for ${JSON.stringify(rejectedArtwork)}`,
 )
 check(
   'whale portraits use transparent cutouts instead of dark circular plates',

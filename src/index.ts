@@ -34,10 +34,10 @@ import {
   type ToolsConfig,
 } from './tools.ts'
 import { installAgentTeamsGestureBoundary, registerAgentTeamsCommand } from './command.ts'
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
+import { serveArtwork } from './artwork.ts'
 import { findTeamByCaptain } from './state.ts'
 import { formatProfilesForPrompt, type TeamProfileConfig } from './profiles.ts'
 import { installTeamCapabilities } from './capabilities.ts'
@@ -431,59 +431,16 @@ export function apply(ctx: Context, config: Config): void {
   // role/action images to the activity panel. An explicit allowlist guards the
   // route (no path traversal); the images ship with the bundle (files:
   // assets/). The `-symbol` files are the standalone marks drawn in the small
-  // corner badge, where the mascot art is too dense to read.
+  // corner badge, where the mascot art is too dense to read. The client appends
+  // `?v=<pack revision>` to every URL, so this handler reads the path only and
+  // a redrawn pack is a URL the browser has never cached.
   const artDir = fileURLToPath(new URL('../assets/agent-teams/', import.meta.url))
-  const ART_ALLOWLIST = new Set([
-    'team-lead-v2.png',
-    'member-researcher-v2.png', 'member-engineer-v2.png',
-    'member-qa-v2.png', 'member-designer-v2.png',
-    'member-security-v2.png', 'member-docs-v2.png',
-    'member-data-v2.png', 'member-operator-v2.png',
-    'action-working-v2.png', 'action-thinking-v2.png',
-    'action-reporting-v2.png', 'action-celebrating-v2.png',
-    'action-sleeping-v2.png', 'action-sending-v2.png',
-    'team-lead-symbol.png',
-    'member-researcher-symbol.png', 'member-engineer-symbol.png',
-    'member-qa-symbol.png', 'member-designer-symbol.png',
-    'member-security-symbol.png', 'member-docs-symbol.png',
-    'member-data-symbol.png', 'member-operator-symbol.png',
-    'action-working-symbol.png', 'action-thinking-symbol.png',
-    'action-reporting-symbol.png', 'action-celebrating-symbol.png',
-    'action-sleeping-symbol.png', 'action-sending-symbol.png',
-  ])
-    ctx.effect(() => webServer.register({
-      kind: 'prefix',
-      path: '/plugins/dsh-agent-teams/assets',
-    handler: async (req, res) => {
-      let name: string
-      try {
-        name = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname.split('/').pop() ?? '')
-      } catch {
-        // Malformed percent-encoding: treat as an unknown asset, not a 400.
-        res.writeHead(404)
-        res.end()
-        return
-      }
-      if (!ART_ALLOWLIST.has(name)) {
-        res.writeHead(404)
-        res.end()
-        return
-      }
-      try {
-        const data = await readFile(join(artDir, name))
-        res.writeHead(200, {
-          'content-type': 'image/png',
-          'cache-control': 'public, max-age=86400',
-        })
-        res.end(data)
-      } catch (error: unknown) {
-        ctx.logger.warn(`agent-teams: artwork read failed for ${name}: ${String(error)}`)
-        res.writeHead(404)
-        res.end()
-      }
-      },
-    }), 'agent-teams: artwork route')
-  }
+  ctx.effect(() => webServer.register({
+    kind: 'prefix',
+    path: '/plugins/dsh-agent-teams/assets',
+    handler: (req, res) => serveArtwork(artDir, req, res, message => ctx.logger.warn(message)),
+  }), 'agent-teams: artwork route')
+}
 
   registerWebSurface()
   ctx.on('internal/service', (name) => {

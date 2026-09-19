@@ -26,6 +26,8 @@ Ask in natural language. The plugin provides the team protocol, 14 coordination 
 
 ## Releases
 
+[v0.1.22](./release-notes/v0.1.22.md) is a packaging fix for the activity panel artwork. The panel addresses its images by file name, and those names survived the redraw from the whale pack to the amber terminal pack — so a browser that had cached `member-engineer-v2.png` kept drawing the old whale for the whole `cache-control` lifetime, and a freshly deployed panel looked unchanged. Every artwork URL now carries a content revision (`?v=<pack revision>`) derived from the packaged bytes, and both `pnpm build` and `scripts/verify.mjs` fail when the committed revision goes stale. No state, tool signature or quality-gate rule changed.
+
 [v0.1.21](./release-notes/v0.1.21.md) makes acceptance criteria waivable: a member can report a check that is red on the baseline as `waived` with evidence instead of forcing the task to fail, and Delivery stays blocked until a review confirms the waiver. It also removes the list-length fallback that let an unrelated all-pass report satisfy a contract, makes scope-overlap serialization transitive, drops cancelled tasks from the Delivery path audit, turns a misplaced profile key into a fix ("`requiredReviewers` belongs under `reviewPolicy`"), adds `node scripts/doctor.mjs --profiles`, and gives the activity panel three read-only views over the same state: **Phases**, **Agents** and **Queues**. Recommended host: DeepSeek Harness `0.1.5-rc.1`; the three older supported host targets are retained.
 
 ### What this branch changes
@@ -44,13 +46,14 @@ unchanged, and no existing assertion was weakened.
 | **Three read-only panel views** | **Phases** (columns by declared phase, otherwise dependency level, with edges between columns), **Agents** (one swimlane per member in execution order, blocked chips dimmed with the blocking task in the tooltip) and **Queues** (who holds what, what is next, and the grouped idle reason). The choice is remembered per browser. | `src/client/activity-model.ts`, `src/client/ActivityPanel.tsx` |
 | **One task-status table** | The transition table lives once, in `src/state.ts`; the completion gate reads it instead of keeping a copy that can drift. | `src/state.ts`, `src/quality-gates.ts` |
 | **Scheduler attempt integrity** | A member's own fresh attempt is no longer mistaken for a lost owner and re-claimed underneath it (which used to drop `in_progress` back to `claimed` and make the member's next `update_task` fail as stale), and fresh ready work now outranks re-claiming an attempt the member already holds. | `src/scheduler.ts` |
+| **Revisioned panel artwork** | Artwork URLs carry a revision derived from the packaged bytes, so redrawing a pack changes the URL instead of leaving browsers on the previously cached image; the host route reads the path only, and a stale revision fails the build. | `src/client/artwork.ts`, `src/artwork.ts`, `scripts/art-revision.mjs` |
 
 Remaining plan work is tracked locally and lands in later releases: contract
-amendment extensions and `retry` from `failed` (0.1.22), `superseded` with an
-atomic dependency redirect (0.1.22), post-hoc path acceptance and
-`awaiting_scope_review` (0.1.22), the known-delta registry (0.1.22),
-`requiredReviewers` enforcement (0.1.22), mandatory `team_id` addressing
-(0.1.23), plan progress and the task checklist (0.2.0), and live-team replanning
+amendment extensions and `retry` from `failed` (0.1.23), `superseded` with an
+atomic dependency redirect (0.1.23), post-hoc path acceptance and
+`awaiting_scope_review` (0.1.23), the known-delta registry (0.1.23),
+`requiredReviewers` enforcement (0.1.23), mandatory `team_id` addressing
+(0.1.24), plan progress and the task checklist (0.2.0), and live-team replanning
 (0.2.0).
 
 ### Verification
@@ -58,7 +61,7 @@ atomic dependency redirect (0.1.22), post-hoc path acceptance and
 | Layer | Result |
 | --- | --- |
 | `pnpm typecheck`, `pnpm build` | pass |
-| `scripts/verify.mjs` | 214 PASS / 0 FAIL (upstream baseline on this machine: 181) |
+| `scripts/verify.mjs` | 219 PASS / 0 FAIL (upstream baseline on this machine: 181) |
 | `scripts/quality-gates-tdd.mjs` | 106 PASS / 0 FAIL |
 | the remaining suites (`lifecycle`, `stress`, `web-routes`, `capabilities`, `harness-compat`, …) | all exit 0 |
 | `readme-version`, `release-metadata`, `verify-package`, `sync-skill --check` | pass |
@@ -94,14 +97,14 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.21`. Harness remains a prerelease.**
+**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.22`. Harness remains a prerelease.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended installation** | **`0.1.5-rc.1`** | **`0.1.21`** |
-| Retaining an older RC | `0.1.2-rc.1` | `0.1.21` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.21` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.21` |
+| **Recommended installation** | **`0.1.5-rc.1`** | **`0.1.22`** |
+| Retaining an older RC | `0.1.2-rc.1` | `0.1.22` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.22` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.22` |
 
 ### 1. Install DeepSeek Harness
 
@@ -117,12 +120,12 @@ Skip this if you already run this version. Alpha is opt-in: select an exact Alph
 Install into the `web` profile. Replace the profile name if needed:
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.21
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.22
 ```
 
 **After installation, stop and restart Harness for that profile, then refresh the browser.**
 
-The default npm `latest` tag points to `0.1.21`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.1.19/README.md).
+The default npm `latest` tag points to `0.1.22`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.1.19/README.md).
 
 > Desktop users must check the app's embedded Harness core; upgrading the global CLI does not upgrade it. For older `0.1.0-*` / `0.1.1-*` or unlisted hosts, keep a working pair and follow the [older-version and diagnostic guide](./docs/maintenance-workflow.md).
 

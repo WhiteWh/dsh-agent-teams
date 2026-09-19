@@ -73,14 +73,15 @@ the pre-step count, and FAIL must stay 0.
 | S05 | WP6.1 profile lint + doctor --profiles | done | 7941ede | verify 188 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
 | S06 | WP10 phases / agents / queues views | done | 935be9b | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL |
 | S07 | docs + release 0.1.21 | done | 74fc749 | verify 210 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; t5-replay 7/7; scheduler fix in 0108c81 |
+| F4 | artwork cache revision (hotfix release 0.1.22) | done | | verify 219 PASS/0 FAIL; qg-tdd 106 PASS/0 FAIL; mutation-tested route check; plan releases below shift by one |
 | S08 | WP2 amend_task extensions + retry from failed | todo | | needs S01 |
 | S09 | WP3 superseded + atomic dependency redirect | todo | | needs S01 |
 | S10 | WP4 accept_paths + sharedInScope + awaiting_scope_review | todo | | needs S03 |
 | S11 | WP6.3 known-delta registry | todo | | needs S03 |
 | S12 | WP6.4 requiredReviewers enforced | todo | | |
-| S13 | docs + release 0.1.22 | todo | | |
+| S13 | docs + release 0.1.23 | todo | | 0.1.22 was taken by the F4 hotfix |
 | S14 | WP11 phase 1 team_id addressing | todo | | needs S09; D5: team_id mandatory except create and bare status; D6 minimal guard |
-| S15 | docs + release 0.1.23 | todo | | |
+| S15 | docs + release 0.1.24 | todo | | 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | todo | | needs S09; D3: server-side byKind/equal modes |
 | S17 | WP7 replan live team | todo | | needs S08–S10, S02; D4: nearest-ancestor phase fitting + lift-and-flag |
 | S18 | WP11 phase 2 N teams in UI + scheduler | todo | | needs S16, S06 |
@@ -470,6 +471,109 @@ Must stay green: `tdd.create.overlapping-inscope-rejects-parallel-ready-tasks`,
   it. The `nextTaskId` plumbing is already in place for that caller.
   Tool descriptions and docs for the changed gate are deliberately left to the
   S07 docs step, as the linear order requires.
+
+### Deployment — 0.1.21 live in the `web` profile (verified 2026-09-20, no code change)
+
+Owner installed `dsh-agent-teams-0.1.21.tgz` into `C:\Users\whitl\.dsh\profiles\web`
+and restarted the `web` server (PID 158768, started 00:40:30). Verification, all
+evidence-based, nothing inferred from the fact that the server answers:
+
+- **Installed bytes are ours.** `lib/{client,index,scheduler,quality-gates,harness-compat}.js`
+  SHA256 in the profile equals the local `lib/` build one-to-one.
+- **The host loaded the plugin.** Both post-restart session logs
+  (`~/.dsh/sessions/--D-OwlCats-AI_Tools--/session-6d7bc1d2…` and
+  `--D-OwlCats-DCB--/session-58b6ae05…`) contain all 14 `agent_teams_*` tool names,
+  the captain-protocol section, and the 0.1.21-only vocabulary
+  (`waiverConfirmation`, `allowWaivers`, `has unconfirmed waivers`, `no_regression`).
+  Reproduce with `node .local/verify-deployed-session.mjs <session.v3.jsonl.zstd>`;
+  the logs are **multi-frame** zstd, `node:zlib` decodes only the first frame, so
+  the script splits on the frame magic (2664 frames decoded, 0 unreadable).
+- **Client panel composes.** `dsh.client.platform = "web"` and
+  `exports["./client"].default = "./lib/client.js"` exist (237 192 bytes, written by
+  the install); all seven `dsh.client.inject` targets resolve at `0.1.5-rc.2` in the
+  host tree. Composition failure throws at registry construction, so a served
+  `dsh web` is itself the proof that composition passed.
+- **Do not read 404 on `/plugins/…` as "not registered".** Bundles are served only
+  for the exact advertised revision URL (`/plugins/??<id>/client.js&rev=<opaque nonce>`);
+  a bare `/plugins/<id>/client.js` 404s for host plugins too. Our plugin's own routes
+  do answer: `/plugins/dsh-agent-teams/state` → `401 {"error":"unauthorized"}` while an
+  unknown plugin id → empty `404`.
+- **Host version.** The global CLI reports `0.1.5-rc.1`, but every
+  `@deepseek-ai/dsh-*` runtime in that tree is `0.1.5-rc.2` (installed 2026-09-14,
+  unchanged by the restart) — the plugin runs under rc.2 in practice.
+
+### F4 — artwork cache revision, release 0.1.22 (owner report: "не вижу наших иконок")
+
+Reported while verifying the 0.1.21 deploy: the panel rendered the whale captain
+and whale members, while the installed package held the amber pack. Established
+facts, in this order:
+
+- the deployed `lib/{client,index,scheduler,quality-gates,harness-compat}.js` and
+  all 30 `assets/agent-teams/*.png` are byte-identical to this checkout, and the
+  running server is 0.1.21 (`allowWaivers`/`waiverConfirmation`/`no_regression`
+  are absent from the 0.1.18 copy in `martty`, present in my own tool schema);
+- the whale art the panel showed is `47183d8`'s pack — the *same file names*
+  (`member-engineer-v2.png`, `team-lead-v2.png`) as the amber pack;
+- the route served them with `cache-control: public, max-age=86400`, so the
+  browser never asked again after the upgrade.
+
+So this is a browser-side staleness with a server-side cause: stable URLs plus a
+day-long cache plus changing bytes. Fixed by revisioning the URL, not by asking
+the owner to clear a cache.
+
+- **Changed:** `src/client/artwork.ts` builds every URL through one `artUrl()`
+  helper that appends `?v=<ART_REVISION>`; the new generated module
+  `src/client/art-revision.ts` holds the revision; `scripts/art-revision.mjs`
+  derives it from the sorted, length-framed pack bytes and regenerates the module
+  with `--write`; the art route moved out of `src/index.ts` into `src/artwork.ts`
+  (`serveArtwork` + `ART_ALLOWLIST`) so the request shape is testable, and it
+  still reads the URL *path* only (the query is never part of the file name).
+- **Gates:** `pnpm build` now starts with `node scripts/art-revision.mjs --check`,
+  and `scripts/verify.mjs` re-derives the same value, so a swapped icon without
+  `pnpm art:revision` fails the build with
+  `artwork revision is stale: committed …, pack …`.
+- **Tests (RED first):** `lib/client/art-revision.js` was missing → the suite
+  died with `ERR_MODULE_NOT_FOUND`, then the five new checks went green:
+  `the committed artwork revision describes the packaged images`,
+  `a redrawn artwork file changes the revision` (temp copy, one byte flipped),
+  `every artwork URL carries the pack revision`,
+  `the artwork route ignores the cache-busting query` (byte-compared against the
+  packaged file, headers unchanged), `the artwork route serves allowlisted names
+  only` (unknown name, `../package.json`, `%2e%2e%2fpackage.json`, bare prefix).
+  Two existing checks were adapted, not weakened: they now read the path without
+  the query before asserting `-symbol.png`, and the allowlist-or-client-mapping
+  check reads `src/artwork.ts` instead of `src/index.ts`.
+- **Mutation test:** replacing the name extraction with a raw `req.url` split
+  rebuilt green but failed the suite (`the artwork route ignores the
+  cache-busting query — status=404`), which is what proves the check is not
+  vacuous. Reverted, rebuilt, 219 PASS / 0 FAIL.
+- **Release:** version 0.1.22, `release-notes/v0.1.22.md`, README release entry +
+  version table + roadmap renumbering, `docs/maintenance-workflow.md` gained
+  "Changing the activity-panel artwork", `docs/usage.md` lost its stale "whale
+  artwork" bullet. The plan's later releases shift by one (S13 → 0.1.23,
+  S15 → 0.1.24), recorded in the step table above.
+- **Local suite (all exit 0, logs in `.local/logs/release-0.1.22/`):**
+  typecheck; build (`artwork revision: 5a90736f927c`); `verify.mjs` 219 PASS /
+  0 FAIL; `quality-gates-tdd` 106 PASS / 0 FAIL; `fallback-tdd`,
+  `member-failure-tdd`, `lifecycle-verify`, `stress-verify`, `web-routes-verify`,
+  `harness-compat-tdd`, `stability-tdd`, `compatibility`, `readme-version`
+  ("match 0.1.22"), `verify-package`, and the eight `*.test.mjs` files;
+  `sync-skill --check` (10 skills / 121 files) and `lang-check` (policy clean).
+  Left for CI: the whole `pnpm verify` chain, `compatibility.test.mjs`, and the
+  real-host matrix.
+- **Artifact:** `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`,
+  2 238 040 bytes, SHA256 `6A6524EB…CA381F`; copied to
+  `D:\OwlCats\AI_Tools\dsh-agent-teams-0.1.22.tgz` for the profile install.
+  Release record: `docs/releases/v0.1.22/README.md`.
+- **Deployed** into `C:\Users\whitl\.dsh\profiles\web`
+  (`dsh plugin --profile web add --save-exact file:…0.1.22.tgz`): profile
+  dependency now points at the 0.1.22 tarball, installed version 0.1.22,
+  `lib/**` byte-identical to this checkout, `ART_REVISION = 5a90736f927c`,
+  `member-engineer-v2.png` 39 838 bytes. The host picks it up on the next
+  restart; the browser then asks for revisioned URLs, so no cache clearing is
+  needed. Pre-install backups: `*.bak-2026-09-20-pre-0.1.22` (package.json,
+  pnpm-lock.yaml, pnpm-workspace.yaml); rollback target is the 0.1.21 tarball,
+  which stays in place.
 
 ### S01 — WP9-a: one TASK_TRANSITIONS table
 

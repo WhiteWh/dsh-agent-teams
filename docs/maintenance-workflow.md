@@ -42,6 +42,19 @@ node scripts/doctor.mjs \
 
 The doctor checks the package versions, mixing and duplicate identities resolved from the given paths; it does not execute the plugin, does not change configuration, and cannot prove by itself that those paths are the running process. A successful result is not proof of a model, UI or task outcome.
 
+## Changing the activity-panel artwork
+
+The panel's images live in `assets/agent-teams/`: thirty 256×256 8-bit RGBA PNGs — nine mascots (`*-v2.png`), nine role symbols and six action symbols (`*-symbol.png`), plus the action mascots. Replace a file with the 256 px export, never the 64 px one: `scripts/verify.mjs` asserts the header of every packaged image.
+
+The file names are deliberately stable across packs, so a redraw does **not** change any URL. Without a revision, a browser that already holds the previous bytes keeps drawing them for the whole `cache-control` lifetime (a day) and a freshly deployed panel looks unchanged — that is exactly how the whale pack survived the move to the amber pack in a live profile. The client therefore appends `?v=<revision>` to every artwork URL, and the revision is a hash of the packaged bytes:
+
+```sh
+node scripts/art-revision.mjs            # print the pack and committed revisions
+pnpm art:revision                        # regenerate src/client/art-revision.ts
+```
+
+Both `pnpm build` and `scripts/verify.mjs` re-derive that value and fail with `artwork revision is stale: committed …, pack …`, so swapping an icon without regenerating the revision cannot ship. The host route (`src/artwork.ts`) reads the URL *path* only — the `?v=` query is never part of the file name — and serves allowlisted names exclusively, which keeps an unknown name or a traversal attempt a plain 404.
+
 ## Install from source and test Alpha
 
 Build the one artifact to be accepted inside the plugin checkout:

@@ -7,11 +7,30 @@
  * the member identity at full size, while the standalone role symbol marks the
  * same role in the small corner badge. The symbols exist as a separate pack
  * because a mascot scaled down to badge size is unreadable.
+ *
+ * Every URL ends with `?v=<ART_REVISION>`. The file names are stable across
+ * packs — the whale and the amber terminal are both `member-engineer-v2.png` —
+ * so without a revision a browser that cached the previous artwork keeps
+ * drawing it for the whole `cache-control` lifetime, and a redeployed panel
+ * looks unchanged. `scripts/art-revision.mjs` derives the revision from the
+ * packaged bytes and both `pnpm build` and `scripts/verify.mjs` fail when the
+ * committed value goes stale.
  * @module dsh-agent-teams/client/artwork
  */
 
+import { ART_REVISION } from './art-revision.ts'
+
 /** Artwork route prefix served by the plugin host half. */
 export const ART_BASE = '/plugins/dsh-agent-teams/assets/'
+
+/**
+ * One packaged artwork file as an absolute, cache-busting URL.
+ * @param file - packaged image name, for example `member-qa-v2.png`.
+ * @returns the revisioned URL the panel renders.
+ */
+function artUrl(file: string): string {
+  return `${ART_BASE}${file}?v=${ART_REVISION}`
+}
 
 /** Terminal mascot role artwork per role keyword. */
 const ROLE_ART: ReadonlyArray<readonly [RegExp, string]> = [
@@ -28,7 +47,7 @@ const ROLE_ART: ReadonlyArray<readonly [RegExp, string]> = [
 ]
 
 /** Captain artwork (always the lead mascot). */
-export const LEAD_ART = `${ART_BASE}team-lead-v2.png`
+export const LEAD_ART = artUrl('team-lead-v2.png')
 
 /**
  * Role symbol for the small corner badge, derived from the mascot file name.
@@ -39,7 +58,7 @@ export const LEAD_ART = `${ART_BASE}team-lead-v2.png`
  * @returns the matching symbol URL.
  */
 function symbolFor(artName: string): string {
-  return `${ART_BASE}${artName.replace(/-v2\.png$/u, '-symbol.png')}`
+  return artUrl(artName.replace(/-v2\.png$/u, '-symbol.png'))
 }
 
 /** Captain role symbol for the corner badge (always the lead symbol). */
@@ -58,9 +77,9 @@ const LEAD_ROLE = /lead|captain|队长|组长/u
 
 /** Status action artwork per member activity. */
 export const ACTION_ART: Record<'working' | 'idle' | 'unknown', string> = {
-  working: `${ART_BASE}action-working-v2.png`,
-  idle: `${ART_BASE}action-sleeping-v2.png`,
-  unknown: `${ART_BASE}action-thinking-v2.png`,
+  working: artUrl('action-working-v2.png'),
+  idle: artUrl('action-sleeping-v2.png'),
+  unknown: artUrl('action-thinking-v2.png'),
 }
 
 /**
@@ -102,7 +121,7 @@ export function memberSymbolUrl(name: string, role: string): string | null {
 export function memberArtUrl(name: string, role: string): string | null {
   const identity = `${name} ${role}`.toLowerCase()
   for (const [pattern, art] of ROLE_ART) {
-    if (pattern.test(identity)) return `${ART_BASE}${art}`
+    if (pattern.test(identity)) return artUrl(art)
   }
   return null
 }

@@ -176,6 +176,13 @@ member portrait and the two symbols at 18px in the corner badge. Replace an
 icon by copying the `256` export over the packaged name — never the `64` export,
 it fails the size assertion.
 
+After replacing any artwork file, run `node scripts/art-revision.mjs --write`
+(`pnpm art:revision`) before building. The client appends `?v=<pack revision>`
+to every artwork URL and both `pnpm build` and `scripts/verify.mjs` fail on a
+stale constant. This exists because the file names did **not** change between the
+whale pack and the amber pack: without the revision a browser kept drawing the
+cached whale for a day after the upgrade (see FOLLOWUPS F4).
+
 To inspect a client change at real size without installing the plugin anywhere,
 render the built stylesheet against the real assets in headless Chrome:
 

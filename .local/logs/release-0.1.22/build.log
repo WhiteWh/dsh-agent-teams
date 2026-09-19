@@ -1,0 +1,22 @@
+npm warn Unknown project config "auto-install-peers". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config "strict-peer-dependencies". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> @nanmicoder/dsh-agent-teams@0.1.22 build D:\OwlCats\AI_Tools\dsh-agent-teams
+> node scripts/art-revision.mjs --check && node scripts/clean-build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown
+
+artwork revision: 5a90736f927c
+ℹ  tsdown v0.22.2 powered by rolldown v1.1.5
+ℹ  config file: D:\OwlCats\AI_Tools\dsh-agent-teams\tsdown.config.ts 
+ℹ  [@nanmicoder/dsh-agent-teams/client] entry: lib/client/index.js
+ℹ  [@nanmicoder/dsh-agent-teams/client] target: node22.19.0
+ℹ  [@nanmicoder/dsh-agent-teams/client] tsconfig: tsconfig.json
+ℹ  Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js      238.59 kB │ gzip: 51.52 kB
+ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js.map  274.98 kB │ gzip: 62.64 kB
+ℹ  [@nanmicoder/dsh-agent-teams/client] 2 files, total: 513.57 kB
+✔  [@nanmicoder/dsh-agent-teams/client] Build complete in 55ms
