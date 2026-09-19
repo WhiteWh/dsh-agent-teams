@@ -71,14 +71,66 @@ export function compactModelLabel(route: string): string {
   return slash === -1 ? trimmed : trimmed.slice(slash + 1)
 }
 
-/** A live team the current captain still owns and has not halted. */
-export function liveCaptainTeam<T extends { readonly captainSessionId: string; readonly halted?: boolean }>(
+// ── WP11 phase 2: several teams in one panel ───────────────────────────────
+
+/** Where the panel remembers which team the reader is looking at. */
+export const PANEL_TEAM_STORAGE_KEY = 'dsh-agent-teams:activity-panel:team:v1'
+
+/** One tab of the panel's team switcher. */
+export interface PanelTeamTab {
+  readonly teamId: string
+  readonly name: string
+  readonly halted: boolean
+  readonly phase: string
+  /** Members currently working, for the tab's activity dot. */
+  readonly working: number
+  readonly done: number
+  readonly total: number
+}
+
+/**
+ * The tabs of the team switcher: one per live team of the current session, in
+ * the order the snapshots arrive. Counters come from each team's own tasks, so a
+ * tab can never report another team's work.
+ */
+export function panelTeamTabs<T extends {
+  readonly teamId: string
+  readonly name: string
+  readonly halted?: boolean
+  readonly phase?: string
+  readonly members: readonly { readonly status?: string; readonly activity?: string }[]
+  readonly tasks: readonly { readonly status: string }[]
+}>(teams: readonly T[]): readonly PanelTeamTab[] {
+  return teams.map((team) => ({
+    teamId: team.teamId,
+    name: team.name,
+    halted: team.halted === true,
+    phase: team.phase ?? 'running',
+    working: team.members.filter((member) => member.activity === 'working' || member.status === 'working').length,
+    done: team.tasks.filter((task) => task.status === 'completed').length,
+    total: team.tasks.length,
+  }))
+}
+
+/** A stored switcher preference, trimmed; `null` when nothing usable was stored. */
+export function parsePanelTeamSelection(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim() ?? ''
+  return trimmed === '' ? null : trimmed
+}
+
+/**
+ * Which team the panel shows: the stored choice while that team still exists,
+ * otherwise the first live team. A halted team stays selectable — it is stopped
+ * work, not hidden work — and an empty session has no selection at all.
+ */
+export function panelSelectedTeamId<T extends { readonly teamId: string }>(
   teams: readonly T[],
-  sessionId: string | undefined,
-): T | undefined {
-  const owner = sessionId?.trim() ?? ''
-  if (owner === '') return undefined
-  return teams.find((team) => team.captainSessionId === owner && team.halted !== true)
+  stored: string | null | undefined,
+): string | null {
+  if (teams.length === 0) return null
+  const wanted = parsePanelTeamSelection(stored)
+  if (wanted !== null && teams.some((team) => team.teamId === wanted)) return wanted
+  return teams[0]?.teamId ?? null
 }
 
 /** Whether the captain chat should keep showing the in-progress banner. */

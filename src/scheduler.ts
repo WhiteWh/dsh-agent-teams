@@ -27,6 +27,7 @@ import {
   claimMailboxDelivery,
   findTeamsByParticipant,
   invalidateTaskAttempt,
+  listTeams,
   readTeam,
   readPendingMailbox,
   releaseMailboxDelivery,
@@ -41,17 +42,52 @@ export const DEPENDENCY_OUTPUT_MAX_CHARS = 2_000
 /** Combined dependency-output budget in the assignment prompt. */
 export const DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS = 12_000
 
+/**
+ * How many members of one team may be dispatched at the same time (WP11 phase 2).
+ *
+ * The upstream `maxConcurrentWorkers` mechanics: a fuse on concurrent work, not a
+ * limit on the roster. The default equals the default roster cap (8), so an
+ * existing team is never silently throttled; a host or profile lowers it on
+ * purpose, and phase 3 exposes the key on the profile.
+ */
+export const MAX_WORKERS_PER_TEAM = 8
+/** How many members may work at once across every live team of the workspace. */
+export const MAX_CONCURRENT_WORKERS_GLOBAL = 8
+
 export interface SchedulerConfig {
   readonly stateDir: string
   readonly executionPrompt?: string
   readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', attemptId?: string) => Promise<boolean>
+  /**
+   * Every workspace the host knows (WP11 phase 2), used by {@link TeamScheduler.sweepAll}.
+   * Omitted in tests and in hosts without a workspace registry, where the sweep
+   * falls back to the workspace of the calling captain.
+   */
+  readonly workspaces?: () => readonly string[]
+  /** Per-team concurrency cap; defaults to {@link MAX_WORKERS_PER_TEAM}. */
+  readonly maxWorkersPerTeam?: number
+  /** Workspace-wide concurrency cap; defaults to {@link MAX_CONCURRENT_WORKERS_GLOBAL}. */
+  readonly maxConcurrentWorkersGlobal?: number
 }
 
 export interface TeamScheduler {
   /** Try to give every genuinely idle/ready member one unit of ready work. */
   kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>
   /** Try to flush fallback mail or give one member one ready task. */
-  kickMember(workspace: string, teamId: string, memberName: string, captain?: Agent): Promise<void>
+  kickMember(workspace: string, teamId: string, memberName: string, captain?: Agent): Promise<boolean>
+  /**
+   * Sweep every live team of every known workspace (WP11 phase 2).
+   *
+   * The phase-1 scheduler only ever moved the team whose tool call woke it, so a
+   * second team could sit with ready work until something touched it. The sweep
+   * visits all live teams, honours the per-team and global worker caps, and never
+   * gives a member a second task (a member belongs to exactly one team, and
+   * {@link TeamScheduler.kickMember} refuses a member that already holds work).
+   *
+   * @param captain - the live captain asking for the sweep, when there is one.
+   * @returns how many teams were visited and how many members were dispatched.
+   */
+  sweepAll(captain?: Agent): Promise<{ readonly teams: number; readonly dispatched: number }>
   /**
    * Record a capability the plugin minted for a member outside a dispatch
    * (`claim_task`). The scheduler must never treat one of these as a lost owner
@@ -177,6 +213,16 @@ export function formatDependencyOutputs(items: readonly DependencyOutput[]): str
 
 function stateRootOf(workspace: string, config: SchedulerConfig): string {
   return join(workspace, config.stateDir)
+}
+
+/** The workspace a captain session runs in (the state root's parent). */
+function workspaceOf(agent: Agent): string {
+  return agent.session.header.cwd ?? process.cwd()
+}
+
+/** Members of one team that are working right now, for the concurrency caps. */
+function workingCount(team: TeamState): number {
+  return team.members.filter((member) => member.status === 'working').length
 }
 
 function teamLockKey(stateRoot: string, teamId: string): string {
@@ -312,6 +358,23 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     `${stateRoot}\u0000${teamId}\u0000${memberName}`
   )
 
+  /**
+   * Members working right now across every workspace of the sweep (WP11 phase 2).
+   *
+   * The caps live on the dispatch primitive rather than on its callers: the
+   * phase-2 sweep, a single-team kick and the `agent/status` idle wake-up all end
+   * up here, so none of them can exceed the fuse by taking a different route.
+   */
+  const globalWorkingCount = async (fallbackWorkspace: string): Promise<number> => {
+    const workspaces = config.workspaces === undefined ? [fallbackWorkspace] : [...config.workspaces()]
+    let total = 0
+    for (const workspace of workspaces) {
+      const stateRoot = stateRootOf(workspace, config)
+      for (const team of await listTeams(stateRoot)) total += workingCount(team)
+    }
+    return total
+  }
+
   const serializeMember = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
     const previous = memberQueues.get(key) ?? Promise.resolve()
     let release!: () => void
@@ -329,28 +392,79 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
 
   const runtime: TeamScheduler = {
     noteClaimedAttempt() {},
+
+    /**
+     * Sweep every live team of every known workspace (WP11 phase 2).
+     *
+     * Caps are state-based, like the create-time guard: the number of members
+     * that are *working* right now, per team and across the sweep. A team at its
+     * cap is skipped rather than queued, and the sweep stops early once the global
+     * cap is reached, so two busy teams cannot starve a third of its budget.
+     */
+    async sweepAll(suppliedCaptain) {
+      const workspaces = config.workspaces === undefined
+        ? suppliedCaptain === undefined ? [] : [workspaceOf(suppliedCaptain)]
+        : [...config.workspaces()]
+      const maxPerTeam = config.maxWorkersPerTeam ?? MAX_WORKERS_PER_TEAM
+      const maxGlobal = config.maxConcurrentWorkersGlobal ?? MAX_CONCURRENT_WORKERS_GLOBAL
+      const entries: { workspace: string; team: TeamState }[] = []
+      for (const workspace of workspaces) {
+        const stateRoot = stateRootOf(workspace, config)
+        for (const team of await listTeams(stateRoot)) entries.push({ workspace, team })
+      }
+      let globalWorkers = entries.reduce((sum, entry) => sum + workingCount(entry.team), 0)
+      let visited = 0
+      let dispatched = 0
+      for (const entry of entries) {
+        if (globalWorkers >= maxGlobal) break
+        if (entry.team.halted === true || entry.team.phase === 'staged') continue
+        const captain = liveCaptain(ctx, entry.team.captainSessionId, suppliedCaptain)
+        if (captain === undefined) continue
+        visited += 1
+        let teamWorkers = workingCount(entry.team)
+        for (const member of entry.team.members) {
+          if (teamWorkers >= maxPerTeam || globalWorkers >= maxGlobal) break
+          if (member.status === 'removed') continue
+          // A durable `working` status is not evidence that the member is still
+          // running: after a restart it is stale, and its open attempt is exactly
+          // what the recovery path inside `kickMember` has to redeliver. The
+          // member's own availability check decides, not this loop.
+          const did = await runtime.kickMember(entry.workspace, entry.team.id, member.name, captain)
+          if (!did) continue
+          teamWorkers += 1
+          globalWorkers += 1
+          dispatched += 1
+        }
+      }
+      return { teams: visited, dispatched }
+    },
+
     async kickTeam(workspace, teamId, suppliedCaptain) {
       const stateRoot = stateRootOf(workspace, config)
       const team = await readTeam(stateRoot, teamId)
       if (team === undefined || team.halted === true || team.phase === 'staged') return
       const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
       if (captain === undefined) return
+      const maxPerTeam = config.maxWorkersPerTeam ?? MAX_WORKERS_PER_TEAM
+      let teamWorkers = workingCount(team)
       for (const member of team.members) {
         if (member.status === 'removed') continue
-        await runtime.kickMember(workspace, teamId, member.name, captain)
+        if (teamWorkers >= maxPerTeam) return
+        const did = await runtime.kickMember(workspace, teamId, member.name, captain)
+        if (did) teamWorkers += 1
       }
     },
 
     async kickMember(workspace, teamId, memberName, suppliedCaptain) {
       const stateRoot = stateRootOf(workspace, config)
       const queueKey = memberQueueKey(stateRoot, teamId, memberName)
-      await serializeMember(queueKey, async () => {
+      return serializeMember(queueKey, async () => {
         let team = await readTeam(stateRoot, teamId)
-        if (team === undefined || team.halted === true || team.phase === 'staged') return
+        if (team === undefined || team.halted === true || team.phase === 'staged') return false
         const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
-        if (captain === undefined) return
+        if (captain === undefined) return false
         let member = team.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
-        if (member === undefined || !isMemberAvailable(ctx, member)) return
+        if (member === undefined || !isMemberAvailable(ctx, member)) return false
 
         // A mailbox-only fallback is real pending work. Deliver it before a
         // fresh task and acknowledge only after Harness accepts the follow-up.
@@ -378,14 +492,22 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
               releaseMailboxDelivery(stateRoot, team!.id, member!.name, unread.map(message => message.id))
             ))
           }
-          return
+          return accepted
         }
+
+        const maxPerTeam = config.maxWorkersPerTeam ?? MAX_WORKERS_PER_TEAM
+        const maxGlobal = config.maxConcurrentWorkersGlobal ?? MAX_CONCURRENT_WORKERS_GLOBAL
 
         const ticket = await withTeamLock(teamLockKey(stateRoot, team.id), async (): Promise<DispatchTicket | undefined> => {
           const fresh = await readTeam(stateRoot, team!.id)
           if (fresh === undefined || fresh.halted === true || fresh.phase === 'staged') return undefined
           const currentMember = fresh.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
           if (currentMember === undefined || !isMemberAvailable(ctx, currentMember)) return undefined
+          // WP11 phase 2 caps: this team may not exceed its own fuse, and the
+          // workspace may not exceed the global one. Checked here so every kick
+          // path (sweep, team kick, idle wake-up) obeys the same numbers.
+          if (workingCount(fresh) >= maxPerTeam) return undefined
+          if (await globalWorkingCount(workspace) >= maxGlobal) return undefined
           const owned = ownedOpenTask(fresh.tasks, currentMember.name)
           // An idle edge observed by this scheduler parks the exact open
           // capability. Harness may dispose its AgentHandle after settlement,
@@ -471,14 +593,14 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             ),
           }
         })
-        if (ticket === undefined) return
+        if (ticket === undefined) return false
 
         const prompt = assignmentPrompt(ticket, config.stateDir, team.id)
         const signal = new AbortController().signal
         const accepted = config.dispatch === undefined
           ? await deliverToMember(ctx, captain, ticket.memberId, prompt, signal)
           : await config.dispatch(captain, team.id, ticket.memberName, prompt, signal, 'queue', ticket.attemptId)
-        if (accepted) return
+        if (accepted) return true
 
         // Roll back only our exact failed dispatch. A concurrent captain
         // handoff has already changed the capability and wins.
@@ -512,6 +634,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           if (currentMember !== undefined && currentMember.status !== 'removed') currentMember.status = 'idle'
           await writeTeam(stateRoot, fresh)
         })
+        return false
       })
     },
   }

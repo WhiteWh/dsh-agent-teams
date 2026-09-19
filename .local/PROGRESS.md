@@ -84,7 +84,7 @@ the pre-step count, and FAIL must stay 0.
 | S15 | docs + release 0.1.24 | done | | version 0.1.24; notes + release record; tag v0.1.24 with the branch marker; artifact 2 263 430 B / SHA256 `77423C11…4CBD` installed into the web profile; 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | done | | verify 261 PASS/0 FAIL (+21); qg-tdd 134 PASS/0 FAIL (+2); lifecycle 147 PASS/0 FAIL (+2); all 21 suites exit 0; D3 both modes server-side |
 | S17 | WP7 replan live team | done | | verify 288 PASS/0 FAIL (+27); qg-tdd 134 PASS/0 FAIL; lifecycle 152 PASS/0 FAIL (+5); stress 25 PASS/0 FAIL (+4); all 21 suites exit 0; tool count 18 → 19; D4 phases declared + DAG-level fallback |
-| S18 | WP11 phase 2 N teams in UI + scheduler | todo | | needs S16, S06 |
+| S18 | WP11 phase 2 N teams in UI + scheduler | done | | verify 288 PASS/0 FAIL; multi-team 14 PASS/0 FAIL (new suite, in the chain); lifecycle 152; stress 30 PASS/0 FAIL (+5); all 22 suites exit 0; liveCaptainTeam removed |
 | S19 | WP11 phase 3 team limits | todo | | |
 | S20 | docs + release 0.2.0 | todo | | |
 
@@ -172,6 +172,64 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S18 — WP11 phase 2: several teams in the panel and in the scheduler (done)
+
+Scope (plan §WP11 phase 2): with N teams the panel stacked every live team into one
+column (two DAGs read as one graph) and the scheduler only ever moved the team a tool
+call named.
+
+- **Panel switcher:** `TeamSwitcher` (one tab per live team: name, `done/total`, an
+  activity dot; a halted team keeps its tab with a warn dot) and a single rendered
+  `TeamSection` — the selected team's DAG, members, progress and slices only. The
+  choice lives in `dsh-agent-teams:activity-panel:team:v1`; a stale id falls back to
+  the first live team. `liveCaptainTeam` (dead since the phase-1 addressing change, and
+  the reason two teams could not be told apart) is **removed** together with its two old
+  checks; the model now exposes `panelTeamTabs`, `panelSelectedTeamId` and
+  `parsePanelTeamSelection`, and `verify.mjs` asserts the same invariants on them.
+- **Scheduler sweep:** `TeamScheduler.sweepAll` walks every live team of every workspace
+  the host reports (`ToolsConfig.workspaces`, injected from `workspaceRegistry` in
+  `index.ts`; absent → the calling captain's workspace), skips staged/halted teams and
+  returns `{ teams, dispatched }`. `agent_teams_status` for a captain who leads more than
+  one team now triggers the sweep instead of a single-team kick, so a second team with
+  ready work no longer waits for its own call.
+- **Caps (upstream #144 mechanics):** `maxWorkersPerTeam` (default: the roster cap, so no
+  existing team is silently throttled) and `maxConcurrentWorkersGlobal` (default 8), both
+  host config today and profile keys in phase 3. The check sits on the **dispatch
+  primitive** (`kickMember`), not on its callers, so the sweep, a team kick and the
+  `agent/status` idle wake-up all obey the same numbers; `kickMember` now returns whether
+  it dispatched.
+- **Found by the step's own tests (in-step fix):** the first sweep implementation skipped
+  members whose durable status was `working`, which broke the cold-restart recovery — after
+  a restart that status is stale and its open attempt is exactly what the recovery path has
+  to redeliver. The loop now iterates every non-removed member and lets `isMemberAvailable`
+  decide; the caps are accounted from the actual dispatches.
+- **Mail:** already per team (`<stateRoot>/<teamId>/inbox/`, addressed with the team id), so
+  phase 2 needed no routing change — asserted as a documented property instead.
+- **Tests:** new `scripts/multi-team-panel-tdd.mjs` (14 checks: per-team tabs and counters,
+  identical task ids in two teams staying separate, a halted team keeping its tab,
+  stored/stale/empty selection, defensive parsing, switcher rendering and styling,
+  `liveCaptainTeam` gone, sweep + caps in the source) wired into `pnpm verify` as
+  `verify:multi-team`; `stress-verify.mjs` +5 (two teams of five, the sweep dispatching the
+  second team without a second call, the workspace-wide cap bounding both teams, no member
+  with two open lanes, archiving one team freeing the cap) — this closes the F6 follow-up.
+- **Also fixed:** `package.json` was re-serialized while adding the script and turned the
+  upstream author's `\uXXXX` escapes into literal CJK, which the language check caught
+  (`lang-check` exit 1). The escaped form is restored; only the two script lines differ from
+  the previous revision.
+- **Green:** typecheck exit 0; build exit 0; `verify.mjs` **288 PASS / 0 FAIL**;
+  `multi-team-panel-tdd` **14 PASS / 0 FAIL**; `quality-gates-tdd` **134 PASS / 0 FAIL**;
+  `lifecycle-verify` **152 PASS / 0 FAIL**; `stress-verify` **30 PASS / 0 FAIL**; all 22
+  suites + `verify-package` + `sync-skill --check` + the language check exit 0 (logs in
+  `.local/logs/s18b/`).
+- **Documented deviation:** the plan's phase-2 wording ("a per-team cap") is implemented as
+  a fuse whose default equals the roster cap — a smaller default would have silently
+  throttled the existing 8-member scenario. The decisive, observable cap is the global one,
+  and both become profile keys in phase 3. The plan's `multi-team-panel-tdd.mjs` carries the
+  panel-model checks; the scheduler half stays in the stress suite, which already owns the
+  real dispatch harness.
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs` and the real-host
+  matrix.
 
 ### S17 — WP7: replanning a live team (done)
 

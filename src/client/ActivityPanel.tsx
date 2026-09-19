@@ -44,7 +44,11 @@ import {
   idleReasonSummary,
   memberRouteLabel,
   parseActivityView,
+  parsePanelTeamSelection,
   parseProgressMode,
+  PANEL_TEAM_STORAGE_KEY,
+  panelSelectedTeamId,
+  panelTeamTabs,
   phaseBoardLayout,
   phaseColumns,
   planProgress as planProgressView,
@@ -58,6 +62,7 @@ import {
   usesParallelTaskGrid,
   type ActivityViewMode,
   type ManualPhase,
+  type PanelTeamTab,
   type ProgressMode,
 } from './activity-model.ts'
 import {
@@ -1158,6 +1163,42 @@ function RunningPlanEditor({ team, t }: {
   )
 }
 
+/** Switch between the session's live teams (WP11 phase 2). */
+function TeamSwitcher({ tabs, selected, onSelect, t }: {
+  readonly tabs: readonly PanelTeamTab[]
+  readonly selected: string | null
+  readonly onSelect: (teamId: string) => void
+  readonly t: AgentTeamsTranslate
+}) {
+  return (
+    <div className={css.teamSwitcher} role="tablist" aria-label={t('teams.switcher')} data-team-switcher>
+      {tabs.map((tab) => (
+        <button
+          key={tab.teamId}
+          type="button"
+          role="tab"
+          aria-selected={tab.teamId === selected}
+          className={css.teamTab}
+          data-team-tab={tab.teamId}
+          data-active={tab.teamId === selected}
+          data-halted={tab.halted}
+          title={t('teams.tab', {
+            name: tab.name,
+            done: tab.done,
+            total: tab.total,
+            state: t(tab.halted ? 'team.stopped' : tab.working > 0 ? 'teams.tabWorking' : 'teams.tabIdle'),
+          })}
+          onClick={() => { onSelect(tab.teamId) }}
+        >
+          <span className={css.teamTabDot} data-halted={tab.halted} data-working={tab.working > 0} />
+          <span className={css.teamTabName}>{tab.name}</span>
+          <span className={css.teamTabCount}>{tab.done}/{tab.total}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 /** The three read-only cuts plus the tree, switching on the stored view. */
 function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: {
   readonly tasks: readonly ActivityTask[]
@@ -1737,6 +1778,28 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
     )),
     [archivedTeams, current, teams],
   )
+  // WP11 phase 2: one team at a time. Stacking every live team made two DAGs
+  // read as one; the switcher shows the selected team's graph, members, progress
+  // and slices only, and remembers the reader's choice per browser.
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(() => {
+    try {
+      return parsePanelTeamSelection(window.localStorage.getItem(PANEL_TEAM_STORAGE_KEY))
+    } catch {
+      return null
+    }
+  })
+  const selectedTeam = useMemo(
+    () => visibleTeams.find((team) => team.teamId === panelSelectedTeamId(visibleTeams, selectedTeamId)),
+    [visibleTeams, selectedTeamId],
+  )
+  const selectTeam = (teamId: string): void => {
+    setSelectedTeamId(teamId)
+    try {
+      window.localStorage.setItem(PANEL_TEAM_STORAGE_KEY, teamId)
+    } catch {
+      // A blocked localStorage only costs the preference, never the switch.
+    }
+  }
   const visibleCount = visibleTeams.length + visibleArchived.length + visibleHistoric.length
   const visibleLiveTeamIds = useMemo(
     () => visibleTeams.map((team) => team.teamId).sort(),
@@ -1986,19 +2049,27 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
               ? <span className={css.emptyHint}>{t('activity.empty')}</span>
               : (
                 <>
-                  {visibleTeams.map((team) => (
+                  {visibleTeams.length > 1 && (
+                    <TeamSwitcher
+                      tabs={panelTeamTabs(visibleTeams)}
+                      selected={selectedTeam?.teamId ?? null}
+                      onSelect={selectTeam}
+                      t={t}
+                    />
+                  )}
+                  {selectedTeam !== undefined && (
                     <TeamSection
-                      key={team.teamId}
-                      team={team}
-                      modelDirectory={team.phase === 'staged'
-                        ? modelDirectories.directoryFor(team.captainSessionId as SessionId)
+                      key={selectedTeam.teamId}
+                      team={selectedTeam}
+                      modelDirectory={selectedTeam.phase === 'staged'
+                        ? modelDirectories.directoryFor(selectedTeam.captainSessionId as SessionId)
                         : undefined}
                       onContinuePlanning={returnToComposer}
                       onDiscarded={returnToComposer}
                       onNavigate={navigateToSession}
                       t={t}
                     />
-                  ))}
+                  )}
                   {visibleArchived.map((team) => (
                     <div key={`${team.captainSessionId}:${team.teamId}`} data-team-id={team.teamId} data-historic className={css.archivedWrap}>
                       <span className={css.archiveLabel}>{t(team.phase === 'staged' ? 'archive.discardedLabel' : 'archive.label')}</span>

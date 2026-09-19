@@ -61,7 +61,10 @@ import {
   idleReasonSummary,
   memberRouteLabel,
   parseActivityView,
+  parsePanelTeamSelection,
   parseProgressMode,
+  panelSelectedTeamId,
+  panelTeamTabs,
   phaseBoardLayout,
   phaseColumns,
   planProgress as planProgressView,
@@ -69,7 +72,6 @@ import {
   relatedTaskIds,
   taskModelLabel,
   taskStages,
-  liveCaptainTeam,
   teamIsActive,
   teamProgressSummary,
   usesParallelTaskGrid,
@@ -1338,8 +1340,25 @@ const liveTeam = {
   members: [{ name: 'analyst', status: 'working', activity: 'working', currentTask: 't1' }],
   tasks: [{ id: 't1', subject: 'Clarify requirements', status: 'in_progress' }],
 }
-check('live captain team is selected only for the current session', liveCaptainTeam([liveTeam], 'captain-1') === liveTeam)
-check('halted captain team is hidden from the composer banner', liveCaptainTeam([{ ...liveTeam, halted: true }], 'captain-1') === undefined)
+// WP11 phase 2: the panel is driven by a switcher, so selection is a pure model
+// decision: one tab per live team, the stored choice while it exists, otherwise
+// the first team — and a halted team stays selectable instead of disappearing.
+const switchTeams = [
+  { teamId: 'alpha', name: 'Alpha', phase: 'running', captainSessionId: 'captain-1', members: liveTeam.members, tasks: liveTeam.tasks },
+  { teamId: 'beta', name: 'Beta', phase: 'running', captainSessionId: 'captain-1', halted: true, members: [], tasks: [] },
+]
+check('the panel switcher offers one tab per live team with its own counters',
+  panelTeamTabs(switchTeams).length === 2
+    && panelTeamTabs(switchTeams)[0]?.working === 1
+    && panelTeamTabs(switchTeams)[0]?.total === 1
+    && panelTeamTabs(switchTeams)[1]?.halted === true
+    && panelTeamTabs(switchTeams)[1]?.total === 0)
+check('the panel selection follows the stored team while it exists',
+  panelSelectedTeamId(switchTeams, 'beta') === 'beta'
+    && panelSelectedTeamId(switchTeams, 'gone') === 'alpha'
+    && panelSelectedTeamId([], 'alpha') === null)
+check('a stored panel selection is parsed defensively',
+  parsePanelTeamSelection(' beta ') === 'beta' && parsePanelTeamSelection('') === null) 
 check('active team with working members stays visible', teamIsActive(liveTeam) === true)
 check('planning roster with no tasks still shows the banner', teamIsActive({
   members: [{ name: 'analyst', status: 'idle', activity: 'idle' }],

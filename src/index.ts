@@ -72,6 +72,14 @@ export interface Config {
   memberMaxDepth?: number
   /** Team size cap in members (default `8`). */
   maxMembers?: number
+  /**
+   * Members of one team that may work at the same time (WP11 phase 2, default
+   * `4`). The upstream `maxConcurrentWorkers` mechanics: a fuse on concurrent
+   * work, not a limit on the roster.
+   */
+  maxWorkersPerTeam?: number
+  /** Members that may work at once across every live team of the workspace (default `8`). */
+  maxConcurrentWorkersGlobal?: number
   /** Named multi-role team profiles. */
   profiles?: Record<string, TeamProfileConfig>
   /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
@@ -131,6 +139,10 @@ export const Config: z<Config> = z.object({
   })).default({}),
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
+  // WP11 phase 2 caps; phase 3 moves them onto the profile. Absent means the
+  // documented defaults (4 per team, 8 across the workspace).
+  maxWorkersPerTeam: z.natural().min(1),
+  maxConcurrentWorkersGlobal: z.natural().min(1),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
 })
@@ -210,6 +222,8 @@ export function apply(ctx: Context, config: Config): void {
     fallback: config.fallback,
     memberMaxDepth: config.memberMaxDepth ?? 0,
     maxMembers: config.maxMembers ?? 8,
+    ...config.maxWorkersPerTeam === undefined ? {} : { maxWorkersPerTeam: config.maxWorkersPerTeam },
+    ...config.maxConcurrentWorkersGlobal === undefined ? {} : { maxConcurrentWorkersGlobal: config.maxConcurrentWorkersGlobal },
     profiles: config.profiles ?? {},
   }
 
@@ -219,7 +233,16 @@ export function apply(ctx: Context, config: Config): void {
   // member spawn (`spawnMember`), the earliest point the provider list is
   // settled, rather than here.
 
-  const agentTeamsRuntime = registerAgentTeamsTools(ctx, resolved)
+  const agentTeamsRuntime = registerAgentTeamsTools(ctx, {
+    ...resolved,
+    // WP11 phase 2: the scheduler's sweep walks every workspace the host knows.
+    // The probe is lazy because the registry can arrive after this mount (the
+    // Loader activates services concurrently), exactly like the Web surface above.
+    workspaces: () => {
+      const registry = (ctx.get(WORKSPACE_KEYS[0]) ?? ctx.get(WORKSPACE_KEYS[1])) as WorkspaceRegistry | undefined
+      return registry === undefined ? [] : registry.list().map((workspace) => workspace.path)
+    },
+  })
   installTeamCapabilities(ctx, {
     stateDir: resolved.stateDir,
     isPendingMember: agentTeamsRuntime.isPendingMember,

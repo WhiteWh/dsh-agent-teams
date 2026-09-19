@@ -679,6 +679,61 @@ try {
   }
   check('the revoked capability is refused afterwards instead of writing late', staleRejected)
   await call('agent_teams_delete', {})
+
+  // ── WP11 phase 2: two teams, one free member, and the worker caps ──
+  // The phase-1 scheduler only moved the team a tool call named; a second team
+  // with ready work waited for its own call. The sweep visits every live team,
+  // and the caps (4 members per team, 8 across the workspace) bound how much of
+  // that work may be in flight at once.
+  const sweepTeam = (teamId) => readTeam(stateRoot, teamId)
+  const openTasksOf = (team, memberName) => (team?.tasks ?? []).filter((item) => (
+    item.assignee === memberName && !['completed', 'failed', 'cancelled', 'superseded'].includes(item.status)
+  ))
+  for (const [label, members] of [['alpha', 5], ['beta', 5]]) {
+    await call('agent_teams_create', {
+      name: `Sweep ${label}`,
+      description: `${label} team for the scheduler sweep`,
+      ...label === 'alpha' ? {} : { new_team: true },
+    })
+    for (let index = 1; index <= members; index += 1) {
+      await call('agent_teams_add_member', { name: `${label}-${index}`, role: 'implementer' })
+    }
+    for (let index = 1; index <= members; index += 1) {
+      await call('agent_teams_create_task', { subject: `${label} lane ${index}`, assignee: `${label}-${index}` })
+    }
+  }
+  // One sweep is triggered by a status call that names a single team while the
+  // captain leads two: the phase-2 path replaces the single-team kick.
+  await call('agent_teams_status', { team_id: 'sweep-alpha' })
+  await settle()
+  await call('agent_teams_status', { team_id: 'sweep-beta' })
+  await settle()
+  const alphaTeam = await sweepTeam('sweep-alpha')
+  const betaTeam = await sweepTeam('sweep-beta')
+  const working = (team) => (team?.members ?? []).filter((member) => member.status === 'working').length
+  check('the sweep dispatches the second team without a second-team tool call',
+    working(betaTeam) > 0,
+  )
+  check('the per-team fuse never throttles a team below its own roster',
+    working(alphaTeam) > 0 && working(alphaTeam) <= 5
+      && openTasksOf(alphaTeam, 'alpha-5').length <= 1,
+  )
+  check('the workspace-wide cap bounds the two teams together',
+    working(alphaTeam) + working(betaTeam) <= 8,
+  )
+  check('no member is ever handed two open lanes at once',
+    [...(alphaTeam?.members ?? []), ...(betaTeam?.members ?? [])]
+      .every(member => openTasksOf(alphaTeam, member.name).length + openTasksOf(betaTeam, member.name).length <= 1),
+  )
+  // Archiving a team frees its share of the caps immediately.
+  await call('agent_teams_delete', { team_id: 'sweep-alpha' })
+  await call('agent_teams_status', { team_id: 'sweep-beta' })
+  await settle()
+  const betaAfterArchive = await sweepTeam('sweep-beta')
+  check('archiving one team frees the global cap for the other',
+    working(betaAfterArchive) <= 5 && (betaAfterArchive?.tasks ?? []).length === 5,
+  )
+  await call('agent_teams_delete', { team_id: 'sweep-beta' })
 } finally {
   await rm(workspace, { recursive: true, force: true })
 }

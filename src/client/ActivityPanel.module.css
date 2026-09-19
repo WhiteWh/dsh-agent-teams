@@ -999,6 +999,70 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* WP11 phase 2: the team switcher. One tab per live team of the session, so the
+   panel shows one DAG at a time instead of stacking several graphs. */
+.teamSwitcher {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.teamTab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.teamTab[data-active='true'] {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.teamTab:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.teamTabDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.teamTabDot[data-working='true'] {
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.teamTabDot[data-halted='true'] {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.teamTabName {
+  overflow: hidden;
+  max-width: 130px;
+  text-overflow: ellipsis;
+}
+
+.teamTabCount {
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 .checklistFlag {
   flex: none;
   padding: 0 5px;

@@ -108,6 +108,19 @@ export interface ToolsConfig {
   maxMembers: number
   /** Named team profiles from the active DSH profile. */
   profiles: Record<string, import('./profiles.ts').TeamProfileConfig>
+  /**
+   * Every workspace the host knows, for the phase-2 scheduler sweep. The host
+   * injects this (it owns the workspace registry); absent means "the calling
+   * captain's workspace only", which is what tests and older hosts get.
+   */
+  workspaces?: () => readonly string[]
+  /**
+   * Per-team concurrent-worker cap (WP11 phase 2). Defaults to
+   * `MAX_WORKERS_PER_TEAM`; phase 3 exposes it as a profile key.
+   */
+  maxWorkersPerTeam?: number
+  /** Workspace-wide concurrent-worker cap; defaults to `MAX_CONCURRENT_WORKERS_GLOBAL`. */
+  maxConcurrentWorkersGlobal?: number
 }
 
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
@@ -511,10 +524,21 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   installRetiredMemberGuard(ctx, config.stateDir)
   installMemberDelegationGuard(ctx, config.stateDir, config.memberMaxDepth ?? 0)
   installMailboxAdmission(ctx, config.stateDir)
-  const scheduler = installTeamScheduler(ctx, { stateDir: config.stateDir, executionPrompt: config.executionPrompt, dispatch: dispatchMember })
-  const memberSelections = installMemberSelectionRuntime(ctx, config.stateDir, (workspace, teamId, memberName) => (
-    scheduler.kickMember(workspace, teamId, memberName)
-  ))
+  const scheduler = installTeamScheduler(ctx, {
+    stateDir: config.stateDir,
+    executionPrompt: config.executionPrompt,
+    dispatch: dispatchMember,
+    // WP11 phase 2: the sweep walks every workspace the host knows; without the
+    // injected provider it falls back to the calling captain's workspace.
+    ...config.workspaces === undefined ? {} : { workspaces: config.workspaces },
+    // The per-team fuse defaults to the roster cap, so an existing team is never
+    // throttled by a default nobody asked for (WP11 phase 2).
+    maxWorkersPerTeam: config.maxWorkersPerTeam ?? config.maxMembers,
+    ...config.maxConcurrentWorkersGlobal === undefined ? {} : { maxConcurrentWorkersGlobal: config.maxConcurrentWorkersGlobal },
+  })
+  const memberSelections = installMemberSelectionRuntime(ctx, config.stateDir, async (workspace, teamId, memberName) => {
+    await scheduler.kickMember(workspace, teamId, memberName)
+  })
 
   async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', attemptId?: string): Promise<boolean> {
     const root = stateRootOf(workspaceOf(captain), config)
@@ -2774,7 +2798,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       }
       const located = await requireParticipantTeam(workspace, config, caller, _args.team_id)
       if (located.captainSessionId === caller.id) {
-        await scheduler.kickTeam(workspace, located.id, caller)
+        // WP11 phase 2: a captain who leads several teams gets a workspace-wide
+        // sweep instead of a single-team kick, so a second team with ready work
+        // is not left waiting for its own status call. The sweep still obeys the
+        // per-team and global worker caps.
+        if (participated.length > 1) await scheduler.sweepAll(caller)
+        else await scheduler.kickTeam(workspace, located.id, caller)
       }
       const { team, identity } = await withTeamLock(
         teamLockKey(stateRoot, located.id),
