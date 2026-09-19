@@ -1280,6 +1280,130 @@ console.log('quality-gates TDD — I. one task-status transition table')
   )
 }
 
+console.log('quality-gates TDD — J. transitive overlap skip (WP5)')
+
+{
+  // The overlap gate must skip a task that is already serialized against the
+  // candidate through the dependency closure, not only through a direct edge.
+  // Feedback §5: creating the replacement for a failed task was refused
+  // ("inScope overlaps …; serialize these tasks") while the whole downstream
+  // subtree still pointed at the task being replaced, so the captain had to
+  // cancel the descendants first. Here the candidate depends on t1, which
+  // depends on t2: t2 is two hops upstream, so the two can never hold the same
+  // paths at the same time.
+  const serialized = team({
+    tasks: [
+      task({ id: 't2', status: 'pending', ...implContract({ inScope: ['src/parser.ts'] }) }),
+      task({ id: 't1', status: 'pending', dependencies: ['t2'], ...implContract({ inScope: ['src/util.ts'] }) }),
+    ],
+    taskSeq: 2,
+  })
+  const allowed = api.validateCreateTask?.(serialized, {
+    subject: 'replacement',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+    dependencies: ['t1'],
+  })
+  check(
+    'tdd.scope.overlap-skipped-for-transitive-dependency',
+    allowed?.ok === true,
+    allowed?.ok === false ? allowed.error : '',
+  )
+
+  // A shared ancestor is not serialization: nothing orders the candidate after
+  // t2 here, so both could be in flight at once and the conflict is real.
+  const cousins = team({
+    tasks: [
+      task({ id: 't1', status: 'pending', ...implContract({ inScope: ['src/util.ts'] }) }),
+      task({
+        id: 't2',
+        status: 'pending',
+        dependencies: ['t1'],
+        ...implContract({ inScope: ['src/parser.ts'] }),
+      }),
+    ],
+    taskSeq: 2,
+  })
+  const cousinResult = api.validateCreateTask?.(cousins, {
+    subject: 'cousin impl',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+    dependencies: ['t1'],
+  })
+  check(
+    'tdd.scope.overlap-still-rejected-for-shared-ancestor-only',
+    cousinResult?.ok === false && String(cousinResult.error ?? '').includes('t2'),
+    cousinResult?.ok === false ? '' : 'a shared ancestor must not count as serialization',
+  )
+
+  // The mirror direction. The candidate is not in `team.tasks` yet, so the only
+  // way to see that an existing open task is already fenced behind it is to walk
+  // that task's own upstream closure for the id the candidate is about to take.
+  // The control call with a different id proves the check — not something else —
+  // is what lets the first call through.
+  const mirror = team({
+    tasks: [task({
+      id: 't1',
+      status: 'pending',
+      dependencies: ['t2'],
+      ...implContract({ inScope: ['src/parser.ts'] }),
+    })],
+    taskSeq: 1,
+  })
+  const mirrorAllowed = api.validateCreateTask?.(mirror, {
+    subject: 'upstream replacement',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+    nextTaskId: 't2',
+  })
+  const mirrorBlocked = api.validateCreateTask?.(mirror, {
+    subject: 'unrelated new task',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+    nextTaskId: 't9',
+  })
+  check(
+    'tdd.scope.overlap-skipped-when-existing-task-depends-on-the-new-id',
+    mirrorAllowed?.ok === true && mirrorBlocked?.ok === false,
+    `next-id t2 -> ${mirrorAllowed?.ok === true ? 'allowed' : String(mirrorAllowed?.error ?? 'allowed')}; next-id t9 -> ${mirrorBlocked?.ok === false ? 'rejected' : 'allowed'}`,
+  )
+
+  // No path in either direction: still a real parallel conflict.
+  const conflicting = team({
+    tasks: [task({ id: 't1', status: 'pending', ...implContract({ inScope: ['src/parser.ts'] }) })],
+    taskSeq: 1,
+  })
+  const rejected = api.validateCreateTask?.(conflicting, {
+    subject: 'parallel impl',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+  })
+  check(
+    'tdd.scope.overlap-still-rejected-without-path',
+    rejected?.ok === false
+      && String(rejected.error ?? '').includes('overlaps')
+      && String(rejected.error ?? '').includes('t1'),
+    rejected?.ok === false ? rejected.error : '',
+  )
+
+  // Dead condition removed: the old skip list also contained
+  // `other.dependencies.includes('pending-new')`, an id that exists nowhere.
+  // A task whose dependencies mention it must not silently bypass the check.
+  const magic = team({
+    tasks: [task({
+      id: 't1',
+      status: 'pending',
+      dependencies: ['pending-new'],
+      ...implContract({ inScope: ['src/parser.ts'] }),
+    })],
+    taskSeq: 1,
+  })
+  const magicResult = api.validateCreateTask?.(magic, {
+    subject: 'parallel impl',
+    ...implContract({ inScope: ['src/parser.ts'] }),
+  })
+  check(
+    'tdd.scope.no-dead-pending-new-condition',
+    magicResult?.ok === false && String(magicResult.error ?? '').includes('overlaps'),
+    magicResult?.ok === false ? magicResult.error : 'create was allowed through a stale bypass',
+  )
+}
+
 if (failures > 0) {
   console.error(`quality-gates TDD failed: ${failures} check(s)`)
   process.exitCode = 1

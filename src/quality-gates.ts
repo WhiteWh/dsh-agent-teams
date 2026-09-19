@@ -73,6 +73,12 @@ export interface CreateTaskInput {
   coverageOf?: string[]
   resume?: boolean
   resumeReason?: string
+  /**
+   * The id this task will occupy once created (`t{n}`). The pure validator does
+   * not allocate ids, so callers that already know the next id pass it in;
+   * without it the mirror overlap direction cannot be checked.
+   */
+  nextTaskId?: string
 }
 
 export interface ValidateCreateTaskResult {
@@ -333,6 +339,36 @@ function dependencyClosureContains(
   return false
 }
 
+/**
+ * Whether a new task is already serialized against one existing open task, so
+ * their `inScope` sets can never be held at the same time.
+ *
+ * {@link dependencyClosureContains} walks *upstream*: it answers "is `target`
+ * among the transitive dependencies of `dependencies`". So to ask "is the
+ * candidate fenced behind `other`" the candidate's own dependencies are the
+ * starting set and `other` is the target — the direct-edge test
+ * (`dependencies.includes(other.id)`) is just the one-hop case of this. The
+ * mirror question ("is `other` fenced behind the candidate") starts from
+ * `other`'s dependencies and targets the id the candidate is about to take.
+ * A *shared ancestor* answers neither question, so it is deliberately not
+ * treated as serialization.
+ *
+ * @param tasks - the team's tasks.
+ * @param other - the existing open write task being compared.
+ * @param dependencies - the candidate's dependency list.
+ * @param nextTaskId - the id the candidate will occupy, when the caller knows it.
+ */
+function serializedAgainst(
+  tasks: readonly TeamTask[],
+  other: TeamTask,
+  dependencies: readonly string[],
+  nextTaskId: string | undefined,
+): boolean {
+  if (dependencyClosureContains(tasks, dependencies, other.id)) return true
+  return nextTaskId !== undefined
+    && dependencyClosureContains(tasks, other.dependencies, nextTaskId)
+}
+
 export function validateCreateTask(team: TeamState, input: CreateTaskInput): ValidateCreateTaskResult {
   const kind = input.kind ?? 'work'
   if (!(TASK_KINDS as readonly string[]).includes(kind)) {
@@ -394,8 +430,15 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
     for (const other of team.tasks) {
       if (!WRITE_KINDS.includes(taskKindOf(other))) continue
       if (!OPEN_STATUSES.includes(other.status)) continue
-      if (dependencies.includes(other.id) || other.dependencies.includes('pending-new')) continue
-      if (dependencies.includes(other.id)) continue
+      // Serialization is transitive: `other` is safe whenever the candidate is
+      // fenced behind it through any chain of dependencies, and mirrored when
+      // `other` is already fenced behind the id the candidate is about to take.
+      // The direct-edge test alone refused a replacement whose whole downstream
+      // subtree still pointed at the task being replaced (feedback §5), forcing
+      // a cancel cascade first. Note that a merely shared ancestor is NOT
+      // serialization: nothing orders the candidate after `other` there, so that
+      // conflict is still reported.
+      if (serializedAgainst(team.tasks, other, dependencies, input.nextTaskId)) continue
       const overlap = inScopeOverlap(input.inScope, other.inScope)
       if (overlap.length > 0) {
         return {

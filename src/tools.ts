@@ -1275,6 +1275,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           coverageOf: input.coverageOf,
           resume: input.resume,
           resumeReason: input.resumeReason,
+          // The validator is pure and does not allocate ids; hand it the id this
+          // task is about to take so the mirror overlap direction (an existing
+          // open task already fenced behind this id) can be evaluated.
+          nextTaskId: `t${fresh.taskSeq + 1}`,
         })
         if (!gate.ok) throw new Error(gate.error ?? 'create_task rejected by quality gates')
         if (fresh.halted === true) {
