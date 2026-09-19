@@ -1,56 +1,52 @@
-# 从零开发一个 DeepSeek Harness（DSH）插件
+# Building a DeepSeek Harness (DSH) plugin from scratch
 
-> 本文是 dsh-agent-teams 插件（host 工具 + 浏览器活动面板 + 对话流卡片）开发全过程的经验蒸馏。
-> 覆盖 bundle 插件从骨架、host 面、client 面、构建安装到踩坑修复的完整流程，供 coding agent 直接照做。
-> 参考实现：`dsh-agent-teams`（成品）、DSH 仓库 `packages/workflow/tool-workflow`（工具插件模板）、
-> `packages/client/tsdown.client.ts`（client bundle 协议）、`packages/bundle/base|cordis.patch.yml`（host 组合）、
-> `packages/client/modules/src/index.ts`（浏览器名册扫描）、`packages/client/ui-workflow-run`（对话流 UI 模板）。
+> Distilled from the full development of the dsh-agent-teams plugin (host tools + browser activity panel + conversation card).
+> Covers a bundle plugin end to end — skeleton, host side, client side, build/install, and the pitfalls — so a coding agent can follow it directly.
+> Reference implementations: `dsh-agent-teams` (finished), DSH `packages/workflow/tool-workflow` (tool plugin template),
+> `packages/client/tsdown.client.ts` (client bundle protocol), `packages/bundle/base|cordis.patch.yml` (host composition),
+> `packages/client/modules/src/index.ts` (browser roster scan), `packages/client/ui-workflow-run` (conversation-flow UI template).
 
-## 0. 全景：一个 DSH bundle 插件是什么
+## 0. Overview: what a DSH bundle plugin is
 
-一个可安装插件 = 一个 npm 包，同时扮演两个角色：
+An installable plugin is one npm package playing two roles:
 
-- **host 面**（Node）：包根的 `lib/index.js`，作为组合树里的一行插件挂载，注册工具、服务、HTTP 路由、会话事件。
-- **client 面**（浏览器）：包子路径 `./client`（`lib/client.js`），被 `dsh-client-modules` 扫描进
-  `window.__DSH_BOOT__` 名册，在浏览器里作为 cordis 插件跑 `apply(ctx)`，渲染 UI。
+- **host side** (Node): the package root's `lib/index.js`, mounted as one plugin row in the composition tree, registering tools, services, HTTP routes and session events.
+- **client side** (browser): the subpath `./client` (`lib/client.js`), scanned by `dsh-client-modules` into the `window.__DSH_BOOT__` roster, running as a cordis plugin that calls `apply(ctx)` and renders UI.
 
-安装 = `dsh plugin --profile <profile> add <包路径或包名>`：pnpm 装进 profile，并把包加入
-profile manifest 的 `dsh.profile.bundles` 层列表；bundle 的 `cordis.patch.yml` 作为补丁层把插件行插进组合树。
-**plugin add 后需要重启该 profile**，因为 package manifest/bundles 层和 client package metadata 在进程内缓存；
-但服务已启动后的用户 `cordis.patch.yml` 由 boot HMR 事务性重读，能够更新配置并挂载/移除 patch 行。
+Install = `dsh plugin --profile <profile> add <package path or name>`: pnpm installs into the profile and adds the package to the profile manifest's `dsh.profile.bundles` layer list; the bundle's `cordis.patch.yml` inserts the plugin row into the composition tree as a patch layer. **Restart the profile after plugin add**, because the package manifest/bundle layers and client package metadata are cached in-process. A user's `cordis.patch.yml` edited after boot is re-read transactionally by boot HMR, so config updates and patch-row mount/removal work without a restart.
 
-## 1. 插件形态与项目骨架
+## 1. Plugin shape and project skeleton
 
 ```
 dsh-my-plugin/
 ├── package.json          # dsh.bundle + dsh.client + exports
-├── cordis.patch.yml      # 向 host 组合插入插件行
-├── tsconfig.json         # host 编译（排除 src/client）
-├── tsconfig.client.json  # client 编译（jsx: react-jsx）
-├── tsdown.config.ts      # client bundle 构建（复刻 tsdown.client.ts 协议）
+├── cordis.patch.yml      # inserts the plugin row into the host composition
+├── tsconfig.json         # host compile (excludes src/client)
+├── tsconfig.client.json  # client compile (jsx: react-jsx)
+├── tsdown.config.ts      # client bundle build (mirrors the tsdown.client.ts protocol)
 ├── src/
-│   ├── index.ts          # host 入口：name/inject/Config/apply
-│   ├── tools.ts          # 工具注册（可选，大插件拆文件）
-│   ├── events.ts         # 会话事件写入（可选）
-│   ├── event-types.ts    # 事件类型 + SessionEventMap 合并（零 import！）
-│   ├── snapshot.ts       # host 侧数据组装（可选）
-│   ├── state.ts          # 文件持久化（可选）
+│   ├── index.ts          # host entry: name/inject/Config/apply
+│   ├── tools.ts          # tool registration (optional; split files in a large plugin)
+│   ├── events.ts         # session event writes (optional)
+│   ├── event-types.ts    # event types + SessionEventMap merge (ZERO imports!)
+│   ├── snapshot.ts       # host-side data assembly (optional)
+│   ├── state.ts          # file persistence (optional)
 │   └── client/
-│       ├── index.tsx     # 浏览器入口（必须是 .tsx 才能写 JSX！）
-│       ├── XxxPanel.tsx  # UI 组件
+│       ├── index.tsx     # browser entry (must be .tsx to hold JSX!)
+│       ├── XxxPanel.tsx  # UI components
 │       ├── *.module.css
-│       └── artwork.ts    # 共享纯逻辑（可选）
-├── assets/               # 随包分发的静态资源（白名单路由服务）
-└── scripts/verify.mjs    # 离线冒烟验证
+│       └── artwork.ts    # shared pure logic (optional)
+├── assets/               # static assets shipped with the package (served by an allowlisted route)
+└── scripts/verify.mjs    # offline smoke verification
 ```
 
-### 1.1 package.json 要素（每个字段为什么存在）
+### 1.1 package.json essentials (why each field exists)
 
 ```jsonc
 {
   "name": "dsh-my-plugin",
-  "type": "module",                          // ESM 全栈
-  "main": "lib/index.js",                    // host 入口（tsc 产物）
+  "type": "module",                          // ESM everywhere
+  "main": "lib/index.js",                    // host entry (tsc output)
   "types": "lib/types/index.d.ts",
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
@@ -60,7 +56,7 @@ dsh-my-plugin/
   },
   "files": ["lib", "assets", "cordis.patch.yml", "README.md"],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },   // bundle 声明：patch 挂 host 行
+    "bundle": { "patch": "./cordis.patch.yml" },   // bundle declaration: the patch mounts the host row
     "client": { "inject": ["@deepseek-ai/dsh-client-runtime"], "platform": "web" }
   },
   "scripts": {
@@ -70,76 +66,68 @@ dsh-my-plugin/
 }
 ```
 
-- `exports["./client"]` 是名册扫描的硬要求：`client-modules` 读 `exports["./client"]` 找浏览器 bundle
-  （支持 string 或带 string `default` 的一层条件对象；`types` 不参与运行时解析），缺失直接拒绝该包。
-- `dsh.bundle.patch` 让 `dsh plugin add` 的 reconcile 认出这是 bundle 并加入 bundles 层。
-- `dsh.client` 是当前源码的权威 client manifest；`platform` 必须是 `"web"`。包元数据和负结论按名称缓存，
-  因此新增/删除 client 声明、修正 export 后必须重启 host。旧部署若不同，先核对其源码再做兼容声明。
-- `peerDependencies`：host 侧依赖（`@deepseek-ai/dsh-tools`、`dsh-session`、`dsh-subagent`…）+ 浏览器侧
-  （`@deepseek-ai/dsh-client-runtime`、`dsh-client-ui-slots`、`react`）全部 peer，运行时从 profile 的
-  `node_modules`（healProfilesModuleFallback 扁平目录）解析，不重复安装。
-- `files` 必须含 `lib`、`cordis.patch.yml`；有静态资源加 `assets/...`。
+- `exports["./client"]` is a hard requirement of the roster scan: `client-modules` reads `exports["./client"]` to find the browser bundle (a string, or a one-level conditional object with a string `default`; `types` takes no part in runtime resolution). Missing it rejects the package outright.
+- `dsh.bundle.patch` makes `dsh plugin add`'s reconcile recognise this as a bundle and add it to the bundles layer.
+- `dsh.client` is the authoritative client manifest in the current source; `platform` must be `"web"`. Package metadata and negative conclusions are cached by name, so adding/removing a client declaration or fixing an export requires a host restart. If an older deployment differs, check its source before declaring compatibility.
+- `peerDependencies`: every host-side dependency (`@deepseek-ai/dsh-tools`, `dsh-session`, `dsh-subagent`, …) plus the browser side (`dsh-client-runtime`, `dsh-client-ui-slots`, `react`) is a peer, resolved at runtime from the profile's `node_modules` (the flattened `healProfilesModuleFallback` directory) instead of being installed twice.
+- `files` must include `lib` and `cordis.patch.yml`; add `assets/...` when there are static assets.
 
-### 1.2 cordis.patch.yml：一行插件进组合
+### 1.2 cordis.patch.yml: one row into the composition
 
 ```yaml
-# bundle 补丁：顶层 YAML 数组，insert 追加组合行
+# bundle patch: a top-level YAML array; insert appends composition rows
 - insert:
-    - id: my-plugin            # 行 id（全局唯一）
-      name: dsh-my-plugin      # 包名（client-modules 按它解析 package.json）
-      config:                  # 可选：传入插件的 Config
+    - id: my-plugin            # row id (globally unique)
+      name: dsh-my-plugin      # package name (client-modules resolves package.json by it)
+      config:                  # optional: the plugin's Config
         someOption: value
 ```
 
-要点：`name` 必须等于包名（名册扫描 `require.resolve('<name>/package.json')`）；行挂在 host 组合，
-工具注册进全局 `tools` 注册表，因此该 profile 下所有会话可用，不需要 realm。
+Key points: `name` must equal the package name (the roster scan does `require.resolve('<name>/package.json')`); the row mounts into the host composition and tools register into the global `tools` registry, so every session under that profile can use them with no realm.
 
-### 1.3 tsconfig：host 与 client 必须两个 program
+### 1.3 tsconfig: host and client must be two programs
 
 ```jsonc
-// tsconfig.json —— host
+// tsconfig.json -- host
 {
   "compilerOptions": {
     "module": "NodeNext", "moduleResolution": "NodeNext",
     "lib": ["ES2022"], "strict": true, "noUncheckedIndexedAccess": true,
     "declaration": true, "declarationDir": "lib/types", "outDir": "lib", "rootDir": "src",
-    "allowImportingTsExtensions": true, "rewriteRelativeImportExtensions": true,  // TS 5.7+，.ts 导入重写为 .js
+    "allowImportingTsExtensions": true, "rewriteRelativeImportExtensions": true,  // TS 5.7+, rewrites .ts imports to .js
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["src/client"]     // host program 绝不编译 client
+  "exclude": ["src/client"]     // the host program must never compile the client
 }
 ```
 
 ```jsonc
-// tsconfig.client.json —— client（extends host，覆盖）
+// tsconfig.client.json -- client (extends host, overrides)
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx",          // 必须
-    "types": []                  // 浏览器环境无 node 类型
+    "jsx": "react-jsx",          // required
+    "types": []                  // no node types in a browser environment
   },
   "include": ["src/client", "src/event-types.ts", "src/css-modules.d.ts"],
   "exclude": []
 }
 ```
 
-为什么必须拆（详见 3.1）：host 侧 `dsh-session` 的 index 声明 `Context.sessions: SessionStore`，
-浏览器侧 `dsh-client-runtime` 声明 `Context.sessions: ISessions`——同名成员类型冲突，同一 program
-内二者必居其一（skipLibCheck 吞掉冲突后取先声明者）。拆开后 host program 只见 host 声明、
-client program 只见浏览器声明，互不污染。
+Why the split is mandatory (see 3.1): the host side's `dsh-session` index declares `Context.sessions: SessionStore` while the browser side's `dsh-client-runtime` declares `Context.sessions: ISessions` — same-name member types that conflict, so one program can only hold one of them (`skipLibCheck` swallows the conflict and keeps whichever is declared first). Split, the host program sees only host declarations and the client program only browser declarations, with no cross-contamination.
 
-## 2. host 侧开发
+## 2. Host-side development
 
-### 2.1 函数插件四要素
+### 2.1 The four parts of a function plugin
 
-DSH 的函数插件是命名导出 `name/inject/Config/apply`（无 default export）：
+A DSH function plugin is the named exports `name/inject/Config/apply` (no default export):
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-// 声明合并 only：让 ctx.subagents / ctx.systemPrompt 等类型可见（见 2.3）
+// declaration-merge only: makes ctx.subagents / ctx.systemPrompt etc. visible (see 2.3)
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
@@ -150,71 +138,66 @@ export interface Config { stateDir?: string }
 export const Config: z<Config> = z.object({ stateDir: z.string().default('.agent-teams') })
 
 export function apply(ctx: Context, config: Config): void {
-  // 注册工具、prompt section、HTTP 路由……全部在 apply 里
+  // register tools, prompt sections, HTTP routes... all inside apply
 }
 ```
 
-> **内测版本兼容（webServer/httpServer）**：npm `latest`（`0.0.1-rc.1`）的 Web 服务键是 `ctx.httpServer`（`HttpServerService`），后续 `next`（`rc.2`）重命名为 `ctx.webServer`（`WebServer`）；工作区键同理 `workspace` → `workspaceRegistry`。过渡期不要硬绑定单一键名：`ctx.get('webServer') ?? ctx.get('httpServer')`（新键优先、旧键回退），`internal/service` 事件同时监听两组键再补注册。路由注册形状（`register({kind, path, handler})` 返回 disposer）两个版本一致。
+> **Beta version compatibility (webServer/httpServer)**: the Web service key on npm `latest` (`0.0.1-rc.1`) is `ctx.httpServer` (`HttpServerService`); the later `next` (`rc.2`) renamed it to `ctx.webServer` (`WebServer`), and the workspace key likewise from `workspace` to `workspaceRegistry`. During the transition do not hard-bind one key name: `ctx.get('webServer') ?? ctx.get('httpServer')` (new key first, old as fallback) and listen on both key sets through the `internal/service` event before re-registering. The route-registration shape (`register({kind, path, handler})` returning a disposer) is identical on both.
 
-- `inject` 声明依赖的服务；`ctx.<name>` 只有在 inject 里声明的服务才可用。
-- `Config` 用 `@deepseek-ai/schemastery` 的 `z.object` 描述，Loader 负责默认值。
-- `import type {} from '<包>'` 是**声明合并触发器**：DSH 各包通过 `declare module '@deepseek-ai/cordis'`
-  扩展 `Context`，必须把该包加载进 program 才能看见对应成员。
+- `inject` declares the services depended on; `ctx.<name>` is only available for a service declared in `inject`.
+- `Config` is described with `@deepseek-ai/schemastery`'s `z.object`; the Loader supplies defaults.
+- `import type {} from '<package>'` is a **declaration-merge trigger**: DSH packages extend `Context` through `declare module '@deepseek-ai/cordis'`, and that package must be loaded into the program for the corresponding members to be visible.
 
-### 2.2 工具注册（defineTool，模板：tool-workflow）
+### 2.2 Tool registration (defineTool, template: tool-workflow)
 
 ```ts
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 ctx.tools.register(defineTool({
   name: 'my_tool',
-  description: '……模型看到的完整契约……',
+  description: '...the full contract the model sees...',
   parameters: {
-    arg: { type: 'string', required: true, description: '……' },
-    status: { type: 'string', enum: ['a', 'b'], description: '……' },  // enum 让类型推断精确
+    arg: { type: 'string', required: true, description: '...' },
+    status: { type: 'string', enum: ['a', 'b'], description: '...' },  // enum makes inference exact
   },
   output: {
     schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true } } },
     render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
   },
   async execute(args, exec) {
-    const caller = exec.agent            // 调用者 Agent（父会话归属、cwd、session）
+    const caller = exec.agent            // the calling Agent (parent session ownership, cwd, session)
     if (!caller) throw new Error('requires a calling agent')
-    // ……业务逻辑，返回符合 output.schema 的 JSON 值……
+    // ...business logic, returning a JSON value matching output.schema...
     return { ok: true }
   },
 }))
 ```
 
-关键经验：
-- `parameters` 是 DSL 属性描述对象（每个 key 一个 schema）；`output.schema` 是普通 JSON Schema。
-- `exec.agent` 是调用者的 Agent：`agent.session.header.cwd` 是工作区（团队状态落盘位置）、
-  `agent.session` 是可 append 事件的会话、`agent.id` 是会话 id。子代理编排（`subagents.startContinuable`
-  等）都要求传 `parent: exec.agent`。
-- 工具的 `description` 就是模型契约，写清楚"何时用/怎么用"；配合 `ctx.systemPrompt.section()`
-  注册使用策略（tool-workflow 的做法：`order: 115` 附近）。
+Key lessons:
+- `parameters` is a DSL property-description object (one schema per key); `output.schema` is ordinary JSON Schema.
+- `exec.agent` is the calling Agent: `agent.session.header.cwd` is the workspace (where team state lands on disk), `agent.session` is an appendable session, `agent.id` is the session id. Subagent orchestration (`subagents.startContinuable` and friends) always requires `parent: exec.agent`.
+- A tool's `description` is the model contract: state clearly when and how to use it. Pair it with a usage policy registered through `ctx.systemPrompt.section()` (tool-workflow does this around `order: 115`).
 
-### 2.3 服务注入与"fail-loud 时机"
+### 2.3 Service injection and "fail-loud timing"
 
 ```ts
-// 挂载时校验要小心：provider 注册是兄弟插件行的 effect（Loader 并发激活），
-// 可能晚于你的 apply。不要在 apply 里校验 provider 存在——移到第一次真正使用的地方。
-const provider = ctx.subagents.getProvider(config.memberProvider)   // ← 在 spawn 时做，不在 apply 做
+// Be careful with mount-time validation: provider registration is the effect of a
+// sibling plugin row (the Loader activates concurrently) and may happen after your
+// apply. Do not validate the provider inside apply -- move it to first real use.
+const provider = ctx.subagents.getProvider(config.memberProvider)   // <- at spawn time, not in apply
 ```
 
-`inject` 只等**服务**（service 已提供），不等**provider 注册**（同服务下的另一行插件的 effect）。
-任何"依赖兄弟插件行为"的校验都必须延迟到首次使用（最早可解析点），否则并发激活下随机失败
-（见踩坑 5.1）。
+`inject` waits only for **services** (the service having been provided), not for **provider registration** (the effect of another row under the same service). Any validation that depends on a sibling plugin's behaviour must be deferred to first use (the earliest resolvable point), otherwise it fails randomly under concurrent activation (see pitfall 5.1).
 
-### 2.4 HTTP 路由（活动面板数据通道）
+### 2.4 HTTP routes (the activity panel's data channel)
 
 ```ts
 import { readFile } from 'node:fs/promises'
 
-// 过渡期双键：新键优先、旧键回退（见 2.1 版本兼容说明）
+// dual key during the transition: new key first, old as fallback (see the version note in 2.1)
 const web = (ctx.get('webServer') ?? ctx.get('httpServer')) as WebRouteHost
 ctx.effect(() => web.register({
-  kind: 'exact',                       // 或 'prefix'
+  kind: 'exact',                       // or 'prefix'
   path: '/plugins/my-plugin/state',
   handler: async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -223,18 +206,17 @@ ctx.effect(() => web.register({
 }), 'my-plugin: state route')
 ```
 
-- `register` 返回 disposer，必须包在 `ctx.effect(..., 'label')` 里（HMR 安全）。
-- 服务可能在插件 apply 之后才绑定：首次注册失败时挂 `ctx.on('internal/service', name => ...)` 补注册。
-- 静态资源路由务必做**白名单**（防路径穿越）：`decodeURIComponent` 要包 try（畸形编码 404 而非 400），
-  用 `split('/').pop()` 剥离路径后查 Set，再 `join`。
-- 客户端轮询是外部插件可用的朴素数据通道；使用 `cache: 'no-store'`、in-flight 防重叠、响应形状校验、
-  unmount/cancelled 防护，并在 host 暂时重启或请求失败时保留最后一份成功快照。
+- `register` returns a disposer and must be wrapped in `ctx.effect(..., 'label')` (HMR safety).
+- The service may bind only after the plugin's apply: when the first registration fails, subscribe with `ctx.on('internal/service', name => ...)` and register again.
+- A static-asset route **must allowlist** (path-traversal defence): wrap `decodeURIComponent` in try (a malformed encoding returns 404, not 400), strip the path with `split('/').pop()` before consulting a Set, then `join`.
+- Client polling is the plain data channel available to an external plugin: use `cache: 'no-store'`, in-flight overlap protection, response-shape validation, unmount/cancelled guards, and keep the last successful snapshot while the host restarts or a request fails.
 
-### 2.5 状态持久化（文件 + 进程内锁）
+### 2.5 State persistence (files + an in-process lock)
 
 ```ts
-// 团队状态 = workspace 下 .agent-teams/<teamId>/team.json + inbox/*.jsonl
-// 用 node:fs/promises 直接读写（插件自有簿记，不走沙箱 fs 服务；fs 服务无删除 API）
+// Team state = <workspace>/.agent-teams/<teamId>/team.json + inbox/*.jsonl
+// Use node:fs/promises directly (the plugin's own bookkeeping, not the sandboxed fs
+// service; that service has no delete API).
 const locks = new Map<string, Promise<unknown>>()
 export async function withTeamLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const previous = locks.get(key) ?? Promise.resolve()
@@ -246,14 +228,13 @@ export async function withTeamLock<T>(key: string, fn: () => Promise<T>): Promis
 }
 ```
 
-- 读-改-写必须串行化：同一进程内用 promise 链互斥（key 建议含 workspace，避免跨 workspace 同名串行）。
-- 事件/模型可能绕过工具仪式（直接写文件），面板类 UI 应以磁盘为真相源（host 快照），
-  而不是事件重放（事件用于对话流节点与审计）。
+- Read-modify-write must be serialised: use a promise-chain mutex inside one process (make the key include the workspace so same-named teams in different workspaces do not serialise against each other).
+- Events/models can bypass the tool "ritual" by writing files directly, so a panel-like UI must treat the disk as the source of truth (a host snapshot) rather than replaying events (events are for conversation-flow nodes and the audit trail).
 
-### 2.6 会话事件写入（对话流 UI 的数据源）
+### 2.6 Session event writes (the conversation-flow UI's data source)
 
 ```ts
-// event-types.ts —— 事件类型 + SessionEventMap 合并，必须零 import！
+// event-types.ts -- event types + SessionEventMap merge, and it must have ZERO imports!
 export interface AgentTeamsTeamCreatedData { readonly teamId: string; readonly name: string }
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap { 'my-plugin/team-created': AgentTeamsTeamCreatedData }
@@ -261,45 +242,34 @@ declare module '@deepseek-ai/dsh-session/types' {
 ```
 
 ```ts
-// events.ts —— 写入
+// events.ts -- writes
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session/types'
-session.append(type, data)   // type 必须已并入 SessionEventMap
+session.append(type, data)   // type must already be merged into SessionEventMap
 ```
 
-- `SessionEventMap` 是 merge-extensible：`declare module '@deepseek-ai/dsh-session/types'` 合并即可，
-  浏览器端 Conversation Node 会按 `seq` 确定性重放这些事件。
-- **event-types.ts 必须零 import**：它同时被 host 与 client 两个 program 加载；一旦 import 了
-  host 侧包（如 `dsh-session` 的 index），client program 的声明合并就被污染（见 3.1/5.3）。
-- append 目标：把事件写进"队长会话"（而非调用者），成员操作也统一落回队长会话，保证单一监控面；
-  队长不可达时回退调用者会话。`session.append` 会抛，包一层 try/warn 降级。
+- `SessionEventMap` is merge-extensible: `declare module '@deepseek-ai/dsh-session/types'` merges, and the browser-side Conversation Node replays those events deterministically by `seq`.
+- **event-types.ts must have zero imports**: both the host and the client program load it, so importing a host-side package (such as `dsh-session`'s index) poisons the client program's declaration merging (see 3.1/5.3).
+- Append target: write events into the **captain session** rather than the caller, including member operations, to keep a single monitoring surface; fall back to the caller session when the captain is unreachable. `session.append` throws, so wrap it in try/warn degradation.
 
-## 3. client 侧开发
+## 3. Client-side development
 
-### 3.1 为什么必须拆两个 tsc program
+### 3.1 Why two tsc programs are mandatory
 
-`dsh-session`（host）的 index 声明 `Context.sessions: SessionStore`；`dsh-client-runtime`（浏览器）
-声明 `Context.sessions: ISessions`。二者都是 `declare module '@deepseek-ai/cordis' { interface Context }`
-的同名成员，同一 program 内必然冲突（skipLibCheck 吞错后取先声明者，表现为 `ctx.sessions.open`
-"Property 'open' does not exist on type 'SessionStore'"）。
+`dsh-session` (host) declares `Context.sessions: SessionStore`; `dsh-client-runtime` (browser) declares `Context.sessions: ISessions`. Both are same-named members of `declare module '@deepseek-ai/cordis' { interface Context }`, so one program must conflict (after `skipLibCheck` swallows it, whichever is declared first wins, showing up as "Property 'open' does not exist on type 'SessionStore'" on `ctx.sessions.open`).
 
-拆开后的规则：
+The rules after the split:
 
-- host program：`include: ["src"]`，`exclude: ["src/client"]`；只链接 host 包类型。
-- client program：`include: ["src/client", "src/event-types.ts", ...]`；**不能编译任何 import 了
-  host 侧 index 的文件**（这就是 event-types 零 import 的原因；client 文件只 import 浏览器侧包和
-  event-types 的类型）。
-- `declare module '@deepseek-ai/dsh-session/types'` 的合并只需 `dsh-session/types` 子路径被加载
-  （子路径文件不包含 host 的 Context 合并，安全）。
+- host program: `include: ["src"]`, `exclude: ["src/client"]`; link only host package types.
+- client program: `include: ["src/client", "src/event-types.ts", ...]`; it **must not compile any file that imports a host-side index** (that is why event-types has zero imports; client files import only browser-side packages and event-types' types).
+- The merge for `declare module '@deepseek-ai/dsh-session/types'` only needs the `dsh-session/types` subpath to be loaded (the subpath file carries no host `Context` merge, so it is safe).
 
-### 3.2 扩展名坑：`.tsx` 才能写 JSX
+### 3.2 Extension pitfall: JSX needs `.tsx`
 
-TS 只在 `.tsx` 文件里解析 JSX。插件入口一旦包含 `root.render(<XxxPanel .../>)`，
-文件必须是 `src/client/index.tsx`（输出仍是 `lib/client/index.js`）。写成 `.ts` 会得到
-成串的 `TS1005 '>' expected`，与配置无关，纯扩展名问题（见踩坑 5.4）。
+TS parses JSX only inside `.tsx` files. As soon as the plugin entry contains `root.render(<XxxPanel .../>)`, the file must be `src/client/index.tsx` (the output is still `lib/client/index.js`). Naming it `.ts` produces a stream of `TS1005 '>' expected` regardless of configuration — a pure extension problem (see pitfall 5.4).
 
-### 3.3 client bundle 协议（tsdown，复刻 tsdown.client.ts）
+### 3.3 The client bundle protocol (tsdown, mirroring tsdown.client.ts)
 
-浏览器加载的不是源码，而是 `/plugins/<id>/client.js`——一个 **CJS closure-factory**：
+What the browser loads is not source but `/plugins/<id>/client.js` — a **CJS closure-factory**:
 
 ```js
 window.__ModuleLoader__.load({
@@ -308,26 +278,27 @@ window.__ModuleLoader__.load({
 })
 ```
 
-`tsdown.config.ts` 关键配置（对齐 `0.1.0-rc.8` 仓库 `packages/client/tsdown.client.ts` 的 `clientConfig`）：
+Key `tsdown.config.ts` settings (aligned with `clientConfig` in the `0.1.0-rc.8` repository's `packages/client/tsdown.client.ts`):
 
 ```ts
 export default {
   name: 'dsh-my-plugin/client',
-  entry: { client: 'lib/client/index.js' },   // tsc client program 产物
+  entry: { client: 'lib/client/index.js' },   // output of the tsc client program
   outDir: 'lib', format: 'cjs', platform: 'browser',
   dts: false, sourcemap: true, clean: false,
   deps: {
     neverBundle: (id) => CLIENT_EXTERNALS.includes(id),
     alwaysBundle: (id) => !CLIENT_EXTERNALS.includes(id),
   },
-  define: { 'process.env.NODE_ENV': JSON.stringify('production'), /* import.meta.env 同理 */ },
+  define: { 'process.env.NODE_ENV': JSON.stringify('production'), /* same for import.meta.env */ },
   plugins: [
-    // purity gate：@deepseek-ai 非 external/非内联安全包的值导入直接 build error
-    // （跨插件值导入会内联重复实例或要模块表答不出的 specifier）
-    { name: 'purity', resolveId(source) { /* @deepseek-ai 检查 */ } },
-    // CSS Modules 内联：lightningcss 编译 + <style data-plugin> 注入 + class map
-    { name: 'css-modules', resolveId(source, importer) { /* .module.css → 虚拟 id */ },
-      async load(virtualId) { /* transform + 注入逻辑，sourceAssetPath 需 lib→src 映射（见 5.7） */ } },
+    // purity gate: a value import of a @deepseek-ai package that is neither
+    // external nor inline-safe is a build error (cross-plugin value imports would
+    // inline duplicate instances or need a specifier the module table cannot answer)
+    { name: 'purity', resolveId(source) { /* @deepseek-ai check */ } },
+    // CSS Modules inline: lightningcss compile + <style data-plugin> injection + class map
+    { name: 'css-modules', resolveId(source, importer) { /* .module.css -> virtual id */ },
+      async load(virtualId) { /* transform + injection, with the lib->src sourceAssetPath mapping (see 5.7) */ } },
   ],
   outputOptions: {
     entryFileNames: 'client.js',
@@ -338,21 +309,14 @@ export default {
 }
 ```
 
-- `CLIENT_EXTERNALS` = `PLATFORM_MODULES` + `PRELOADED_CLIENT_EXTERNALS`；rc.8 的后者包含
-  `@deepseek-ai/dsh-client-runtime/client`。平台列表会演进，
-  应从目标 checkout 的 `packages/client/web/src/platform.ts`/`tsdown.client.ts` 复制。
-- 浏览器端只能 import 平台模块、类型和当前 preset 允许的 inline-safe 包；跨插件值协作走 cordis service。
-- `dsh.client.inject` 是 package graph/prefetch/HMR 元数据，不保证 apply 顺序；等待 slot declaration 用
-  `ctx.slots.inject()`，等待 service 用 client plugin 的 `export const inject`。
-- 依赖 `tsdown@0.22` + `lightningcss`，pnpm 安装即可。
+- `CLIENT_EXTERNALS` = `PLATFORM_MODULES` + `PRELOADED_CLIENT_EXTERNALS`; on rc.8 the latter contains `@deepseek-ai/dsh-client-runtime/client`. The platform list evolves, so copy it from the target checkout's `packages/client/web/src/platform.ts`/`tsdown.client.ts`.
+- The browser side may import only platform modules, types and the inline-safe packages the current preset allows; cross-plugin value collaboration goes through a cordis service.
+- `dsh.client.inject` is package graph/prefetch/HMR metadata and does not guarantee apply order; wait for a slot declaration with `ctx.slots.inject()` and for a service with the client plugin's `export const inject`.
+- It needs `tsdown@0.22` + `lightningcss`; a plain pnpm install is enough.
 
-### 3.4 选择正确的 UI 接缝：slot 优先，body portal 兜底
+### 3.4 Choosing the right UI seam: slots first, body portal as a fallback
 
-先读当前 `packages/client/ui-*/src/client/contract/slots.ts`。当前已有
-`conversation.session.header.actions`、`conversation.input.dock`、`conversation.composer.dock`、
-`conversation.input.left/right`、`conversation.chat.node` 等稳定接缝。DeepSeek Harness `0.1.0-rc.8`
-还提供 frame 级 `shell.overlay`；能落入语义正确 slot 就优先注册。只有目标版本确实没有对应 seat 的
-全局面板，才使用 body portal + fixed 定位：
+Read the current `packages/client/ui-*/src/client/contract/slots.ts` first. Existing stable seams include `conversation.session.header.actions`, `conversation.input.dock`, `conversation.composer.dock`, `conversation.input.left/right` and `conversation.chat.node`. DeepSeek Harness `0.1.0-rc.8` also provides a frame-level `shell.overlay`; prefer registering into a semantically correct slot. Use a body portal with fixed positioning only when the target version genuinely has no seat for a global panel:
 
 ```tsx
 // src/client/index.tsx (rc.8+)
@@ -371,14 +335,13 @@ export function apply(ctx: ClientContext): void {
 }
 ```
 
-- `ctx.sessions.list` 是 `ObservableSnapshot<SessionListState>`；跨会话面板用 `useSyncExternalStore` 订阅。
-- `shell.overlay` 已由 AppFrame 管理生命周期和 stacking context；window/document 监听器和全局 attribute 仍必须 effect-owned 并在 HMR 卸载时清理。
-- 自动展开/宽限收起要显式建模；用户导航时同步关闭，不依赖轮询延迟。
+- `ctx.sessions.list` is an `ObservableSnapshot<SessionListState>`; subscribe with `useSyncExternalStore` for a cross-session panel.
+- `shell.overlay`'s lifecycle and stacking context are managed by AppFrame; window/document listeners and global attributes must still be effect-owned and cleaned up on HMR unmount.
+- Model auto-expand/grace-collapse explicitly, and close synchronously on user navigation instead of relying on a polling delay.
 
-#### 3.4.1 浮层与主工作区协作
+#### 3.4.1 How the floater cooperates with the main workspace
 
-宽屏停靠浮层会遮住 transcript/composer 时，让对话列礼让空间，但保持侧边栏不动。面板用全局 attribute
-广播 open state，CSS 只依赖 host 的稳定 data 属性，不依赖 hashed class：
+When a docked wide-screen floater would cover the transcript/composer, let the conversation column yield space while the sidebar stays put. The panel broadcasts its open state through a global attribute, and the CSS depends only on stable host data attributes, never on hashed classes:
 
 ```tsx
 useEffect(() => {
@@ -409,45 +372,43 @@ useEffect(() => {
 }
 ```
 
-宽屏断言 panel 与 composer overlap 为 0；窄屏安全退化成 overlay。
+On a wide screen assert that the panel/composer overlap is 0; on a narrow screen degrade safely to an overlay.
 
-#### 3.4.2 关系 UI 与无障碍
+#### 3.4.2 Relationship UI and accessibility
 
-- captain→member 派工与 task dependency stage 同时用连线、文字和状态表达，不能只靠颜色。
-- 把 stage grouping、上下游 chain 提取为纯函数：自然排序 id、非有限 depth 回退 0、遍历 cycle-safe。
-- hover 只做 preview；click 单独 pin，`aria-pressed` 只落在 pin 源节点，二次 click 或 `Escape` 取消；
-  focus/blur 与 mouse enter/leave 行为对等。
-- icon-only button 有 `aria-label`，section 有 label，装饰图 `alt="" aria-hidden`，交互有 `:focus-visible`，
-  动画和过渡覆盖 `prefers-reduced-motion`。
+- Express captain→member assignment and task dependency stages through lines, text and state together, never colour alone.
+- Extract stage grouping and the upstream/downstream chain into pure functions: natural id sorting, a non-finite depth falling back to 0, and cycle-safe traversal.
+- Hover only previews; a click pins separately, `aria-pressed` lands only on the pinned source node, and a second click or `Escape` clears it; focus/blur and mouse enter/leave stay equivalent.
+- An icon-only button has an `aria-label`, a section has a label, decorative images are `alt="" aria-hidden`, interactions have `:focus-visible`, and animations/transitions cover `prefers-reduced-motion`.
 
-### 3.5 对话流节点（Conversation Node，模板：ui-workflow-run）
+### 3.5 Conversation nodes (template: ui-workflow-run)
 
-对话流内嵌 UI = 注册一个 Conversation Node（浏览器端 cordis）：
+Embedded UI in the conversation flow = registering a Conversation Node (browser-side cordis):
 
 ```ts
 // agent-teams-card-definition.ts
 import type { ChatConversationViewNode, ConversationNodeContext,
   ConversationNodeDefinition } from '@deepseek-ai/dsh-client-runtime/client'
-// 声明合并的两个关键 type-only import（见 5.3）：
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'   // 加载 ChatNodeDataMap 模块
-import type {} from '@deepseek-ai/dsh-session/types'                  // 加载 SessionEventMap 模块
+// the two critical type-only imports for declaration merging (see 5.3):
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'   // loads the ChatNodeDataMap module
+import type {} from '@deepseek-ai/dsh-session/types'                  // loads the SessionEventMap module
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
-  interface ChatNodeDataMap { 'my-plugin': MyCardData }               // 渲染器 keyed 数据映射
+  interface ChatNodeDataMap { 'my-plugin': MyCardData }               // the renderer's keyed data map
 }
 
 export const myDefinition: ConversationNodeDefinition<MyState> = {
   kind: 'my-plugin',
   target: 'chat',
-  match: (event) => { /* 从事件里提取稳定业务 id + start/update 角色 */ },
-  start: (ctx, match) => { /* 首个事件建 state */ },
-  update: (ctx, match) => { /* 按 seq 递增折叠 state；嵌套闭包内取 data 先提局部变量（见 5.5） */ },
-  buildViewNode: (ctx) => ({ /* 投影最终数据 */ }),
+  match: (event) => { /* extract a stable business id + start/update role from the event */ },
+  start: (ctx, match) => { /* build state from the first event */ },
+  update: (ctx, match) => { /* fold state by increasing seq; inside a nested closure extract data into a local first (see 5.5) */ },
+  buildViewNode: (ctx) => ({ /* project the final data */ }),
 }
 ```
 
 ```tsx
-// index.tsx 注册
+// index.tsx registration
 ctx.uiConversation.events.register(myDefinition)
 ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
   name: 'conversation.chat.node', key: 'my-plugin',
@@ -455,150 +416,121 @@ ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
 }, MyCardComponent))
 ```
 
-- Conversation Node 是**事件流确定性重放**：`match` 挑事件、`start/update` 按 seq 折叠、`buildViewNode`
-  投影——因此对话流节点天然支持"历史会话复盘"（旧日志重放即恢复）。
-- 组件是普通 React 组件，props 四件套（`PropsRuntime<'conversation.chat.node','my-plugin'>` 等）。
+- A Conversation Node is a **deterministic replay of the event stream**: `match` picks events, `start/update` fold by seq, `buildViewNode` projects — which is why a conversation-flow node supports historic review for free (replaying an old log restores the state).
+- The component is an ordinary React component with the four-part props (`PropsRuntime<'conversation.chat.node','my-plugin'>` etc.).
 
-## 4. 构建与安装
+## 4. Build and install
 
-### 4.1 构建链
+### 4.1 Build chain
 
 ```sh
-pnpm build   # tsc host → tsc client → tsdown（client.js）
+pnpm build   # tsc host -> tsc client -> tsdown (client.js)
 ```
 
-- tsc 需要 **5.7+**：`rewriteRelativeImportExtensions` 让源码里的 `./x.ts` 导入在产物里重写为
-  `.js`（否则 emit 报 TS5096/TS5023，见踩坑 5.6）。
-- tsdown 输出 `lib/client.js`（CJS closure-factory）+ sourcemap；host 侧 tsc 产物直接可用
-  （`lib/index.js` 等）。
+- tsc must be **5.7+**: `rewriteRelativeImportExtensions` rewrites a source `./x.ts` import to `.js` in the output (otherwise emit reports TS5096/TS5023, see pitfall 5.6).
+- tsdown emits `lib/client.js` (CJS closure-factory) plus a sourcemap; the host-side tsc output (`lib/index.js` and friends) is usable as is.
 
-### 4.2 开发期类型链接（在 DSH checkout 之外开发时）
+### 4.2 Development-time type linking (developing outside a DSH checkout)
 
-DSH 包不在 npm registry 发布（pre-release），开发期把依赖符号链接进项目 node_modules：
+DSH packages are not published to the npm registry (pre-release), so during development symlink the dependencies into the project's node_modules:
 
 ```sh
 mkdir -p node_modules/@deepseek-ai
 ln -sfn /path/to/DSH/vendor/cordis           node_modules/@deepseek-ai/cordis
 ln -sfn /path/to/DSH/packages/core/session   node_modules/@deepseek-ai/dsh-session
 ln -sfn /path/to/DSH/packages/core/tools     node_modules/@deepseek-ai/dsh-tools
-# ...以及你 import 的每个 dsh-* 包（host 侧链 checkout 的 packages/<group>/<pkg>）
+# ...and every dsh-* package you import (host side links packages/<group>/<pkg> of the checkout)
 ```
 
-注意两个陷阱：
+Two traps:
 
-- **必须链接到源码 checkout 的构建产物**（`packages/<pkg>/lib/types`），不要链到运行实例的
-  staging 目录——staging 快照可能是旧构建（`declare module 'cordis'` 而非
-  `'@deepseek-ai/cordis'`，声明合并不生效）。
-- checkout 的 `lib` 可能过期（源码更新但未重建）——症状是类型缺失；此时补链或改用源码
-  `paths` 映射。client 侧包同理。
+- **Link to the source checkout's build output** (`packages/<pkg>/lib/types`), not to a running instance's staging directory — a staging snapshot may be an old build (`declare module 'cordis'` rather than `'@deepseek-ai/cordis'`, so the declaration merge does not take effect).
+- The checkout's `lib` may be stale (source updated but not rebuilt) — the symptom is missing types; add the link or switch to source `paths` mapping. The same applies to client-side packages.
 
-### 4.3 安装到 profile
+### 4.3 Installing into a profile
 
 ```sh
 pnpm build
-# 内测阶段：dsh 来自官方 npm 包；本地路径或 git 地址安装插件（未发布 npm 前）
+# beta stage: dsh comes from the official npm package; install the plugin from a local path or git URL (before it is on npm)
 npx -p @deepseek-ai/dsh dsh plugin --profile web add /absolute/path/to/dsh-agent-teams
-# 重启 dsh（web 或 headless）后生效
+# restart dsh (web or headless) for it to take effect
 ```
 
-- `dsh plugin` 在 profile 目录跑 pnpm + 把带 `dsh.bundle` 声明的依赖 reconcile 进 bundles 层。
-- 内测 registry：`@deepseek-ai` scope 需要官方只读 token（`.npmrc` scope 鉴权）；peer 范围必须写成
-  rc 通道（如 `^0.0.1-rc.1`），普通 `^0.0.1` 不匹配 `0.0.1-rc.x`，安装会解析失败。
-- **CLI 与 bundle 版本必须同通道**：npx 默认 CLI 可能是 `next`（rc.2），而 `dsh plugin add` 默认装
-  `latest`（rc.1）——混装时 rc.2 独有的 client 条目（如 `ui-plugin-config`）等待 rc.2 才提供的服务
-  （`settingsScope`），页面报 "Failed to load plugins … waiting for service: settingsScope"。固定
-  `npx -p @deepseek-ai/dsh@0.0.1-rc.1`（与 latest 对齐），或全部升级 `next`。
-- 独立测试 profile 是安全的验证环境（不碰运行实例）：headless 模板自动初始化；自定义 profile 可用
-  `npx -p @deepseek-ai/dsh dsh plugin --profile <name> add ...` 从零搭。
+- `dsh plugin` runs pnpm in the profile directory and reconciles a dependency carrying a `dsh.bundle` declaration into the bundles layer.
+- Beta registry: the `@deepseek-ai` scope needs the official read-only token (`.npmrc` scope auth); a peer range must be written against the rc channel (e.g. `^0.0.1-rc.1`), because a plain `^0.0.1` does not match `0.0.1-rc.x` and installation fails to resolve.
+- **CLI and bundle must be on the same channel**: the default npx CLI may be `next` (rc.2) while `dsh plugin add` installs `latest` (rc.1) by default — mixed, an rc.2-only client entry (such as `ui-plugin-config`) waits for a service only rc.2 provides (`settingsScope`) and the page reports "Failed to load plugins … waiting for service: settingsScope". Pin `npx -p @deepseek-ai/dsh@0.0.1-rc.1` (aligned with `latest`) or upgrade everything to `next`.
+- A separate test profile is a safe verification environment (it does not touch a running instance): the headless template initialises itself, and a custom profile can be built from scratch with `npx -p @deepseek-ai/dsh dsh plugin --profile <name> add ...`.
 
-### 4.4 离线验证（不启动服务）
+### 4.4 Offline verification (without starting a service)
 
 ```sh
-node scripts/verify.mjs   # 纯逻辑 + 文件持久化冒烟（临时目录自清理）
-dsh --profile <scratch> --dump-config   # 验证组合树里出现插件行（离线，不 boot）
+node scripts/verify.mjs   # pure logic + file-persistence smoke (self-cleaning temp dir)
+dsh --profile <scratch> --dump-config   # prove the plugin row appears in the composition tree (offline, no boot)
 ```
 
-- 纯逻辑（状态机、依赖深度、fold、布局）提取成无 ctx 依赖的纯函数，verify 脚本直接 import
-  `lib/*.js` 断言；`withTeamLock` 包裹的写路径在临时目录跑真实文件往返。
+- Extract pure logic (state machine, dependency depth, folds, layout) into functions with no ctx dependency and have the verify script import `lib/*.js` and assert on them; run the write paths wrapped in `withTeamLock` against a real file round trip in a temporary directory.
 
-## 5. 踩坑清单（按开发顺序，全部实战遇到）
+## 5. Pitfall list (in development order; every one was hit in practice)
 
-### 5.1 provider 注册晚于插件 mount
+### 5.1 Provider registration happens after plugin mount
 
-- **现象**：首次启动随机报 `no subagent provider "spawn" is registered`，headless 必现。
-- **根因**：`subagent-spawn` 行的 provider 注册是兄弟插件 effect，Loader 并发激活下可能晚于你的
-  `apply`；`inject` 只等服务（subagents service 存在），不等 provider。
-- **解决**：不在 apply 校验 provider；在首次 `spawnMember` 时 `getProvider` 校验并抛可操作错误
-  （"最早可解析点 fail-loud"）。
+- **Symptom**: the first start randomly reports `no subagent provider "spawn" is registered`; it is guaranteed on headless.
+- **Root cause**: the provider registration of the `subagent-spawn` row is a sibling plugin effect and, under the Loader's concurrent activation, may run after your `apply`; `inject` waits only for the service (the subagents service existing), not for the provider.
+- **Fix**: do not validate the provider in apply; validate with `getProvider` at the first `spawnMember` and throw an actionable error ("fail loud at the earliest resolvable point").
 
-### 5.2 浏览器名册不收录插件（manifest / export / bundle）
+### 5.2 The browser roster does not include the plugin (manifest / export / bundle)
 
-- **现象**：`window.__DSH_BOOT__` 没有条目，或 host 启动时报 client bundle composition error。
-- **当前契约**：`client-modules` 读取 `package.json.dsh.client`，要求 `platform: "web"`、合法的
-  `exports["./client"]` 和真实存在的 bundle；声明畸形或 bundle 缺失会 fail loud。
-- **缓存边界**：包元数据和负结论不失效；修正 manifest/export 后重启 host。仅 `lib/client.js` 内容变化
-  才进入 client HMR 重建链。
+- **Symptom**: no entry in `window.__DSH_BOOT__`, or a client bundle composition error at host start.
+- **Current contract**: `client-modules` reads `package.json.dsh.client` and requires `platform: "web"`, a valid `exports["./client"]` and a bundle that actually exists; a malformed declaration or a missing bundle fails loud.
+- **Cache boundary**: package metadata and negative conclusions do not expire; restart the host after fixing the manifest/export. Only a change to the contents of `lib/client.js` enters the client HMR rebuild chain.
 
-### 5.3 `declare module` 合并不生效（TS2664 / 类型 union 不含你的事件）
+### 5.3 `declare module` merging has no effect (TS2664 / the type union lacks your event)
 
-- **现象**：`declare module '@deepseek-ai/dsh-session/types'` 合并后，`match(event)` 的
-  `event.type` union 里没有你的事件；`declare module '@deepseek-ai/dsh-client-ui-conversation/client'`
-  报 `TS2664: Invalid module name in augmentation`。
-- **根因**：模块增强只对**已加载进 program** 的模块生效；纯 `declare module` 文件零 import 时
-  目标模块从未被加载。
-- **解决**：在合并文件顶部加 `import type {} from '<目标模块>'`（加载模块、编译期擦除、不进 bundle）。
-  这也是 event-types.ts 必须零 import、但 definition 文件可以带 type-only import 的原因。
+- **Symptom**: after merging `declare module '@deepseek-ai/dsh-session/types'`, `event.type` in `match(event)` does not include your event; `declare module '@deepseek-ai/dsh-client-ui-conversation/client'` reports `TS2664: Invalid module name in augmentation`.
+- **Root cause**: module augmentation only applies to a module **already loaded into the program**; a pure `declare module` file with zero imports never loads the target module.
+- **Fix**: add `import type {} from '<target module>'` at the top of the merging file (it loads the module, is erased at compile time and never enters the bundle). This is also why event-types.ts must have zero imports while a definition file may carry type-only imports.
 
-### 5.4 JSX 报成串语法错误
+### 5.4 JSX reported as a stream of syntax errors
 
-- **现象**：`root.render(<XxxPanel .../>)` 报 `TS1005 '>' expected` 等一长串，改 jsx 配置、换 tsc
-  版本均无效。
-- **根因**：入口文件是 `index.ts`——TS 只在 `.tsx` 里解析 JSX，`<` 被当小于号。
-- **解决**：含 JSX 的文件一律 `.tsx`（`src/client/index.tsx`），输出名不变（tsc 输出 `.js`）。
+- **Symptom**: `root.render(<XxxPanel .../>)` reports a long stream of `TS1005 '>' expected`; changing the jsx config or the tsc version makes no difference.
+- **Root cause**: the entry file is `index.ts` — TS parses JSX only in `.tsx`, so `<` is read as a less-than sign.
+- **Fix**: every file containing JSX must be `.tsx` (`src/client/index.tsx`); the output name is unchanged (tsc emits `.js`).
 
-### 5.5 嵌套闭包内判别联合窄化失效
+### 5.5 Discriminated-union narrowing is lost inside a nested closure
 
-- **现象**：`if (event.type === 'x') { ...arr.map(() => event.data.field) }` 报
-  `Property 'field' does not exist`。
-- **根因**：函数参数（`match`）的窄化在嵌套箭头函数（`.map` 回调）内不保留（TS 只对 const
-  变量在闭包内保留窄化）。
-- **解决**：守卫后先 `const field = match.event.data.field` 提取，闭包内用局部变量。
+- **Symptom**: `if (event.type === 'x') { ...arr.map(() => event.data.field) }` reports `Property 'field' does not exist`.
+- **Root cause**: narrowing of a function parameter (`match`) is not preserved inside a nested arrow function (TS preserves narrowing inside a closure only for `const` variables).
+- **Fix**: after the guard, extract `const field = match.event.data.field` first and use the local inside the closure.
 
-### 5.6 tsc emit 报 TS5096/TS5023
+### 5.6 tsc emit reports TS5096/TS5023
 
-- **现象**：`typecheck`（--noEmit）通过，`tsc` emit 报
-  `TS5096: allowImportingTsExtensions can only be used with noEmit` +
-  `TS5023: unknown option rewriteRelativeImportExtensions`。
-- **根因**：TypeScript 版本 < 5.7（`rewriteRelativeImportExtensions` 是 5.7 新增；旧版
-  `allowImportingTsExtensions` 只允许 noEmit）。
-- **解决**：`typescript@^5.9`（pnpm add -D typescript@^5.9.0）。另外 pnpm add 可能把链接的
-  typescript 换成旧版，装完 `tsc --version` 确认。
+- **Symptom**: `typecheck` (`--noEmit`) passes while `tsc` emit reports `TS5096: allowImportingTsExtensions can only be used with noEmit` plus `TS5023: unknown option rewriteRelativeImportExtensions`.
+- **Root cause**: TypeScript below 5.7 (`rewriteRelativeImportExtensions` was added in 5.7; in older versions `allowImportingTsExtensions` is only allowed with noEmit).
+- **Fix**: `typescript@^5.9` (`pnpm add -D typescript@^5.9.0`). Also, `pnpm add` may replace a linked typescript with an older version, so confirm with `tsc --version` after installing.
 
-### 5.7 tsdown CSS 报 ENOENT（module.css 找不到）
+### 5.7 tsdown CSS reports ENOENT (module.css not found)
 
-- **现象**：`ENOENT: no such file or directory, open './Xxx.module.css'`。
-- **根因**：抄 tsdown.client.ts 时漏了 `sourceAssetPath` 的 lib→src 回退：tsc 产物在 `lib/client/`，
-  但 css 源在 `src/client/`；仓库实现把 `lib/` 前缀重映射为 `src/`。
-- **解决**：resolveId 找不到 emitted 路径时，把路径中的 `/lib/` 段替换为 `/src/` 再查一次。
+- **Symptom**: `ENOENT: no such file or directory, open './Xxx.module.css'`.
+- **Root cause**: copying tsdown.client.ts missed the lib→src fallback in `sourceAssetPath`: the tsc output is in `lib/client/` while the css source is in `src/client/`, and the repository implementation remaps the `lib/` prefix to `src/`.
+- **Fix**: when resolveId cannot find the emitted path, replace the `/lib/` segment with `/src/` and look again.
 
-### 5.8 其他实战备忘
+### 5.8 Other field notes
 
-- **轮询竞态**：1s setInterval + fetch 可能重叠乱序——in-flight 标志或序号，只应用最新。
-- **响应形状校验**：`body.teams ?? []` 不够——`Array.isArray(body.teams)` 防 200 但形状异常时闪烁。
-- **闭包内 setState 与事件监听**：window 监听器读最新 current 用 ref，并在 effect 中同步；不要 render-phase 写 ref。
-- **导航即收起**：点击跳转子会话时同步 `setOpen(false)`，不要等自动收起宽限。
-- **删除即归档**：复盘数据删除时归档，由 live scan 排除，另开 `?archived=1` 查询。
-- **会话跟随**：按 `SessionListState.current + captainSessionId` 过滤；`current === undefined` 时不显示团队。
-- **历史数据复合身份**：可重复业务 id 不能单独作为 historic/archived key；使用
-  `${ownerSessionId}:${businessId}`，restore/dedup 同样匹配 owner。旧事件缺 owner 时在卡片激活时用当前会话固化归属。
-- **异步卸载防护**：轮询、归档 fetch、timeout 和事件监听都要 cancelled/disposer。
+- **Polling race**: a 1s setInterval plus fetch can overlap and arrive out of order — use an in-flight flag or a sequence number and apply only the newest.
+- **Response-shape validation**: `body.teams ?? []` is not enough — `Array.isArray(body.teams)` prevents flicker on a 200 with an unexpected shape.
+- **setState and listeners inside a closure**: window listeners read the latest `current` through a ref, synchronised in an effect; never write a ref during the render phase.
+- **Navigation closes the panel**: call `setOpen(false)` synchronously when navigating to a child session instead of waiting for the auto-collapse grace period.
+- **Deletion archives**: archive review data on delete, exclude it from the live scan, and expose it through a separate `?archived=1` query.
+- **Session following**: filter by `SessionListState.current + captainSessionId`; show no team while `current === undefined`.
+- **Composite identity for historic data**: a repeatable business id cannot be a historic/archived key on its own; use `${ownerSessionId}:${businessId}` and match the owner on restore/dedup too. When an old event lacks an owner, pin ownership to the current session when the card activates.
+- **Async unmount guards**: polling, archive fetches, timeouts and event listeners all need a cancelled flag or disposer.
 
-## 6. 验证金字塔（从快到慢）
+## 6. Verification pyramid (fastest to slowest)
 
-1. `pnpm typecheck`（双 program）→ 2. `pnpm build` → 3. `node scripts/verify.mjs`（纯逻辑/文件往返）
-   → 4. `dsh --profile <scratch> --dump-config`（组合树含插件行）→ 5. headless 真实任务
-   （`dsh --profile headless "…"`，需 DEEPSEEK_API_KEY）→ 6. 独立 web 实例
-   （`dsh --profile <web+插件> --patch <port>` + curl 探名册/路由）→ 7. ego-browser 驱动真实浏览器
-   GUI 端到端（跑任务、DOM 探针断言面板/卡片/动画）。
+1. `pnpm typecheck` (two programs) → 2. `pnpm build` → 3. `node scripts/verify.mjs` (pure logic / file round trips)
+   → 4. `dsh --profile <scratch> --dump-config` (the composition tree contains the plugin row) → 5. a real headless task
+   (`dsh --profile headless "..."`, needs `DEEPSEEK_API_KEY`) → 6. a separate web instance
+   (`dsh --profile <web+plugin> --patch <port>` plus curl against the roster/routes) → 7. ego-browser driving a real browser
+   for GUI end to end (run a task, assert the panel/card/animation through DOM probes).
 
-验证全程使用**独立 profile/独立端口**，不触碰正在运行的实例。
+Verification always uses a **separate profile and a separate port** and never touches a running instance.
