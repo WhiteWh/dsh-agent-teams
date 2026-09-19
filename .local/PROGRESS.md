@@ -87,6 +87,7 @@ the pre-step count, and FAIL must stay 0.
 | S18 | WP11 phase 2 N teams in UI + scheduler | done | | verify 288 PASS/0 FAIL; multi-team 14 PASS/0 FAIL (new suite, in the chain); lifecycle 152; stress 30 PASS/0 FAIL (+5); all 22 suites exit 0; liveCaptainTeam removed |
 | S19 | WP11 phase 3 team limits | done | | verify 291 PASS/0 FAIL (+2); lifecycle 155 PASS/0 FAIL (+3); all 22 suites exit 0; four configured keys + slot summary in status |
 | S20 | docs + release 0.2.0 | done | | version 0.2.0; notes + release record; artifact 2 317 040 B / SHA256 `FBBA6EBA…12EE` installed into the web profile; tag v0.2.0 with the branch marker; all 22 suites exit 0 |
+| S21 | owner UI round + release 0.2.1 | done | | work plaque (full-node height, 3 dots wide) in the members tree; `cfe9338` UI commit + `09ac60e` release; verify 293 PASS/0 FAIL; artifact 2 318 783 B / SHA256 `2F73FAF8…D411` installed; tag v0.2.1 |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -172,6 +173,39 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S21 — owner UI round: the full-node work plaque (done)
+
+Owner request after living with 0.2.0: the compact animated six-dot mark should become a
+plaque spanning the node's whole height, three to four dots wide, animated the same way.
+
+- **`WorkBar`** (new component): a plaque three dots wide, the full height of a member
+  row, at its right edge — a new fourth grid column (`grid-area: 1 / 4 / span 2 / auto`)
+  so it spans the head line and the assignment line alike. Five rows of three dots with
+  `justify-content: space-between` fill the node height; while the member works they run a
+  top-to-bottom wave (`@keyframes agentTeamsBar`, `row * 0.12s` stagger), and when it does
+  not the column stays as a faint slot marker (opacity 0.15), so the lit wave — not the
+  column — reads as work.
+- **The compact six-dot mark is gone from a member row** (the text state stays as the
+  accessible label); `WorkGlyph` still marks the captain node and the collapsed pill, where
+  no full-height node exists.
+- **Tests first:** two new source-level checks in `verify.mjs` (the plaque is rendered
+  inside the member row and the glyph is not; the dots are round and 3 px and the wave is
+  keyed) — RED before the component existed, green after. `verify.mjs` 293 PASS / 0 FAIL.
+- **Visual check:** `.local/preview-work-bar.mjs` renders the members tree with the real
+  CSS module sheet, the real artwork and headless Chrome
+  (`.local/logs/ui-workbar/members-tree.png`), which is how the plaque was reviewed before
+  shipping (the still frame shows the lit wave on the working row and the faint column on
+  the idle ones).
+- **Release 0.2.1** (client-only): `09ac60e` — version bump, `release-notes/v0.2.1.md`,
+  `docs/releases/v0.2.1/README.md`, README version references (a one-shot local script
+  `.local/bump-readme-0.2.1.mjs` did the bump after shell escaping of backticks failed
+  twice), artifact packed and installed into the `web` profile, tag `v0.2.1` with the branch
+  marker. No state, tool, schema, profile key or gate changed.
+- **Also done in this round:** the stale fork branch `toolkit-fix` (the pre-hardening line at
+  `d11e0cb`) was deleted from the fork as the owner approved.
+- **Owner action:** restart the harness (the running `dsh web` still has 0.2.0 loaded) and
+  refresh the page.
 
 ### S20 — docs + release 0.2.0 (done)
 
