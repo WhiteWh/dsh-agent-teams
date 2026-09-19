@@ -16,7 +16,7 @@ artwork revision: 5a90736f927c
 The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
 Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
 
-ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js      236.27 kB │ gzip: 51.06 kB
-ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js.map  274.15 kB │ gzip: 62.51 kB
-ℹ  [@nanmicoder/dsh-agent-teams/client] 2 files, total: 510.43 kB
-✔  [@nanmicoder/dsh-agent-teams/client] Build complete in 45ms
+ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js      240.39 kB │ gzip: 52.14 kB
+ℹ  [@nanmicoder/dsh-agent-teams/client] lib\client.js.map  277.83 kB │ gzip: 63.30 kB
+ℹ  [@nanmicoder/dsh-agent-teams/client] 2 files, total: 518.23 kB
+✔  [@nanmicoder/dsh-agent-teams/client] Build complete in 57ms

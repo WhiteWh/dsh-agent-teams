@@ -64,7 +64,7 @@ import {
   type ActivityTask,
   type ActivityTeam,
 } from './activity-monitor.ts'
-import { ACTION_SYMBOL, LEAD_ART, memberArtUrl } from './artwork.ts'
+import { ACTION_SYMBOL, LEAD_ART, memberArtUrl, memberSymbolUrl, ownerSymbolUrl } from './artwork.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
 import { StagingPlanEditor } from './StagingPlanEditor.tsx'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
@@ -218,7 +218,10 @@ function CollapsedBadge({ count, busy, onClick, t }: {
 }) {
   return (
     <button type="button" className={css.badge} data-agent-teams-collapsed data-busy={busy} onClick={onClick} aria-label={t('activity.badgeAria', { count })}>
-      <span className={css.badgeDot} data-busy={busy} aria-hidden />
+      {/* The pill is the most compact surface in the product: a mascot cannot
+          fit and a coloured dot says only "something is on". The action symbol
+          carries the same busy/idle meaning and stays readable at this size. */}
+      <img className={css.badgeSymbol} data-busy={busy} src={busy ? ACTION_SYMBOL.working : ACTION_SYMBOL.idle} alt="" aria-hidden />
       <span className={css.badgeCount}>{count}</span>
     </button>
   )
@@ -438,7 +441,19 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
                     onFocus={() => { setKeyboardTaskId(task.id) }}
                     onBlur={() => { setKeyboardTaskId(null) }}
                   >
-                    <span className={css.dagNodeHead}><span className={css.dagNodeDot} />{task.id}</span>
+                    <span className={css.dagNodeHead}>
+                      {ownerSymbolUrl(task.assignee, members) !== null
+                        ? (
+                          <img
+                            className={css.compactSymbol}
+                            src={ownerSymbolUrl(task.assignee, members) ?? ''}
+                            alt=""
+                            aria-hidden
+                          />
+                        )
+                        : <span className={css.dagNodeDot} />}
+                      {task.id}
+                    </span>
                     <span className={css.dagNodeLabel}>
                       {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
                     </span>
@@ -461,6 +476,15 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
               </span>
             </span>
             <span className={css.taskDetailLine}>
+              {ownerSymbolUrl(detailTask.assignee, members) !== null
+                && (
+                  <img
+                    className={css.compactSymbol}
+                    src={ownerSymbolUrl(detailTask.assignee, members) ?? ''}
+                    alt=""
+                    aria-hidden
+                  />
+                )}
               {detailTask.assignee || t('task.assignee.unclaimed')} · {discarded
                 ? t('task.detail.notRun')
                 : detailTask.status === 'completed'
@@ -519,7 +543,19 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
       onMouseEnter={onHover === undefined ? undefined : () => { onHover(task.id) }}
       onMouseLeave={onHover === undefined ? undefined : () => { onHover(null) }}
     >
-      <span className={css.dagNodeHead}><span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />{task.id}</span>
+      <span className={css.dagNodeHead}>
+        {ownerSymbolUrl(task.assignee, members) !== null
+          ? (
+            <img
+              className={css.compactSymbol}
+              src={ownerSymbolUrl(task.assignee, members) ?? ''}
+              alt=""
+              aria-hidden
+            />
+          )
+          : <span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />}
+        {task.id}
+      </span>
       <span className={css.dagNodeLabel}>
         {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
       </span>
@@ -702,7 +738,16 @@ function QueueView({ tasks, members, t, discarded = false }: {
               data-idle={!working}
             >
               <span role="cell" className={css.queueMember}>
-                <span className={css.swimlaneDot} style={{ background: agentColor(member.name) }} />
+                {memberSymbolUrl(member.name, member.role) !== null
+                  ? (
+                    <img
+                      className={css.compactSymbol}
+                      src={memberSymbolUrl(member.name, member.role) ?? ''}
+                      alt=""
+                      aria-hidden
+                    />
+                  )
+                  : <span className={css.swimlaneDot} style={{ background: agentColor(member.name) }} />}
                 {member.name}
               </span>
               <span role="cell" className={css.queueCell} title={member.currentTask ?? ''}>

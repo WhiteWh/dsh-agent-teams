@@ -94,9 +94,13 @@ export const ACTION_SYMBOL: Record<'working' | 'idle' | 'unknown', string> = {
 }
 
 /**
- * Member role symbol (the small corner badge mark), or null when no role
- * matches. Null means the avatar already falls back to the initial letter, so
- * the caller renders no badge rather than a symbol for a role we did not match.
+ * Member role symbol, or null when no role matches. Null means the caller
+ * renders its own fallback (an initial letter on the avatar, a plain dot in a
+ * dense list) rather than a symbol for a role we did not match.
+ *
+ * Since v0.1.22 this is the *compact* mark: the avatar no longer draws it — the
+ * row names the role in words — and the dense surfaces do, where neither the
+ * mascot nor the label fits.
  * @param name - the member's display name.
  * @param role - the member's role text.
  * @returns the role symbol URL, or null when unmatched.
@@ -110,6 +114,32 @@ export function memberSymbolUrl(name: string, role: string): string | null {
     if (pattern.test(identity)) return symbolFor(art)
   }
   return null
+}
+
+/** Task owner that means "the captain holds it", as written in the team state. */
+const CAPTAIN_ASSIGNEE = 'captain'
+
+/**
+ * Compact identity mark for one task owner: the captain's lead mark, or the
+ * role symbol of the named member.
+ *
+ * Dense surfaces — a DAG node head, an assignment line, a queue row — have room
+ * for a 12px mark but not for the mascot or a role label, so they draw this. A
+ * null answer means "no mark we can draw": an unclaimed task, or a member whose
+ * role matched no keyword. Callers keep their own fallback (a coloured dot).
+ * @param assignee - the task's owner as stored in the team state.
+ * @param members - the team roster used to resolve a name to its role.
+ * @returns the compact mark URL, or null when the owner has none.
+ */
+export function ownerSymbolUrl(
+  assignee: string,
+  members: readonly { readonly name: string; readonly role: string }[],
+): string | null {
+  const owner = assignee.trim()
+  if (owner === '') return null
+  if (owner.toLowerCase() === CAPTAIN_ASSIGNEE) return LEAD_SYMBOL
+  const member = members.find(candidate => candidate.name === owner)
+  return member === undefined ? null : memberSymbolUrl(member.name, member.role)
 }
 
 /**

@@ -1,0 +1,65 @@
+﻿<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  body { margin: 0; padding: 18px; background: #ffffff; font-family: "Segoe UI", sans-serif; color: #1b1b1f; }
+  h2 { font-size: 12px; margin: 14px 0 6px; color: #555; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .cell { display: flex; align-items: center; gap: 4px; }
+  img { object-fit: contain; }
+  .s12 { width: 12px; height: 12px; }
+  .s13 { width: 13px; height: 13px; }
+  .s18 { width: 18px; height: 18px; }
+  .node { display: inline-flex; flex-direction: column; justify-content: center; gap: 1px; padding: 4px 6px;
+          border: 1px solid #d5d7dd; border-radius: 6px; background: #fff; width: 108px; }
+  .nodehead { display: flex; align-items: center; gap: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; font-weight: 700; }
+  .nodelabel { font-size: 10px; color: #333; }
+  .queue { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 3px 6px; border-bottom: 1px solid #eee; width: 190px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border: 1px solid #d5d7dd;
+          border-radius: 999px; background: #f7f8fa; font-size: 12px; font-weight: 600; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #2f6fed; }
+  .label { font-size: 10px; color: #777; width: 74px; }
+  .cols { display: flex; gap: 26px; }
+</style></head><body>
+  <h2>role symbols at 12px (compact slots) / 13px (badge pill) / 18px (old avatar badge)</h2>
+  <div class="cols"><div id="roles"></div><div id="actions"></div></div>
+
+  <h2>simulated compact slots</h2>
+  <div class="cols">
+    <div>
+      <div class="label">DAG node head</div>
+      <div class="node"><span class="nodehead" id="n1"></span><span class="nodelabel">implement gate</span></div>
+      <div class="node" style="margin-top:8px"><span class="nodehead" id="n2"></span><span class="nodelabel">review lane A</span></div>
+      <div class="node" style="margin-top:8px"><span class="nodehead" id="n3"></span><span class="nodelabel">unclaimed work</span></div>
+    </div>
+    <div>
+      <div class="label">queue rows</div>
+      <div class="queue" id="q1"></div>
+      <div class="queue" id="q2"></div>
+      <div class="queue" id="q3"></div>
+    </div>
+    <div>
+      <div class="label">collapsed pill</div>
+      <div class="pill" id="b1"></div>
+      <div class="pill" style="margin-top:8px" id="b2"></div>
+      <div class="label" style="margin-top:10px">plain dot (before)</div>
+      <div class="pill"><span class="dot"></span><span>2</span></div>
+    </div>
+  </div>
+<script>
+  const base = 'file:///D:/OwlCats/AI_Tools/dsh-agent-teams/assets/agent-teams/';
+  const roles = ['team-lead','member-researcher','member-engineer','member-qa','member-designer','member-security','member-docs','member-data','member-operator'];
+  const actions = ['action-working','action-thinking','action-reporting','action-celebrating','action-sleeping','action-sending'];
+  const img = (name, cls) => `<img class="${cls}" src="${base}${name}-symbol.png" title="${name}">`;
+  document.getElementById('roles').innerHTML = roles.map(n =>
+    `<div class="row"><span class="cell">${img(n,'s12')}${img(n,'s13')}${img(n,'s18')}</span><span class="label">${n.replace('member-','')}</span></div>`).join('');
+  document.getElementById('actions').innerHTML = actions.map(n =>
+    `<div class="row"><span class="cell">${img(n,'s12')}${img(n,'s13')}${img(n,'s18')}</span><span class="label">${n.replace('action-','')}</span></div>`).join('');
+  document.getElementById('n1').innerHTML = img('member-engineer','s12') + 't24';
+  document.getElementById('n2').innerHTML = img('member-qa','s12') + 't31';
+  document.getElementById('n3').innerHTML = '<span class="dot" style="width:5px;height:5px;border-radius:1.5px;background:#c9ccd4"></span>' + 't40';
+  document.getElementById('q1').innerHTML = img('member-engineer','s12') + 'impl-a';
+  document.getElementById('q2').innerHTML = img('member-qa','s12') + 'revi';
+  document.getElementById('q3').innerHTML = img('team-lead','s12') + 'captain';
+  document.getElementById('b1').innerHTML = img('action-working','s13') + '<span>2</span>';
+  document.getElementById('b2').innerHTML = img('action-sleeping','s13') + '<span>2</span>';
+</script>
+</body></html>

@@ -69,6 +69,30 @@
   background: var(--dsw-alias-label-tertiary);
 }
 
+/* The collapsed pill draws the same busy/idle meaning as the dot it replaced,
+   with an icon that stays readable at 13px (the mascot cannot fit here). */
+.badgeSymbol {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}
+
+.badgeSymbol[data-busy='true'] {
+  animation: agentTeamsPulse 1.25s ease-in-out infinite;
+}
+
+/* Compact identity mark for dense surfaces — a DAG node head, an assignment
+   line, a queue row: the standalone role/lead symbol, sized to the text it sits
+   next to. Those slots have room for a mark, not for the mascot or a label. */
+.compactSymbol {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  object-fit: contain;
+}
+
 .badgeDot[data-busy='true'],
 .panelDot[data-busy='true'] {
   background: var(--dsw-alias-state-business-primary);

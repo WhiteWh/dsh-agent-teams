@@ -564,33 +564,48 @@ the owner to clear a cache.
 - **Owner UI follow-up (same release, before the first restart):** the member
   portrait carries one corner mark instead of two — the role symbol is gone from
   the avatar (the row names the role in words) and the captain avatar lost its
-  role mark too; the role pack stays packaged and resolvable for compact slots.
-  `ActivityPanel.tsx` dropped `memberSymbolUrl`/`LEAD_SYMBOL` from its imports and
-  the `.memberSymbol`/`.leadSymbol` rules left `ActivityPanel.module.css`. The old
-  check `the small corner badge draws both marks from the symbol packs` was
-  replaced by `the corner badge draws the activity mark only, from the symbol
-  pack` (now asserting the avatar renders *no* role mark) plus `the role symbol
-  pack stays resolvable for the compact slots`, so the pack keeps coverage
-  instead of losing it with the UI. `verify.mjs` 220 PASS / 0 FAIL.
-- **Artifact (rebuilt after the badge change):**
-  `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`, 2 237 711 bytes, SHA256
-  `4DF0EC6E…33C3`; the superseded build was `6A6524EB…381F` (2 238 040 bytes) and
-  never reached a restart. Note for the next install: re-adding the *same*
-  `file:` spec makes pnpm skip resolution, so the package must be removed first
-  (the `dsh.profile.bundles` order was restored to `dsh-base, dsh-web-app,
-  @nanmicoder/dsh-agent-teams, dsh-agent-status-bar` after the re-add).
+  role mark too. The role pack then became the **compact** mark (owner's answer to
+  "where should they go"): 12 px in the DAG node head (both the full map node and
+  the phase-board `TaskNode`), the task-detail assignment line and the Queues rows,
+  resolved by the new pure `ownerSymbolUrl(assignee, members)` in
+  `src/client/artwork.ts` (captain → lead mark, unknown/unclaimed → null, caller
+  keeps its coloured dot). The collapsed pill now draws the action symbol
+  (`working`/`idle`) instead of the plain dot.
+  `ActivityPanel.tsx` dropped `memberSymbolUrl` from the avatar, the
+  `.memberSymbol`/`.leadSymbol` rules left `ActivityPanel.module.css`, and
+  `.compactSymbol` (12 px) plus `.badgeSymbol` (13 px) were added. The old check
+  `the small corner badge draws both marks from the symbol packs` was replaced by
+  four: `the corner badge draws the activity mark only, from the symbol pack` (the
+  avatar must render *no* role mark), `the role symbol pack stays resolvable for
+  the compact slots`, `compact surfaces resolve an owner through the role symbol
+  pack` (unit: captain / member / empty / unknown) and `the compact surfaces draw
+  the symbol packs and keep a fallback`. `verify.mjs` 222 PASS / 0 FAIL.
+- **Legibility check before shipping the sizes:** rendered all nine role and six
+  action symbols at 12/13/18 px next to mock DAG-node, queue-row and pill markup
+  with the real `256` pack files (`Chrome --headless=new`, 3× scale,
+  `.local/tmp/preview/compact.{html,png}`) — every mark stays distinguishable at
+  12 px, so the sizes are measured rather than guessed.
+- **Artifact (rebuilt after the compact marks):**
+  `.local/dist/nanmicoder-dsh-agent-teams-0.1.22.tgz`, 2 240 640 bytes, SHA256
+  `5AB07C2E…38EE`; the two superseded builds (`6A6524EB…381F` at 2 238 040 bytes,
+  `4DF0EC6E…33C3` at 2 237 711 bytes) never reached a restart. Note for the next
+  install: re-adding the *same* `file:` spec makes pnpm skip resolution, so the
+  package must be removed first (the `dsh.profile.bundles` order was restored to
+  `dsh-base, dsh-web-app, @nanmicoder/dsh-agent-teams, dsh-agent-status-bar` after
+  each re-add).
 - **Deployed** into `C:\Users\whitl\.dsh\profiles\web`
   (`dsh plugin --profile web add --save-exact file:…0.1.22.tgz`): profile
   dependency points at the 0.1.22 tarball, installed version 0.1.22,
   `lib/client.js`, `lib/index.js`, `lib/artwork.js`, `lib/client/artwork.js` and
   `lib/client/art-revision.js` byte-identical to this checkout,
   `ART_REVISION = 5a90736f927c`, `member-engineer-v2.png` 39 838 bytes, the panel
-  bundle no longer contains the role-mark class, and `dsh --profile web
-  --dump-config` still resolves `id: agent-teams`. The host picks it up on the
-  next restart; the browser then asks for revisioned URLs, so no cache clearing is
-  needed. Pre-install backups: `*.bak-2026-09-20-pre-0.1.22` (package.json,
-  pnpm-lock.yaml, pnpm-workspace.yaml; plus `package.json.bak-2026-09-20-pre-reinstall`);
-  rollback target is the 0.1.21 tarball, which stays in place.
+  bundle carries `compactSymbol`/`ownerSymbolUrl` and no `css.badgeDot`, and
+  `dsh --profile web --dump-config` still resolves `id: agent-teams`. The host
+  picks it up on the next restart; the browser then asks for revisioned URLs, so no
+  cache clearing is needed. Pre-install backups: `*.bak-2026-09-20-pre-0.1.22`
+  (package.json, pnpm-lock.yaml, pnpm-workspace.yaml; plus
+  `package.json.bak-2026-09-20-pre-reinstall`); rollback target is the 0.1.21
+  tarball, which stays in place.
 
 ### S01 — WP9-a: one TASK_TRANSITIONS table
 

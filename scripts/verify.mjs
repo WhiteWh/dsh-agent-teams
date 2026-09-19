@@ -82,7 +82,7 @@ import {
   resizePanelLayout,
   resolvePanelGeometry,
 } from '../lib/client/panel-geometry.js'
-import { ACTION_ART, ACTION_SYMBOL, LEAD_ART, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl } from '../lib/client/artwork.js'
+import { ACTION_ART, ACTION_SYMBOL, LEAD_ART, LEAD_SYMBOL, memberArtUrl, memberSymbolUrl, ownerSymbolUrl } from '../lib/client/artwork.js'
 import { ART_REVISION } from '../lib/client/art-revision.js'
 import { parseAgentTeamsCreateArgs } from '../lib/client/agent-teams-card-definition.js'
 import {
@@ -449,6 +449,36 @@ check(
     && LEAD_SYMBOL.includes('?v=')
     && artworkSource.includes('memberSymbolUrl'),
   `lead symbol = ${LEAD_SYMBOL}`,
+)
+// The compact surfaces are where the role pack now earns its place: a DAG node
+// head, the assignment line and a queue row have room for a 12px mark, not for
+// the mascot or a role label. They resolve the owner through one function, so
+// the captain gets the lead mark and an unclaimed task gets nothing at all.
+const compactRoster = [
+  { name: 'impl-a', role: 'Backend Engineer' },
+  { name: 'revi', role: 'Reviewer' },
+]
+check(
+  'compact surfaces resolve an owner through the role symbol pack',
+  ownerSymbolUrl('impl-a', compactRoster) === memberSymbolUrl('impl-a', 'Backend Engineer')
+    && ownerSymbolUrl('revi', compactRoster) === memberSymbolUrl('revi', 'Reviewer')
+    && ownerSymbolUrl('captain', compactRoster) === LEAD_SYMBOL
+    && ownerSymbolUrl('Captain', compactRoster) === LEAD_SYMBOL
+    && ownerSymbolUrl('', compactRoster) === null
+    && ownerSymbolUrl('unassigned', compactRoster) === null
+    && ownerSymbolUrl('ghost', compactRoster) === null,
+  `impl-a -> ${String(ownerSymbolUrl('impl-a', compactRoster))}, captain -> ${String(ownerSymbolUrl('captain', compactRoster))}`,
+)
+check(
+  'the compact surfaces draw the symbol packs and keep a fallback',
+  activityPanelSource.includes('ownerSymbolUrl(')
+    && activityPanelSource.includes('css.compactSymbol')
+    && activityPanelSource.includes('css.badgeSymbol')
+    && activityPanelSource.includes('busy ? ACTION_SYMBOL.working : ACTION_SYMBOL.idle')
+    && !activityPanelSource.includes('css.badgeDot')
+    && activityPanelCss.includes('.compactSymbol')
+    && activityPanelCss.includes('.badgeSymbol'),
+  'a compact surface lost its mark, or the badge fell back to a plain dot',
 )
 // The names in this pack did not change when the art was redrawn: the whale and
 // the amber terminal are both `member-engineer-v2.png`. A browser that cached
