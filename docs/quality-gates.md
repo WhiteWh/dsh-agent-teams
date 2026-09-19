@@ -46,6 +46,44 @@
 7. `create_task` 会静默解除 `halted`，存在误恢复风险。
 8. 现有测试覆盖调度，不覆盖质量门禁。本需求必须先写失败测试。
 
+### 1.3 v0.1.21 追加：验收豁免（waived）
+
+现场证据见 `D:/OwlCats/AI_Tools/Docs/AGENT_TEAMS_FEEDBACK.md` §2：`t5` 的两条
+验收标准指向在 HEAD 上**本来就红**的检查（外部原因）。诚实的执行者拒绝把这种
+测量写成 `passed`，于是任务被强制 `failed`，尽管该 lane 的工作本身完全正确。
+
+v0.1.21 因此给验收结果加了第三个状态：
+
+```ts
+type AcceptanceResultStatus = 'passed' | 'failed' | 'waived'
+```
+
+规则（机器强制）：
+
+- `waived` **必须**带非空 `evidence`，说明原因与所比较的基线；没有理由的豁免
+  在工具入参解析和 `team.json` 持久化两处都会被拒。
+- `waived` 与 `passed` 一样算“该条已覆盖”，因此不阻塞 `completed`。
+- 任务带上 `hasWaivers`，并且**交付仍然被挡**：`canDeclareDelivery` 报出
+  `<id> has unconfirmed waivers`，直到某个 `kind=review` 且 `verdict=pass` 的
+  任务在 `reviewedTaskId` 指向它时给出显式的 `waiverConfirmation`。
+  只在 `output` 里写一句“我确认豁免”不算——那条路径无法机器判定。
+- `reviewPolicy.allowWaivers: false` 关闭整个机制：此时 `waived` 被当作普通的
+  门禁失败。默认开启。
+
+第二条出口是 **no-regression 判据**：验收条目可以写成对象
+
+```ts
+{ text: string, mode?: 'pass' | 'no_regression', baseline?: string }
+```
+
+裸字符串等价于 `mode: 'pass'`。`no_regression` 的 `passed` 结果必须在
+`evidence` 里点名基线（提交号或产物）；没有基线的 `passed` 会被拒。
+
+同时**移除了长度对齐兜底**：旧实现允许“结果数组长度相同且全 passed”即视为
+合同满足，于是一份关于完全不同条目的全通过报告也能通过门禁。现在按**规范化
+文本**匹配（去首尾空白、折叠内部空白、去掉结尾标点），失败时逐条列出未被覆盖
+的判据名。合同文本仍然是给人读的文案而不是不透明 id，但它也不能退化成通配符。
+
 ## 2. 可以做 / 不可以做
 
 ### 2.1 可以做
@@ -221,15 +259,30 @@ interface ReviewFinding {
 
 interface AcceptanceResult {
   criterion: string
-  status: 'passed' | 'failed'
+  // v0.1.21: 'waived' 需要非空 evidence（见 §1.3）
+  status: 'passed' | 'failed' | 'waived'
   evidence?: string
 }
 
 interface CommandResult {
   command: string
-  status: 'passed' | 'failed'
+  status: 'passed' | 'failed' | 'waived'   // v0.1.21，规则同 acceptance
   exitCode?: number
   evidence?: string
+}
+
+// v0.1.21：验收条目可以是裸字符串，也可以是对象
+interface AcceptanceCriterion {
+  text: string
+  mode?: 'pass' | 'no_regression'
+  baseline?: string
+}
+
+// v0.1.21：review 任务用来确认被审任务的豁免
+interface WaiverConfirmation {
+  taskId: string
+  reason: string
+  waived?: string[]
 }
 
 interface TeamTask {
@@ -241,13 +294,15 @@ interface TeamTask {
   objective?: string
   inScope?: string[]
   outOfScope?: string[]
-  acceptance?: string[]
+  acceptance?: (string | AcceptanceCriterion)[]   // v0.1.21
   verify?: string[]
   deliverables?: string[]
   nonGoals?: string[]
   changedPaths?: string[]
   acceptanceResults?: AcceptanceResult[]
   commandsRun?: CommandResult[]
+  hasWaivers?: boolean                             // v0.1.21：本次结果含 waived
+  waiverConfirmation?: WaiverConfirmation          // v0.1.21：仅 review
   reviewedTaskId?: string
   reviewedAttempt?: number
   sourceTaskId?: string        // repair 对应的实现/上一轮产物
@@ -261,6 +316,8 @@ interface TeamTask {
 - `kind` 缺省视为 `'work'`。
 - `'work'` 保持旧行为，避免破坏已有团队和测试。
 - 新创建的 `requirements` / `implementation` / `verification` / `review` / `repair` / `integration` 必须走新门禁。
+- v0.1.21 新增的字段全部**读取时可缺省**：`waived`、`no_regression` 对象、
+  `hasWaivers`、`waiverConfirmation` 都缺失也能冷启动，旧的裸字符串判据含义不变。
 
 ### 5.3 团队 / profile 新增字段
 
@@ -376,14 +433,36 @@ interface TeamProfileConfig {
    - 缺少 `verdict` 时拒绝 `completed` 和“口头通过”。
    - `pass` 时不得残留未解决的 `blocker|high` finding。
 3. `kind=implementation|repair|verification|integration`：
-   - `completed` 必须带齐 `acceptanceResults`，且每条 acceptance 都有对应 `passed`。
-   - 必须带 `commandsRun`，覆盖任务 `verify` 中的每一条，且全部 `passed`。
+   - `completed` 必须带齐 `acceptanceResults`，且每条 acceptance 都有对应的
+     `passed` 或带证据的 `waived`（v0.1.21，见 §1.3）。
+   - 必须带 `commandsRun`，覆盖任务 `verify` 中的每一条，且每条是 `passed` 或
+     带证据的 `waived`。
    - `implementation|repair` 必须带 `changedPaths`。
    - 任一 `changedPaths` 落在 `outOfScope`，或不能证明属于 `inScope`，只能 `failed`。
-   - 验证失败只能 `failed`。
+   - 验证失败只能 `failed`（`status: 'failed'` 的命令不受豁免影响）。
 4. `output` 仍然保存，供人和下游阅读；但结构化字段才是门禁真相。
 5. 成员仍必须提交当前 `attempt_id`。
 6. 实现者不能把自己的实现任务标成 review pass。review 任务必须由 review 角色 / 被指派的 reviewer 完成。
+7. `waived` 的判据/命令匹配沿用同一套**规范化文本**规则：多写一个句号、多一个
+   空格不算错，写的是另一条判据则不算覆盖，错误信息会点名未覆盖的那条。
+8. `no_regression` 判据的 `passed` 必须带点名基线的 `evidence`；这是唯一一种
+   “非绿也可通过”的 `passed`。
+9. `waiverConfirmation` 只能出现在 `kind=review` 的任务上，且其 `taskId` 必须
+   等于该任务的 `reviewedTaskId`；否则拒绝。
+
+**豁免的确认路径（v0.1.21）。** 成员提交 `waived` 后：
+
+```text
+任务标记 hasWaivers
+  ↓
+review 任务必须 kind=review 且 reviewedTaskId 指向它
+  ↓
+该 review 以 verdict=pass 完成，并在参数里带 waiverConfirmation
+  ↓
+canDeclareDelivery 通过；否则 "<id> has unconfirmed waivers"
+```
+
+`reviewPolicy.allowWaivers: false` 时整条路径不存在：`waived` 直接被当作失败。
 
 路径匹配规则（第一版，必须写成纯函数并单测）：
 
@@ -529,7 +608,12 @@ Captain 或系统在 status 中投影：
 - 所有 review `verdict=pass`。
 - 没有未处理 `failed` 且没有对应 repair。
 - 没有 `missing` coverage。
-- 没有未入账越界路径。
+- 没有未入账越界路径。v0.1.21 起，这条只审计 `completed` 的实现/修复任务：
+  `cancelled` 任务残留的 `changedPaths` 不再把交付报告染红（`superseded` 在
+  0.1.22 加入同一过滤）。这是现场反馈 §6.2 —— 队长不得不手工清空
+  `changedPaths` 才能让报告变干净。
+- v0.1.21 起，没有未确认的豁免：任何 `hasWaivers` 的任务都要等到一个
+  `verdict=pass` 的 review 用 `waiverConfirmation` 确认它。
 
 可提供纯函数 `canDeclareDelivery(team): { ok: boolean; blockers: string[] }`。Captain 协议要求：`ok=false` 时不得向用户宣布完成。
 

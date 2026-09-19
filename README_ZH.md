@@ -30,7 +30,7 @@
 
 ## 版本更新
 
-[v0.1.20](./release-notes/v0.1.20.md) 仅把本文档中的版本引用同步到 npm `latest`，不含任何代码或行为变更，打包产物与 [v0.1.19](./release-notes/v0.1.19.md) 完全一致；该版本带来上一份文档版本以来的实质变更：宿主禁用或改名委派工具时成员仍能正常启动；自动修复范围改为从 `requiredFix` 推导；新增队长专用的 `agent_teams_amend_task`。推荐 DeepSeek Harness `0.1.5-rc.1`，保留三个旧宿主目标。
+[v0.1.21](./release-notes/v0.1.21.md) 让验收标准可以被「豁免」：成员可以把在基线上本来就红的检查以 `waived` 加证据上报，而不必强行把任务判失败；交付会一直被 `has unconfirmed waivers` 挡住，直到某个 review 任务明确确认该豁免。同时移除了「长度相同即视为通过」的兜底（无关的全通过报告曾能冒充合同），把 inScope 重叠的顺序判定改成沿依赖闭包传递，交付的路径审计不再统计已取消任务，错位的 profile 键会直接给出修法（`requiredReviewers` 属于 `reviewPolicy`），新增 `node scripts/doctor.mjs --profiles`，活动面板新增三个只读视图：**阶段**、**成员**、**队列**。推荐 DeepSeek Harness `0.1.5-rc.1`，保留三个旧宿主目标。
 
 ## 为什么需要 AgentTeams？
 
@@ -41,21 +41,21 @@
 | **带依赖的任务** | 任务有明确状态；依赖未完成时不能领取。 |
 | **自动续领与安全接管** | 成员空闲后自动领取下一项就绪任务；转派会撤销旧 attempt，冷恢复会重试遗留任务，迟到结果无法覆盖。 |
 | **成员直达消息** | 成员通过持久化邮箱直接联系队友或队长，不需要队长中转。 |
-| **实时活动面板** | Web UI 用分段进度、可折叠成员树和可交互 DAG 展示实时工作；运行中的子任务会标出使用的模型，团队结束后仍保留完整成员与任务历史。 |
+| **实时活动面板** | Web UI 用分段进度、可折叠成员树和可交互 DAG 展示实时工作；运行中的子任务会标出使用的模型，团队结束后仍保留完整成员与任务历史。依赖树旁新增三个只读视图：**阶段**（按依赖层级，或计划声明的阶段）、**成员**（每行一名成员，按执行顺序）、**队列**（谁拿着什么、下一个可领什么、空闲的人为什么空闲）。 |
 | **质量门禁** | 人只提供目标和约束。默认任务顺序是需求 → 实现 → 验证 → 审查 → 集成，失败后自动修复/复审，恢复团队必须显式 resume。第一版范围控制是完成时审计，不是 host 写入拦截。详见 [docs/quality-gates.md](./docs/quality-gates.md)。 |
 
 对话卡片与活动面板接入 Harness 官方多语言服务，会随宿主在简体中文和英文之间实时切换；任务/成员状态、动态摘要、操作按钮、历史归档标识和无障碍文案都会同步更新，无需刷新页面，也不增加插件自己的语言设置。
 
 ## 安装与版本选择
 
-**推荐组合：DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.20`。Harness 仍为预发布版本。**
+**推荐组合：DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.1.21`。Harness 仍为预发布版本。**
 
 | 使用场景 | DeepSeek Harness | AgentTeams 插件 |
 | --- | --- | --- |
-| **推荐安装** | **`0.1.5-rc.1`** | **`0.1.20`** |
-| 保留旧 RC | `0.1.2-rc.1` | `0.1.20` |
-| 开发者测试 Alpha | `0.1.2-alpha.5` | `0.1.20` |
-| 保留旧 Alpha | `0.1.2-alpha.2` | `0.1.20` |
+| **推荐安装** | **`0.1.5-rc.1`** | **`0.1.21`** |
+| 保留旧 RC | `0.1.2-rc.1` | `0.1.21` |
+| 开发者测试 Alpha | `0.1.2-alpha.5` | `0.1.21` |
+| 保留旧 Alpha | `0.1.2-alpha.2` | `0.1.21` |
 
 ### 1. 安装 DeepSeek Harness
 
@@ -71,12 +71,12 @@ dsh --version
 安装到 `web` profile；使用其他 profile 时替换名称：
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.20
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.21
 ```
 
 **安装后，停止并重新启动该 profile 的 Harness 进程，再刷新浏览器。**
 
-npm 默认标签 `latest` 现指向 `0.1.20`，因此新 profile 使用 `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` 即可安装本版；需要锁定版本时使用上面的精确版本命令。推荐宿主为 Harness `0.1.5-rc.1`，安装插件不会自动升级宿主。源码安装见[维护指南](./docs/maintenance-workflow.md)，验证范围见[本版验收记录](./docs/releases/v0.1.19/README.md)。
+npm 默认标签 `latest` 现指向 `0.1.21`，因此新 profile 使用 `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` 即可安装本版；需要锁定版本时使用上面的精确版本命令。推荐宿主为 Harness `0.1.5-rc.1`，安装插件不会自动升级宿主。源码安装见[维护指南](./docs/maintenance-workflow.md)，验证范围见[本版验收记录](./docs/releases/v0.1.19/README.md)。
 
 > Desktop 用户需核对应用内置的 Harness 核心；全局 CLI 升级不会升级桌面内核。旧 `0.1.0-*` / `0.1.1-*` 或其他未列出的宿主，请先保留已工作的组合，参考[旧版本与诊断指引](./docs/maintenance-workflow.md)。
 
