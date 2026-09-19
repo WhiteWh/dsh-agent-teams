@@ -19,10 +19,72 @@ export const MAX_PROFILE_TASKS = 32
 export const PROFILE_PROTOCOL_PROMPT_LIMIT = 240
 
 const PROFILE_KEYS = ['description', 'protocol', 'executionPrompt', 'fallback', 'members', 'tasks', 'taskPlanning', 'reviewPolicy'] as const
-const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'codeMaxRounds', 'maxRepairAttempts', 'requiredReviewers'] as const
+const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'codeMaxRounds', 'maxRepairAttempts', 'requiredReviewers', 'allowWaivers'] as const
 const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
+
+/**
+ * Where each nested key set lives inside a profile body. Used for two things:
+ * validating a profile before it is saved or activated, and turning an unknown
+ * key into a correction instead of a bare "is unknown".
+ */
+interface ProfileKeyScope {
+  /** The nested key set that belongs at this level. */
+  readonly keys: readonly string[]
+  /** Scope name for a hint such as "belongs under reviewPolicy". */
+  readonly label?: string
+}
+
+const PROFILE_KEY_SCOPE: ProfileKeyScope = { keys: PROFILE_KEYS }
+const MEMBER_KEY_SCOPE: ProfileKeyScope = { keys: MEMBER_KEYS }
+const TASK_KEY_SCOPE: ProfileKeyScope = { keys: TASK_KEYS }
+const REVIEW_POLICY_SCOPE: ProfileKeyScope = { keys: REVIEW_POLICY_KEYS, label: 'reviewPolicy' }
+const FALLBACK_SCOPE: ProfileKeyScope = { keys: FALLBACK_KEYS, label: 'fallback' }
+
+/** A non-empty array, or an empty one when the key is absent. */
+function asArray(value: unknown, path: string): unknown[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`)
+  return value
+}
+
+/**
+ * Find where a misplaced key belongs.
+ *
+ * The incident (feedback §6.1) was a profile with `requiredReviewers` at the top
+ * level: the real schema wants it under `reviewPolicy`, and the error the
+ * captain got — `profiles.material-layers.requiredReviewers is unknown` — named
+ * neither the nesting nor the fix. Levenshtein distance cannot bridge that gap
+ * (distance 15), so unknown keys are looked up in the nested key sets too.
+ *
+ * @param unknown - the rejected key name.
+ * @param scopes - the nested scopes to search, in report order.
+ * @returns the suggested replacement, or undefined when nothing plausible fits.
+ */
+export function suggestNestedProfileKey(
+  unknown: string,
+  scopes: readonly ProfileKeyScope[],
+): { key: string; label: string } | undefined {
+  for (const scope of scopes) {
+    const match = suggestField(unknown, scope.keys)
+    if (match !== undefined && scope.label !== undefined) return { key: match, label: scope.label }
+  }
+  return undefined
+}
+
+function assertProfileKeys(
+  value: Record<string, unknown>,
+  scope: ProfileKeyScope,
+  path: string,
+): void {
+  assertAllowedKeys(
+    value,
+    scope.keys,
+    path,
+    scope === PROFILE_KEY_SCOPE ? [REVIEW_POLICY_SCOPE, MEMBER_KEY_SCOPE, TASK_KEY_SCOPE] : [],
+  )
+}
 
 /** One member row in a named team-profile template (unresolved). */
 export interface TeamModelFallbackConfig {
@@ -223,6 +285,107 @@ function formatProfileListingLine(entry: ListedTeamProfile): string {
     : `- ${entry.name} ${counts}: ${summary}`
 }
 
+/**
+ * Validate only the key structure of every configured profile and print the
+ * exact problem with its path.
+ *
+ * This is the lint entry point behind
+ * `node scripts/doctor.mjs --profiles <config>`. It deliberately stops short of
+ * {@link resolveTeamProfile}: resolving needs `maxMembers`, evaluates model
+ * routes and normalizes seed tasks, so it cannot run outside a live host. The
+ * key structure is what makes a profile unusable — an unknown key aborts
+ * `agent_teams_create` with a message the captain cannot act on unless it names
+ * the nesting (feedback §6.1) — so that is what a config-only lint can check
+ * honestly.
+ *
+ * @param profiles - the raw configured profile map.
+ * @returns one entry per profile, with the message or undefined when it is valid.
+ */
+export function lintProfileKeys(
+  profiles: Record<string, TeamProfileConfig> | undefined | null,
+): { name: string; ok: boolean; error?: string }[] {
+  let listed: ListedTeamProfile[]
+  try {
+    listed = listConfiguredProfiles(profiles)
+  } catch (error: unknown) {
+    return [{ name: '(profiles)', ok: false, error: error instanceof Error ? error.message : String(error) }]
+  }
+  return listed.map((entry) => {
+    const path = `profiles.${entry.name}`
+    try {
+      const raw = asRecord(entry.config, path)
+      assertProfileKeys(raw, PROFILE_KEY_SCOPE, path)
+      for (const [index, member] of asArray(raw['members'], `${path}.members`).entries()) {
+        assertProfileKeys(asRecord(member, `${path}.members[${index}]`), MEMBER_KEY_SCOPE, `${path}.members[${index}]`)
+      }
+      for (const [index, task] of asArray(raw['tasks'], `${path}.tasks`).entries()) {
+        assertProfileKeys(asRecord(task, `${path}.tasks[${index}]`), TASK_KEY_SCOPE, `${path}.tasks[${index}]`)
+      }
+      for (const [index, member] of asArray(raw['members'], `${path}.members`).entries()) {
+        const fallback = (member as Record<string, unknown>)['fallback']
+        if (fallback !== undefined) assertProfileKeys(asRecord(fallback, `${path}.members[${index}].fallback`), FALLBACK_SCOPE, `${path}.members[${index}].fallback`)
+      }
+      const reviewPolicy = raw['reviewPolicy']
+      if (reviewPolicy !== undefined) assertProfileKeys(asRecord(reviewPolicy, `${path}.reviewPolicy`), REVIEW_POLICY_SCOPE, `${path}.reviewPolicy`)
+      const fallback = raw['fallback']
+      if (fallback !== undefined) assertProfileKeys(asRecord(fallback, `${path}.fallback`), FALLBACK_SCOPE, `${path}.fallback`)
+      return { name: entry.name, ok: true }
+    } catch (error: unknown) {
+      return { name: entry.name, ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+}
+
+/**
+ * Find the `profiles` map inside an arbitrary config document.
+ *
+ * The plugin config is written in several shapes in practice: a bare
+ * `{profiles: {...}}`, a `{plugins: {'agent-teams': {...}}}` block, or a
+ * composed DSH profile (`cordis.patch.yml` / `cordis.yml`) whose plugin entry
+ * carries a `config` object. Rather than guess one, search the document for the
+ * first map whose values look like profile definitions (`{members: [...]}`) or
+ * for a key literally named `profiles`.
+ *
+ * @param raw - the parsed config document.
+ * @returns the profile map, or `undefined` when the document carries none.
+ */
+export function findProfilesInConfig(raw: unknown): Record<string, TeamProfileConfig> | undefined {
+  const seen = new Set<unknown>()
+  const looksLikeProfileMap = (value: unknown): value is Record<string, TeamProfileConfig> => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+    const entries = Object.values(value as Record<string, unknown>)
+    if (entries.length === 0) return false
+    return entries.every((entry) => (
+      typeof entry === 'object'
+      && entry !== null
+      && !Array.isArray(entry)
+      && Array.isArray((entry as Record<string, unknown>)['members'])
+    ))
+  }
+  const visit = (node: unknown): Record<string, TeamProfileConfig> | undefined => {
+    if (typeof node !== 'object' || node === null) return undefined
+    if (seen.has(node)) return undefined
+    seen.add(node)
+    if (looksLikeProfileMap(node)) return node
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = visit(item)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    const record = node as Record<string, unknown>
+    const named = record['profiles']
+    if (named !== undefined && looksLikeProfileMap(named)) return named
+    for (const value of Object.values(record)) {
+      const found = visit(value)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  return visit(raw)
+}
+
 /** Public lookup used by activation text and status rendering. */
 export function resolveProfileTaskPlanning(config: TeamProfileConfig | undefined): 'captain' | 'seed' {
   return config?.taskPlanning === 'captain' ? 'captain' : 'seed'
@@ -291,7 +454,7 @@ function normalizeListedProfile(
 ): NormalizedTeamProfile {
   const path = `profiles.${listed.name}`
   const raw = asRecord(listed.config, path)
-  assertAllowedKeys(raw, PROFILE_KEYS, path)
+  assertProfileKeys(raw, PROFILE_KEY_SCOPE, path)
 
   const description = optionalNonEmptyString(raw['description'], `${path}.description`)
   const protocol = optionalNonEmptyString(raw['protocol'], `${path}.protocol`)
@@ -402,7 +565,7 @@ function normalizeTaskPlanning(value: unknown, path: string): 'captain' | 'seed'
 function normalizeReviewPolicy(value: unknown, path: string): import('./types.ts').ReviewPolicy | undefined {
   if (value === undefined) return undefined
   const raw = asRecord(value, path)
-  assertAllowedKeys(raw, REVIEW_POLICY_KEYS, path)
+  assertProfileKeys(raw, REVIEW_POLICY_SCOPE, path)
   const requirementsMinRounds = optionalPositiveInt(raw['requirementsMinRounds'], `${path}.requirementsMinRounds`)
   const requirementsMaxRounds = optionalPositiveInt(raw['requirementsMaxRounds'], `${path}.requirementsMaxRounds`)
   const codeMaxRounds = optionalPositiveInt(raw['codeMaxRounds'], `${path}.codeMaxRounds`)
@@ -449,7 +612,7 @@ function normalizeMember(
   profileName: string,
 ): NormalizedProfileMember {
   const raw = asRecord(value, path)
-  assertAllowedKeys(raw, MEMBER_KEYS, path)
+  assertProfileKeys(raw, MEMBER_KEY_SCOPE, path)
   const name = requiredNonEmptyString(raw['name'], `${path}.name`, `profile "${profileName}" has a member with an empty name`)
   if (isCaptainName(name)) {
     throw new Error(`member name "${name}" is reserved for the captain`)
@@ -485,7 +648,7 @@ function normalizeTask(
   requireAssignee: boolean,
 ): NormalizedProfileTask {
   const raw = asRecord(value, path)
-  assertAllowedKeys(raw, TASK_KEYS, path)
+  assertProfileKeys(raw, TASK_KEY_SCOPE, path)
   const id = requiredNonEmptyString(
     raw['id'],
     `${path}.id`,
@@ -664,13 +827,23 @@ function assertAllowedKeys(
   value: Record<string, unknown>,
   allowed: readonly string[],
   path: string,
+  nestedScopes: readonly ProfileKeyScope[] = [],
 ): void {
   const allow = new Set<string>(allowed)
   for (const key of Object.keys(value)) {
     if (allow.has(key)) continue
     const suggestion = suggestField(key, allowed)
-    const hint = suggestion === undefined ? '' : `; did you mean ${suggestion}?`
-    throw new Error(`${path}.${key} is unknown${hint}`)
+    if (suggestion !== undefined) {
+      throw new Error(`${path}.${key} is unknown; did you mean ${suggestion}?`)
+    }
+    // Second level: the key is real, but it belongs one level down. Naming the
+    // parent is the whole fix — the captain no longer has to read the plugin
+    // schema to learn where `requiredReviewers` goes (feedback §6.1).
+    const nested = suggestNestedProfileKey(key, nestedScopes)
+    if (nested !== undefined) {
+      throw new Error(`${path}.${key} is unknown at this level; ${nested.key} belongs under ${nested.label} (${path}.${nested.label}.${nested.key})`)
+    }
+    throw new Error(`${path}.${key} is unknown`)
   }
 }
 

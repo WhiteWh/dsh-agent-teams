@@ -93,32 +93,96 @@ export function inspectInstallation(hostRoot, profileRoot) {
   }
 }
 
+/**
+ * Lint the AgentTeams profiles declared in one config file.
+ *
+ * Reads only the file and the plugin's own compiled module — no host process,
+ * no credentials, no network. The plugin module is imported lazily so the
+ * dependency check keeps working on a checkout that has not been built.
+ *
+ * @param path - path to a JSON config document that carries the plugin config.
+ * @returns the lint report: per-profile problems with their exact fix.
+ */
+export async function inspectConfiguredProfiles(path) {
+  const resolved = resolve(path)
+  // Editors on Windows like to prepend a UTF-8 BOM; JSON.parse reports it as an
+  // unhelpful "Unexpected token" at position 0.
+  const source = readFileSync(resolved, 'utf8').replace(/^\uFEFF/u, '')
+  let document
+  try {
+    document = JSON.parse(source)
+  } catch (error) {
+    throw new Error(`Cannot parse ${resolved} as JSON: ${error.message}. Export the profile config as JSON (the provider config the plugin receives), not as composed YAML.`)
+  }
+  let findProfilesInConfig
+  let lintProfileKeys
+  try {
+    ({ findProfilesInConfig, lintProfileKeys } = await import(new URL('../lib/profiles.js', import.meta.url).href))
+  } catch (error) {
+    throw new Error(`Cannot load the profile validator from lib/profiles.js: ${error.message}. Run "pnpm build" first.`)
+  }
+  const found = findProfilesInConfig(document)
+  if (found === undefined) {
+    return {
+      ok: true,
+      path: resolved,
+      checkedProfiles: 0,
+      problems: [],
+      limits: ['No AgentTeams profile definitions found in this file; nothing to lint.'],
+    }
+  }
+  const results = lintProfileKeys(found)
+  const problems = results.filter((entry) => !entry.ok).map((entry) => `${entry.name}: ${entry.error}`)
+  return {
+    ok: problems.length === 0,
+    path: resolved,
+    checkedProfiles: results.length,
+    profiles: results,
+    problems,
+    limits: ['Checks the key structure of profile bodies only; model routes and seed-task references are resolved by the host at team creation.'],
+  }
+}
+
 // npm bin entries and macOS temporary directories may reach this module via
 // symlinks; Node canonicalizes import.meta.url but preserves argv[1].
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   try {
     let hostRoot = process.cwd()
     let profileRoot
+    let profilesPath
     let json = false
     for (let index = 2; index < process.argv.length; index++) {
       const arg = process.argv[index]
       if (arg === '--json') json = true
-      else if (arg === '--host-root' || arg === '--profile-root') {
+      else if (arg === '--host-root' || arg === '--profile-root' || arg === '--profiles') {
         const value = process.argv[++index]
-        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a directory`)
+        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a ${arg === '--profiles' ? 'file' : 'directory'}`)
         if (arg === '--host-root') hostRoot = value
-        else profileRoot = value
-      } else throw new Error('Usage: dsh-agent-teams-doctor [--host-root dir] [--profile-root dir] [--json]')
+        else if (arg === '--profile-root') profileRoot = value
+        else profilesPath = value
+      } else throw new Error('Usage: dsh-agent-teams-doctor [--host-root dir] [--profile-root dir] [--profiles file] [--json]')
     }
-    const result = inspectInstallation(hostRoot, profileRoot)
-    console.log(json ? JSON.stringify(result, null, 2) : [
-      `Harness: ${result.host.version} (${result.host.path})`,
-      `DSH package identities checked: ${result.checkedPackages}`,
-      ...result.problems.map(problem => `FAIL: ${problem}`),
-      result.ok ? 'Dependency inspection passed.' : 'Use one supported host version and a matching locked profile.',
-      ...result.limits,
-    ].join('\n'))
-    if (!result.ok) process.exitCode = 1
+    if (profilesPath !== undefined) {
+      const result = await inspectConfiguredProfiles(profilesPath)
+      console.log(json ? JSON.stringify(result, null, 2) : [
+        `Profiles file: ${result.path}`,
+        `Configured profiles: ${result.checkedProfiles}`,
+        ...result.problems.map(problem => `FAIL: ${problem}`),
+        result.ok ? 'Profile key structure passed.' : 'Fix the listed keys; the message names the exact path and nesting.',
+        ...result.limits,
+      ].join('\n'))
+      if (!result.ok) process.exitCode = 1
+    } else {
+      const result = inspectInstallation(hostRoot, profileRoot)
+      console.log(json ? JSON.stringify(result, null, 2) : [
+        `Harness: ${result.host.version} (${result.host.path})`,
+        `DSH package identities checked: ${result.checkedPackages}`,
+        ...result.problems.map(problem => `FAIL: ${problem}`),
+        result.ok ? 'Dependency inspection passed.' : 'Use one supported host version and a matching locked profile.',
+        ...result.limits,
+      ].join('\n'))
+      if (!result.ok) process.exitCode = 1
+    }
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1

@@ -119,6 +119,7 @@ export const Config: z<Config> = z.object({
       codeMaxRounds: z.natural().min(1),
       maxRepairAttempts: z.natural().min(1),
       requiredReviewers: z.array(z.string()),
+      allowWaivers: z.boolean(),
     }),
     tasks: z.array(z.object({
       id: z.string().required(),

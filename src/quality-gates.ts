@@ -1389,3 +1389,8 @@ export function describeQualityLoop(team: TeamState): QualityLoopSnapshot {
 }
 
 export { QUALITY_KINDS, WRITE_KINDS }
+
+// Profile-key linting lives in `profiles.ts` (it owns the key schema) and is
+// re-exported here so the pure-rules entry point that `state.ts` already
+// forwards also exposes it to the TDD suite and the doctor script.
+export { findProfilesInConfig, lintProfileKeys } from './profiles.ts'

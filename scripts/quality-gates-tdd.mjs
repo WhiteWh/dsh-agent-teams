@@ -5,14 +5,14 @@
  * Imports compiled `lib/` exports. Missing functions or old tool behavior
  * must fail the matching label — do not delete or rename these prefixes.
  */
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { assignmentPrompt } from '../lib/scheduler.js'
 import { applyQualityFollowUp, haltTeamWork, registerAgentTeamsTools } from '../lib/tools.js'
 import { createTeamDir, readTeam } from '../lib/state.js'
-
+import { inspectConfiguredProfiles } from './doctor.mjs'
 const require = createRequire(import.meta.url)
 
 let failures = 0
@@ -93,6 +93,7 @@ function loadStateApi() {
     taskHasWaivers: state.taskHasWaivers,
     waiversConfirmed: state.waiversConfirmed,
     unconfirmedWaivers: state.unconfirmedWaivers,
+    lintProfileKeys: state.lintProfileKeys,
   }
 }
 
@@ -1692,6 +1693,94 @@ console.log('quality-gates TDD — L. Delivery ignores dead tasks (WP6.2)')
     blocked?.ok === false && (blocked.blockers ?? []).some((item) => item.includes('src/unlisted.ts')),
     JSON.stringify(blocked?.blockers),
   )
+}
+
+console.log('quality-gates TDD — M. profile lint hints (WP6.1)')
+
+{
+  // Feedback §6.1: a profile that put `requiredReviewers` at the top level failed
+  // with "profiles.material-layers.requiredReviewers is unknown" and no hint.
+  // Levenshtein distance cannot find the nesting (distance 15), so the unknown
+  // key is looked up in the nested key sets as well.
+  throws('tdd.profiles.misplaced-key-names-its-parent-scope', () => {
+    const result = requireFn(api.lintProfileKeys, 'lintProfileKeys')({
+      material: {
+        members: [{ name: 'a', role: 'engineer' }],
+        requiredReviewers: ['correctness'],
+      },
+    })
+    const first = result?.[0]
+    if (first?.ok === false && /requiredReviewers/.test(first.error) && /belongs under reviewPolicy/.test(first.error)) {
+      throw new Error('reported with the nesting hint')
+    }
+  })
+
+  const clean = api.lintProfileKeys?.({
+    material: {
+      description: 'ok',
+      members: [{ name: 'a', role: 'engineer' }],
+      tasks: [{ id: 'seed', subject: 'do it', dependencies: [] }],
+      reviewPolicy: { codeMaxRounds: 2, allowWaivers: false },
+      taskPlanning: 'captain',
+    },
+  })
+  check(
+    'tdd.profiles.valid-profile-passes-the-lint',
+    clean?.[0]?.ok === true,
+    JSON.stringify(clean),
+  )
+
+  const typo = api.lintProfileKeys?.({ material: { members: [{ name: 'a' }], member: ['stray'] } })
+  check(
+    'tdd.profiles.near-miss-key-still-suggests-the-close-name',
+    typo?.[0]?.ok === false && /did you mean members\?/.test(typo[0].error),
+    JSON.stringify(typo),
+  )
+
+  const nested = api.lintProfileKeys?.({
+    broken: {
+      members: [{ name: 'a', fallback: { provider: 'p', modell: 'm' } }],
+      reviewPolicy: { codeMaxRounds: 2, requiredReviewer: ['x'] },
+    },
+  })
+  check(
+    'tdd.profiles.nested-scopes-are-checked-too',
+    nested?.[0]?.ok === false
+      && /fallback/.test(nested[0].error)
+      && /did you mean model\?/.test(nested[0].error),
+    JSON.stringify(nested),
+  )
+
+  // doctor.mjs --profiles: the same rules through the published script.
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-prof-'))
+  try {
+    const good = join(workspace, 'good.json')
+    // A UTF-8 BOM is what Windows editors produce; it must not turn into a
+    // cryptic "Unexpected token" from JSON.parse.
+    await writeFile(good, `\uFEFF${JSON.stringify({
+      plugins: { 'agent-teams': { config: { profiles: { lane: { members: [{ name: 'a' }], tasks: [] } } } } },
+    })}`, 'utf8')
+    const bad = join(workspace, 'bad.json')
+    await writeFile(bad, JSON.stringify({
+      profiles: { flat: { members: [{ name: 'a' }], requiredReviewers: ['scope'] } },
+    }), 'utf8')
+    const { inspectConfiguredProfiles } = await import('../scripts/doctor.mjs')
+    const goodReport = await inspectConfiguredProfiles(good)
+    const badReport = await inspectConfiguredProfiles(bad)
+    check(
+      'tdd.profiles.doctor-lint-accepts-a-valid-config',
+      goodReport?.ok === true && goodReport.checkedProfiles === 1,
+      JSON.stringify(goodReport?.problems),
+    )
+    check(
+      'tdd.profiles.doctor-lint-reports-the-exact-fix',
+      badReport?.ok === false
+        && badReport.problems.some((item) => /belongs under reviewPolicy/.test(item)),
+      JSON.stringify(badReport?.problems),
+    )
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
 }
 
 if (failures > 0) {
