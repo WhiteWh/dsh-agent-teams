@@ -121,6 +121,10 @@ export interface ToolsConfig {
   maxWorkersPerTeam?: number
   /** Workspace-wide concurrent-worker cap; defaults to `MAX_CONCURRENT_WORKERS_GLOBAL`. */
   maxConcurrentWorkersGlobal?: number
+  /** Live teams one workspace may hold (WP11 phase 3; default `MAX_TEAMS_PER_WORKSPACE`). */
+  maxTeamsPerWorkspace?: number
+  /** Live teams one captain session may lead (WP11 phase 3; default `MAX_TEAMS_PER_SESSION`). */
+  maxTeamsPerSession?: number
 }
 
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
@@ -185,11 +189,22 @@ export interface AgentTeamsRuntime {
   ): Promise<ReplanRuntimeResult>
 }
 
-/** Workspace fuse for WP11 phase 1 (configurable keys arrive in phase 3). */
-const MAX_TEAMS_PER_WORKSPACE = 4
+/** Live teams one workspace may hold (WP11 phase 1 default; configurable in phase 3). */
+export const MAX_TEAMS_PER_WORKSPACE = 4
+
+/** Live teams one captain session may lead (WP11 phase 3 default). */
+export const MAX_TEAMS_PER_SESSION = 8
 
 /** Workspace-wide active-worker fuse for WP11 phase 1 (owner decision D6). */
-const MAX_CONCURRENT_WORKERS_GLOBAL = 8
+export const MAX_CONCURRENT_WORKERS_GLOBAL = 8
+
+/** The resolved WP11 limits, echoed in `status` so a reader can see the fuses. */
+interface TeamLimits {
+  readonly maxTeamsPerWorkspace: number
+  readonly maxTeamsPerSession: number
+  readonly maxWorkersPerTeam: number
+  readonly maxConcurrentWorkersGlobal: number
+}
 
 /** The caller agent, or a loud failure for non-agent callers. */
 function requireCaptain(exec: ToolRunContext): Agent {
@@ -217,6 +232,57 @@ function teamLockKey(stateRoot: string, teamId: string): string {
 /** Process-local lock key enforcing one active team per captain session. */
 function captainLockKey(stateRoot: string, captainId: string): string {
   return `captain:${stateRoot}:${captainId}`
+}
+
+/**
+ * The WP11 limits in force for this plugin instance (phase 3): the configured
+ * values where the host set them, the documented defaults otherwise. One
+ * resolver, so the create guard, the status summary and the scheduler agree.
+ */
+function resolveTeamLimits(config: ToolsConfig): TeamLimits {
+  return {
+    maxTeamsPerWorkspace: config.maxTeamsPerWorkspace ?? MAX_TEAMS_PER_WORKSPACE,
+    maxTeamsPerSession: config.maxTeamsPerSession ?? MAX_TEAMS_PER_SESSION,
+    maxWorkersPerTeam: config.maxWorkersPerTeam ?? config.maxMembers,
+    maxConcurrentWorkersGlobal: config.maxConcurrentWorkersGlobal ?? MAX_CONCURRENT_WORKERS_GLOBAL,
+  }
+}
+
+/** The wire shape of the limits inside a status payload. */
+function limitsPayload(limits: TeamLimits): {
+  max_teams_per_workspace: number
+  max_teams_per_session: number
+  max_workers_per_team: number
+  max_concurrent_workers_global: number
+} {
+  return {
+    max_teams_per_workspace: limits.maxTeamsPerWorkspace,
+    max_teams_per_session: limits.maxTeamsPerSession,
+    max_workers_per_team: limits.maxWorkersPerTeam,
+    max_concurrent_workers_global: limits.maxConcurrentWorkersGlobal,
+  }
+}
+
+/** The slot summary of one team: who works, how much waits. */
+function slotSummaryOf(team: TeamState, limits: TeamLimits): {
+  working: { member: string; task: string }[]
+  queued: number
+  team_workers: number
+  max_workers_per_team: number
+} {
+  const working = team.members
+    .filter((member) => member.status === 'working')
+    .map((member) => ({
+      member: member.name,
+      task: team.tasks.find((task) => task.assignee === member.name
+        && (task.status === 'claimed' || task.status === 'in_progress'))?.id ?? '',
+    }))
+  return {
+    working,
+    queued: team.tasks.filter((task) => task.status === 'pending').length,
+    team_workers: working.length,
+    max_workers_per_team: limits.maxWorkersPerTeam,
+  }
 }
 
 /**
@@ -980,22 +1046,29 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             + ' the user explicitly asked for a separate new team.',
           )
         }
-        // State-based guard (owner decision D6): a fuse on the workspace, not a
-        // fixed count of teams. The configurable keys arrive with WP11 phase 3.
+        // State-based guard (owner decision D6, configurable since WP11 phase 3):
+        // a fuse on live state, not a fixed count of ever-created teams.
+        const limits = resolveTeamLimits(config)
         const live = await listTeams(stateRoot)
-        if (live.length >= MAX_TEAMS_PER_WORKSPACE) {
+        if (owned.length >= limits.maxTeamsPerSession) {
           throw new Error(
-            `this workspace already has ${String(live.length)} live teams (limit ${String(MAX_TEAMS_PER_WORKSPACE)});`
+            `you already lead ${String(owned.length)} team(s), which is the limit ${String(limits.maxTeamsPerSession)} per captain session;`
+            + ' finish or archive one before creating another',
+          )
+        }
+        if (live.length >= limits.maxTeamsPerWorkspace) {
+          throw new Error(
+            `this workspace already has ${String(live.length)} live teams (limit ${String(limits.maxTeamsPerWorkspace)});`
             + ' archive one before creating another',
           )
         }
         const activeWorkers = live.reduce((total, team) => (
           total + team.members.filter((member) => member.status === 'working').length
         ), 0)
-        if (activeWorkers >= MAX_CONCURRENT_WORKERS_GLOBAL) {
+        if (activeWorkers >= limits.maxConcurrentWorkersGlobal) {
           throw new Error(
             `this workspace already runs ${String(activeWorkers)} active workers`
-            + ` (limit ${String(MAX_CONCURRENT_WORKERS_GLOBAL)}); let some of them finish first`,
+            + ` (limit ${String(limits.maxConcurrentWorkersGlobal)}); let some of them finish first`,
           )
         }
         return withTeamLock(teamLockKey(stateRoot, teamId), async () => {
@@ -2778,10 +2851,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const participated = await findTeamsByParticipant(stateRoot, caller.id)
       const requested = _args.team_id?.trim() ?? ''
       if (requested === '' && participated.length > 1) {
+        const limits = resolveTeamLimits(config)
         return {
           teams: await Promise.all(participated.map(async (candidate) => {
             const snapshot = await readTeam(stateRoot, candidate.id) ?? candidate
             const done = snapshot.tasks.filter((task) => task.status === 'completed').length
+            const summary = slotSummaryOf(snapshot, limits)
             return {
               team_id: snapshot.id,
               name: snapshot.name,
@@ -2789,10 +2864,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
               halted: snapshot.halted === true,
               tasks: { total: snapshot.tasks.length, done },
               members: snapshot.members.filter((member) => member.status !== 'removed').length,
-              activeWorkers: snapshot.members.filter((member) => member.status === 'working').length,
+              activeWorkers: summary.team_workers,
+              // WP11 phase 3 observability: who holds a slot, how much waits.
+              slots: summary.working.map((slot) => slot.member),
+              queued: summary.queued,
               role: snapshot.captainSessionId === caller.id ? 'captain' : 'member',
             }
           })),
+          limits: limitsPayload(limits),
           note: `you take part in ${String(participated.length)} teams; pass team_id to act on one of them`,
         }
       }
@@ -2915,6 +2994,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // WP8/S16: the plan percentage is computed here, not in the panel, so
         // the text report and the GUI cannot disagree about the same team.
         progress: progressPayload(team.tasks, team.profile?.progressWeights),
+        // WP11 phase 3: the observability summary a reader uses to see who holds
+        // a slot, how much work waits and which fuses are in force.
+        slots: slotSummaryOf(team, resolveTeamLimits(config)),
+        limits: limitsPayload(resolveTeamLimits(config)),
         // WP6.3: the pinned known deltas are part of the team's contract, so the
         // status report carries them.
         known_deltas: (team.knownDeltas ?? []).map((delta) => ({
@@ -3403,14 +3486,24 @@ function taskCheckGlyph(status: string): string {
 
 /** Render the status snapshot as compact text for the model. */
 function renderStatus(value: JsonValue): string {
-  const listed = value as { teams?: { team_id: string; name: string; phase: string; halted: boolean; tasks: { total: number; done: number }; members: number; activeWorkers: number; role: string }[]; note?: string }
+  const listed = value as {
+    teams?: { team_id: string; name: string; phase: string; halted: boolean; tasks: { total: number; done: number }; members: number; activeWorkers: number; slots?: string[]; queued?: number; role: string }[]
+    limits?: { max_teams_per_workspace: number; max_teams_per_session: number; max_workers_per_team: number; max_concurrent_workers_global: number }
+    note?: string
+  }
   if (Array.isArray(listed.teams)) {
+    const limits = listed.limits
     return [
-      `Your teams (${String(listed.teams.length)}):`,
+      `Your teams (${String(listed.teams.length)}):`
+        + `${limits === undefined ? '' : ` [limits: ${String(limits.max_teams_per_workspace)}/workspace,`
+          + ` ${String(limits.max_teams_per_session)}/session, ${String(limits.max_workers_per_team)} workers/team,`
+          + ` ${String(limits.max_concurrent_workers_global)} workers global]`}`,
       ...listed.teams.map((entry) => (
         `  - ${entry.team_id} "${entry.name}" [${entry.phase}${entry.halted ? ', halted' : ''}]`
         + ` as ${entry.role}: ${String(entry.tasks.done)}/${String(entry.tasks.total)} tasks done,`
         + ` ${String(entry.members)} members, ${String(entry.activeWorkers)} working`
+        + `${(entry.slots ?? []).length === 0 ? '' : ` (${(entry.slots ?? []).join(', ')})`},`
+        + ` ${String(entry.queued ?? 0)} queued`
       )),
       ...listed.note === undefined ? [] : [listed.note],
     ].join('\n')
@@ -3432,6 +3525,8 @@ function renderStatus(value: JsonValue): string {
     }[]
     tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
     progress?: { percent: number; mode: string; percent_by_kind: number; percent_equal: number; completed: number; total: number; running: number; blocked: number; failed: number; waived: number; superseded: number; cancelled: number }
+    slots?: { working: { member: string; task: string }[]; queued: number; team_workers: number; max_workers_per_team: number }
+    limits?: { max_teams_per_workspace: number; max_teams_per_session: number; max_workers_per_team: number; max_concurrent_workers_global: number }
     known_deltas?: { id: string; check: string; expected: string; reason: string; pinned_by: string }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
@@ -3459,6 +3554,18 @@ function renderStatus(value: JsonValue): string {
     ...team.profile === undefined ? [] : [`Profile: ${team.profile.name}${team.profile.task_planning ? ` [${team.profile.task_planning}]` : ''}${team.profile.protocol ? ` — ${team.profile.protocol}` : ''}`],
     ...team.loop_summary ? [`Loop: ${team.loop_state ?? ''} — ${team.loop_summary}`.replace(/^Loop:  — /u, 'Loop: ')] : [],
     `Viewing as: ${team.viewer}`,
+    // WP11 phase 3: who holds a slot, how much waits, and the fuses in force.
+    ...team.slots === undefined ? [] : [
+      `Slots: ${String(team.slots.team_workers)}/${String(team.slots.max_workers_per_team)} working`
+      + `${team.slots.working.length === 0 ? '' : ` (${team.slots.working.map((slot) => slot.task === '' ? slot.member : `${slot.member} ${slot.task}`).join(', ')})`}`
+      + `; ${String(team.slots.queued)} queued`,
+      ...team.limits === undefined ? [] : [
+        `Limits: ${String(team.limits.max_teams_per_workspace)} teams/workspace,`
+        + ` ${String(team.limits.max_teams_per_session)} teams/session,`
+        + ` ${String(team.limits.max_workers_per_team)} workers/team,`
+        + ` ${String(team.limits.max_concurrent_workers_global)} workers global`,
+      ],
+    ],
     `Members (${team.members.length}):`,
     ...team.members.map((member) => {
       const route = member.provider && member.model ? ` · ${member.provider}/${member.model}` : ''

@@ -129,6 +129,44 @@ A captain may lead several teams in one workspace (see "Addressing a team"), and
 - **Two fuses on concurrent work.** `maxWorkersPerTeam` (default: the roster cap, `maxMembers`) and `maxConcurrentWorkersGlobal` (default 8) bound how many members may work at once; the check lives on the dispatch primitive, so the sweep, a single-team kick and the `agent/status` idle wake-up all obey the same numbers. Both keys are host config today (`cordis.patch.yml`) and move onto the profile in phase 3. A member is never given a second open lane: it belongs to exactly one team and the dispatch refuses a member that already holds work.
 - **Mail is already per team.** Each team owns its mailbox directory (`<stateRoot>/<teamId>/inbox/`), and a message is addressed with its team id, so routing never has to guess which team a recipient belongs to.
 
+### Limits and slots
+
+Four fuses bound how much work exists and how much of it runs at once. They are host config in the profile's `cordis.patch.yml`, resolved in one place (`resolveTeamLimits`) so the create guard, the status report and the scheduler cannot disagree:
+
+| Key | Default | What it stops |
+| --- | --- | --- |
+| `maxTeamsPerWorkspace` | 4 | a workspace filling up with live teams (`this workspace already has 3 live teams (limit 3)`) |
+| `maxTeamsPerSession` | 8 | one captain session leading an unbounded number of teams (`… the limit 2 per captain session`) |
+| `maxWorkersPerTeam` | the roster cap (`maxMembers`) | more members of one team working at once than the host allows |
+| `maxConcurrentWorkersGlobal` | 8 | more members working across the workspace than the host allows |
+
+```yaml
+- id: agent-teams
+  config:
+    maxTeamsPerWorkspace: 4
+    maxTeamsPerSession: 8
+    maxWorkersPerTeam: 4
+    maxConcurrentWorkersGlobal: 8
+```
+
+The team fuses are checked against live state (not against how many teams were ever created), and archiving a team frees its slot immediately. The worker fuses live on the dispatch primitive, so the scheduler sweep, a single-team kick and the `agent/status` idle wake-up all obey them.
+
+`agent_teams_status` reports the same numbers and who is using them. With several teams it lists them with the slot summary and the limits in force:
+
+```text
+Your teams (2): [limits: 3/workspace, 2/session, 4 workers/team, 8 workers global]
+  - multi-a "Multi A" [running] as captain: 1/2 tasks done, 1 members, 1 working (worker), 1 queued
+```
+
+and a single team's detail adds its own lines:
+
+```text
+Slots: 1/4 working (worker t2); 3 queued
+Limits: 3 teams/workspace, 2 teams/session, 4 workers/team, 8 workers global
+```
+
+The payload carries the same information as data (`slots.working[]` with the member and the task it holds, `slots.queued`, `slots.team_workers`, `limits.*`), so a reader never has to infer a slot from a member status.
+
 ## Usage protocol
 
 The plugin prompt section guides the model through a two-phase protocol: continue an existing team, confirming state through `agent_teams_status` as needed → when no team exists, create a staged team → write editable member placeholders → break the work into tasks and declare dependencies → wait for user review → after **Approve & Run**, atomically create members and start scheduling → the captain monitors/guides → report and then `agent_teams_delete`. A staged team has no child sessions and claims no tasks. Use `approval: automatic` only when the user explicitly asks to skip the review. Members may message each other directly with no captain relay. When a resident member is interrupted, or ends a turn normally while still holding a `claimed/in_progress` task, that attempt is parked; only an explicit retry/transfer/takeover revokes it. A parked attempt this process has already observed keeps its attempt even after Harness reclaims its AgentHandle, so a captain polling `agent_teams_status` will not re-mint it. Only a cold start, or an open task this process has never observed, is recovered automatically once; a failed recovery delivery returns to the original capability instead of becoming an endlessly redispatchable `pending` task.

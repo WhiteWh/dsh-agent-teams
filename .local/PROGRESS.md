@@ -85,7 +85,7 @@ the pre-step count, and FAIL must stay 0.
 | S16 | WP8 plan progress + task checklist | done | | verify 261 PASS/0 FAIL (+21); qg-tdd 134 PASS/0 FAIL (+2); lifecycle 147 PASS/0 FAIL (+2); all 21 suites exit 0; D3 both modes server-side |
 | S17 | WP7 replan live team | done | | verify 288 PASS/0 FAIL (+27); qg-tdd 134 PASS/0 FAIL; lifecycle 152 PASS/0 FAIL (+5); stress 25 PASS/0 FAIL (+4); all 21 suites exit 0; tool count 18 → 19; D4 phases declared + DAG-level fallback |
 | S18 | WP11 phase 2 N teams in UI + scheduler | done | | verify 288 PASS/0 FAIL; multi-team 14 PASS/0 FAIL (new suite, in the chain); lifecycle 152; stress 30 PASS/0 FAIL (+5); all 22 suites exit 0; liveCaptainTeam removed |
-| S19 | WP11 phase 3 team limits | todo | | |
+| S19 | WP11 phase 3 team limits | done | | verify 291 PASS/0 FAIL (+2); lifecycle 155 PASS/0 FAIL (+3); all 22 suites exit 0; four configured keys + slot summary in status |
 | S20 | docs + release 0.2.0 | todo | | |
 
 ## Release tags (owner instruction, 2026-09-20)
@@ -172,6 +172,47 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S19 — WP11 phase 3: configurable limits and slot reporting (done)
+
+Scope (plan §WP11 phase 3): the guards that phase 1 hard-coded become configured keys,
+and `status` answers "how many are working, how much waits, who holds a slot".
+
+- **Keys and one resolver:** `ToolsConfig` gained `maxTeamsPerWorkspace` (default
+  `MAX_TEAMS_PER_WORKSPACE` = 4) and `maxTeamsPerSession` (default
+  `MAX_TEAMS_PER_SESSION` = 8), joining the phase-2 `maxWorkersPerTeam` (default: the
+  roster cap) and `maxConcurrentWorkersGlobal` (default 8). `resolveTeamLimits(config)` is
+  the single place that turns config into numbers, so the create guard, the scheduler and
+  the report cannot drift; `index.ts` exposes all four in the plugin `Config` (zod schema +
+  `Config` interface + resolution into `ToolsConfig`).
+- **Create guard:** the workspace fuse keeps its message shape (`this workspace already has
+  N live teams (limit L)`) and a new session fuse refuses a captain session over its own
+  limit (`you already lead N team(s), which is the limit L per captain session`). The
+  session check runs first, so a workspace that is full because several captains filled it
+  answers with the workspace message.
+- **Observability:** `slotSummaryOf(team, limits)` reports who holds a slot (member + the
+  task it holds) and how many tasks are queued. `agent_teams_status` now carries it in both
+  modes — the multi-team list gained `slots`, `queued` and a top-level `limits`, the single
+  team gained `slots` + `limits` — and the rendered text prints
+  `Slots: 1/4 working (worker t2); 3 queued` plus a `Limits:` line and the limits in the
+  list header.
+- **Tests:** `lifecycle-verify.mjs` now mounts the tools with
+  `maxTeamsPerWorkspace: 3, maxTeamsPerSession: 2`, so the guards are proven configured
+  rather than assumed: the session fuse refuses a third team of one captain, two more
+  captains fill the workspace (3 live) and the fourth create is refused with the live
+  count, the list payload carries `limits` + `slots`/`queued` per team, and the rendered
+  report matches `Slots: N/M working (…); Q queued` (+3 checks, the old fifth-team check
+  replaced by the configured one). `verify.mjs` asserts the wiring: the exported
+  `MAX_TEAMS_PER_SESSION`, the one resolver, the payload fields, both render lines and the
+  four `Config` schema entries.
+- **Green:** typecheck exit 0; build exit 0; `verify.mjs` **291 PASS / 0 FAIL**;
+  `lifecycle-verify` **155 PASS / 0 FAIL**; `multi-team-panel-tdd` 14; `quality-gates-tdd`
+  134; `stress-verify` 30; all 22 suites + `verify-package` + `sync-skill --check` + the
+  language check exit 0 (logs in `.local/logs/s19b/`).
+- **Note:** the phase-2 caps already lived in `ToolsConfig`, so phase 3 only had to expose
+  the two team keys and add the summary — no scheduler change.
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs` and the real-host
+  matrix.
 
 ### S18 — WP11 phase 2: several teams in the panel and in the scheduler (done)
 

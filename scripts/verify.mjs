@@ -2736,6 +2736,28 @@ console.log('6d/8 replan a live team (WP7/S17)')
       && activityPanelSource.includes('phaseColumns(tasks, manualPhases)')
       && activityPanelSource.includes('phaseBoardLayout(tasks, manualPhases)'),
   )
+  // WP11 phase 3: every guard is a configured number resolved in one place, and
+  // the status report shows who holds a slot and how much waits.
+  check(
+    'the WP11 limits are configured keys with one resolver',
+    toolsSource.includes('MAX_TEAMS_PER_SESSION')
+      && toolsSource.includes('function resolveTeamLimits')
+      && toolsSource.includes('function limitsPayload')
+      && toolsSource.includes('function slotSummaryOf')
+      && /maxTeamsPerSession\?\.?\s*\?\?|maxTeamsPerSession \?\?/.test(toolsSource)
+      && hostSource.includes('maxTeamsPerWorkspace: z.natural().min(1)')
+      && hostSource.includes('maxTeamsPerSession: z.natural().min(1)')
+      && hostSource.includes('maxTeamsPerWorkspace === undefined ? {} : { maxTeamsPerWorkspace: config.maxTeamsPerWorkspace }'),
+  )
+  check(
+    'the status report carries the slot summary in both modes',
+    toolsSource.includes('slots: summary.working.map((slot) => slot.member)')
+      && toolsSource.includes('queued: summary.queued')
+      && toolsSource.includes('slots: slotSummaryOf(team, resolveTeamLimits(config))')
+      && toolsSource.includes('Slots: ${String(team.slots.team_workers)}')
+      && toolsSource.includes('Limits: ${String(team.limits.max_teams_per_workspace)}')
+      && toolsSource.includes('} queued`'),
+  )
 }
 
 console.log('7/8 member model selection and continuation restore')

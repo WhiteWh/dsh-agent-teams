@@ -80,6 +80,10 @@ export interface Config {
   maxWorkersPerTeam?: number
   /** Members that may work at once across every live team of the workspace (default `8`). */
   maxConcurrentWorkersGlobal?: number
+  /** Live teams one workspace may hold (WP11 phase 3, default `4`). */
+  maxTeamsPerWorkspace?: number
+  /** Live teams one captain session may lead (WP11 phase 3, default `8`). */
+  maxTeamsPerSession?: number
   /** Named multi-role team profiles. */
   profiles?: Record<string, TeamProfileConfig>
   /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
@@ -143,6 +147,9 @@ export const Config: z<Config> = z.object({
   // documented defaults (4 per team, 8 across the workspace).
   maxWorkersPerTeam: z.natural().min(1),
   maxConcurrentWorkersGlobal: z.natural().min(1),
+  // WP11 phase 3 team limits; absent means 4 per workspace and 8 per session.
+  maxTeamsPerWorkspace: z.natural().min(1),
+  maxTeamsPerSession: z.natural().min(1),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
 })
@@ -224,6 +231,8 @@ export function apply(ctx: Context, config: Config): void {
     maxMembers: config.maxMembers ?? 8,
     ...config.maxWorkersPerTeam === undefined ? {} : { maxWorkersPerTeam: config.maxWorkersPerTeam },
     ...config.maxConcurrentWorkersGlobal === undefined ? {} : { maxConcurrentWorkersGlobal: config.maxConcurrentWorkersGlobal },
+    ...config.maxTeamsPerWorkspace === undefined ? {} : { maxTeamsPerWorkspace: config.maxTeamsPerWorkspace },
+    ...config.maxTeamsPerSession === undefined ? {} : { maxTeamsPerSession: config.maxTeamsPerSession },
     profiles: config.profiles ?? {},
   }
 

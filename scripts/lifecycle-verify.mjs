@@ -286,6 +286,10 @@ const agentTeamsRuntime = registerAgentTeamsTools(ctx, {
   fallback: { provider: 'backup', model: 'backup-model' },
   memberMaxDepth: 1,
   maxMembers: 8,
+  // WP11 phase 3: small configured limits make both team guards observable here
+  // (the defaults are 4 live teams per workspace and 8 per captain session).
+  maxTeamsPerWorkspace: 3,
+  maxTeamsPerSession: 2,
   profiles: {
     'demo-delivery': {
       description: 'tiny delivery team',
@@ -1384,6 +1388,31 @@ try {
   check('update_task cannot reach a task that lives in another team',
     crossTeamUpdateRefused
       && (await readTeam(stateRoot, multiBId))?.tasks.find(candidate => candidate.id === multiBExtra.task_id)?.status === 'pending')
+  // WP11 phase 3: the captain-session limit is configured (2 in this harness).
+  // Both A and B are live here, so a third team for this session is over it.
+  let sessionLimitRefused = false
+  try {
+    await call('agent_teams_create', { name: 'Multi Session', description: 'over the session limit', new_team: true })
+  } catch (error) {
+    sessionLimitRefused = /limit 2 per captain session/.test(String(error))
+  }
+  check('the captain-session limit refuses a third live team for one session', sessionLimitRefused)
+  const multiList = await call('agent_teams_status', {}, captain, null)
+  check('the team list carries the slot summary and the configured limits',
+    multiList.limits?.max_teams_per_workspace === 3
+      && multiList.limits?.max_teams_per_session === 2
+      && multiList.teams.every(entry => typeof entry.queued === 'number'
+        && Array.isArray(entry.slots))
+      && multiList.teams.some(entry => entry.team_id === multiTeamId && entry.slots.length === entry.activeWorkers),
+  )
+  const multiDetail = await call('agent_teams_status', { team_id: multiTeamId })
+  const multiText = definitions.get('agent_teams_status').output
+    .render({}, multiDetail)
+    .map(part => part.text ?? '')
+    .join('\n')
+  check('the status text names the slots and the queue',
+    /^Slots: \d+\/\d+ working \(.*\); \d+ queued$/mu.test(multiText),
+  )
   await call('agent_teams_delete', { team_id: multiBId })
   const afterOneDelete = await call('agent_teams_status', { team_id: multiTeamId })
   // One live team left, so the bare call falls back to the detailed answer the
@@ -1397,17 +1426,27 @@ try {
         === 'task in B|second task in B'
       && (await readArchivedTeam(stateRoot, multiBId))?.tasks.some(candidate => candidate.id === multiB.task_id) === true
       && (await readTeam(stateRoot, multiTeamId))?.tasks.map(candidate => candidate.subject).join('|') === 'task in A')
-  for (const name of ['Multi C', 'Multi D', 'Multi E']) {
-    await call('agent_teams_create', { name, description: 'workspace limit filler', new_team: true })
-  }
+  // The workspace limit counts every captain's live teams (3 in this harness):
+  // two more captains fill the workspace, and the second create of the last one
+  // is over the workspace limit while still inside its own session limit.
+  const otherCaptain = makeAgent('other-captain')
+  liveAgents.set(otherCaptain.id, otherCaptain)
+  await call('agent_teams_create', { name: 'Multi C', description: 'the other captain', new_team: true }, otherCaptain)
+  const thirdCaptain = makeAgent('third-captain')
+  liveAgents.set(thirdCaptain.id, thirdCaptain)
+  await call('agent_teams_create', { name: 'Multi D', description: 'a third captain', new_team: true }, thirdCaptain)
   let workspaceLimitRefused = false
   try {
-    await call('agent_teams_create', { name: 'Multi F', description: 'over the limit', new_team: true })
+    await call('agent_teams_create', { name: 'Multi E', description: 'over the workspace limit', new_team: true }, thirdCaptain)
   } catch (error) {
-    workspaceLimitRefused = /already has 4 live teams \(limit 4\)/.test(String(error))
+    workspaceLimitRefused = /already has 3 live teams \(limit 3\)/.test(String(error))
   }
-  check('the workspace refuses a fifth live team with the live count in the message', workspaceLimitRefused)
-  for (const id of [multiTeamId, 'multi-c', 'multi-d', 'multi-e']) await call('agent_teams_delete', { team_id: id })
+  check('the workspace limit is configurable and names the live count',
+    workspaceLimitRefused
+      && (await readTeam(stateRoot, 'multi-c'))?.captainSessionId === otherCaptain.id)
+  await call('agent_teams_delete', { team_id: 'multi-c' }, otherCaptain)
+  await call('agent_teams_delete', { team_id: 'multi-d' }, thirdCaptain)
+  await call('agent_teams_delete', { team_id: multiTeamId })
 
   await call('agent_teams_create', { name: 'Lifecycle', description: 'adversarial DAG' })
   const addedAlpha = await call('agent_teams_add_member', { name: 'alpha', role: 'slow implementer' })
