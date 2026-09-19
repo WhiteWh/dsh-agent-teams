@@ -204,15 +204,15 @@ palette is only approximate.
 | Remote | URL | Назначение |
 | --- | --- | --- |
 | `origin` | `github.com/NanmiCoder/dsh-agent-teams` | только `fetch`; источник upstream-релиза и issue |
-| `fork` | `github.com/WhiteWh/dsh-agent-teams` | push; `main` = upstream `87c95c9`, `toolkit-fix` = 9 коммитов поверх |
+| `fork` | `github.com/WhiteWh/dsh-agent-teams` | push; `main` = upstream `87c95c9`, `agent-teams-hardening` = the plan branch (S01–S20, releases 0.1.21 → 0.2.0) |
 
 ```powershell
-git push fork toolkit-fix          # рабочая ветка
+git push fork agent-teams-hardening          # рабочая ветка
 git fetch origin                   # подтянуть upstream перед синхронизацией
 ```
 
 `main` в форке совпадает с upstream-базой, поэтому `Compare & pull request`
-показывает ровно коммиты `toolkit-fix`. Заготовка описания PR (если решите
+показывает ровно коммиты `agent-teams-hardening`. Заготовка описания PR (если решите
 отправить наверх) — `.local/PULL_REQUEST.md`; в upstream **ничего не отправлялось**.
 
 Лицензия MIT: форк, изменение и публикация разрешены при сохранении текста
