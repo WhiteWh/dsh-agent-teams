@@ -165,15 +165,45 @@ Delete `.dsh-scratch` at any time; recreate the profile by repeating the
   #161, and #160. Read the body of one with:
   `node -e "fetch('https://api.github.com/repos/NanmiCoder/dsh-agent-teams/issues/183').then(r=>r.text()).then(console.log)"`
 
+## Remotes: upstream (read-only) and fork (push target)
+
+`origin` — upstream `NanmiCoder/dsh-agent-teams`. Push туда **невозможен** (чужой
+репозиторий; `git push --dry-run origin` отвечает 403 — это ожидаемо, не поломка).
+Рабочая копия опубликована в собственном публичном форке:
+
+| Remote | URL | Назначение |
+| --- | --- | --- |
+| `origin` | `github.com/NanmiCoder/dsh-agent-teams` | только `fetch`; источник upstream-релиза и issue |
+| `fork` | `github.com/WhiteWh/dsh-agent-teams` | push; `main` = upstream `87c95c9`, `toolkit-fix` = 9 коммитов поверх |
+
+```powershell
+git push fork toolkit-fix          # рабочая ветка
+git fetch origin                   # подтянуть upstream перед синхронизацией
+```
+
+`main` в форке совпадает с upstream-базой, поэтому `Compare & pull request`
+показывает ровно коммиты `toolkit-fix`. Заготовка описания PR (если решите
+отправить наверх) — `.local/PULL_REQUEST.md`; в upstream **ничего не отправлялось**.
+
+Лицензия MIT: форк, изменение и публикация разрешены при сохранении текста
+`LICENSE` и копирайта. `LICENSE` и поле `author` в `package.json` не менялись.
+
 ## Layout of this directory
 
 ```
 .local/
   SETUP.md                     this file
+  PROGRESS.md                  step table (S01–S20) + per-step log + owner decisions D1–D6
+  TRAPS.md                     pitfalls of this checkout: read before every step
+  FOLLOWUPS.md                 out-of-scope bugs with file:line
+  PULL_REQUEST.md              PR draft (not submitted)
   pnpm.cmd                     run the CI-pinned pnpm 10.33.0 from this checkout
+  t5-replay.mjs                t5 incident replay on the real compiled tools
+  create-fork.mjs              one-shot: create the GitHub fork via API (token from GCM)
   fetch-upstream-issues.mjs    refresh the work queue (node fetch)
   upstream-issues.json         last raw API response
   upstream-issues.md           last formatted table
+  dist/                        release tarball + .sha256
   logs/                        install + typecheck/build + verify transcripts
 ```
 
