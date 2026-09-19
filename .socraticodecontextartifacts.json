@@ -57,8 +57,8 @@
     },
     {
       "name": "latest-release-notes",
-      "path": "./release-notes/v0.1.22.md",
-      "description": "What shipped in the version this checkout is on: v0.1.22 is a packaging fix that puts a content revision in every activity-panel artwork URL, so a redrawn pack reaches an open browser instead of sitting behind a day-long cache (the whale pack survived the move to the amber pack that way). For the substantive protocol changes it points back to release-notes/v0.1.21.md - acceptance waivers (`waived`, `no_regression`, `waiverConfirmation`), transitive scope serialization, the completed-work-only Delivery audit, and the panel's Phases/Agents/Queues views. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
+      "path": "./release-notes/v0.1.24.md",
+      "description": "What shipped in the version this checkout is on: v0.1.24 makes team identity an argument (`team_id` on every team-scoped tool, a missing id answered with the caller's teams, `new_team: true` for a second team, the team list in `agent_teams_status`, state-based workspace guards). It links back to release-notes/v0.1.23.md - amendable contracts and the retry of a failed lane, `superseded`, `awaiting_scope_review` with `accept_paths` and `sharedInScope`, the known-delta registry, enforced `requiredReviewers` - which in turn points at v0.1.21 for acceptance waivers. Consult before reporting a defect, to check whether the branch already fixed or knowingly changed that behavior."
     },
     {
       "name": "dsh-plugin-development-skill",

@@ -81,7 +81,7 @@ the pre-step count, and FAIL must stay 0.
 | S12 | WP6.4 requiredReviewers enforced | done | 8bdea2d | verify 237 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; fixture default list removed (see log) |
 | S13 | docs + release 0.1.23 | done | fc0ba2c | version 0.1.23; notes + release record; tag v0.1.23 with the branch marker; artifact packed and installed into the web profile |
 | S14 | WP11 phase 1 team_id addressing | done | | verify 240 PASS/0 FAIL; qg-tdd 132 PASS/0 FAIL; lifecycle 145 PASS/0 FAIL (+16 multi-team checks); all 21 suites exit 0; D5 schema-optional id with a listing error, D6 guard |
-| S15 | docs + release 0.1.24 | todo | | 0.1.23 was taken by the F4 hotfix |
+| S15 | docs + release 0.1.24 | done | | version 0.1.24; notes + release record; tag v0.1.24 with the branch marker; artifact 2 263 430 B / SHA256 `77423C11…4CBD` installed into the web profile; 0.1.23 was taken by the F4 hotfix |
 | S16 | WP8 plan progress + task checklist | todo | | needs S09; D3: server-side byKind/equal modes |
 | S17 | WP7 replan live team | todo | | needs S08–S10, S02; D4: nearest-ancestor phase fitting + lift-and-flag |
 | S18 | WP11 phase 2 N teams in UI + scheduler | todo | | needs S16, S06 |
@@ -172,6 +172,44 @@ plan's §5 was retitled when the owner answered them.
     write the reason here.
 
 ## Step log
+
+### S15 — docs + release 0.1.24 (done)
+
+- **Release mechanics:** `package.json` 0.1.23 → 0.1.24; `release-notes/v0.1.24.md`
+  (addressing rules, workspace fuses, the compatibility note that a call must now name
+  its team, what stays for 0.2.0); README gained the v0.1.24 paragraph, the version
+  table moved to 0.1.24, the install command and the "default `latest`" line follow,
+  and the release-verification link points at `docs/releases/v0.1.24/README.md`;
+  `compatibility.json` deliberately unchanged (the host matrix did not move).
+- **Release record:** `docs/releases/v0.1.24/README.md` — before/after table for the
+  addressing surface, the verification matrix, the new checks, the artifact digest and
+  the deployment/rollback rows.
+- **Docs corrected while shipping:** `docs/quality-gates.md` attributed the S08–S12
+  features to `v0.1.22`, the version the plan reserved for them before the artwork
+  hotfix took that number; those labels now read `v0.1.23`, and a new §1.6 documents
+  the v0.1.24 addressing change. `.socraticodecontextartifacts.json`'s
+  `latest-release-notes` artifact moved from `v0.1.22.md` to `v0.1.24.md`.
+- **Local suite (logs in `.local/logs/s15/`):** typecheck exit 0; build exit 0;
+  `verify.mjs` **240 PASS / 0 FAIL**; `quality-gates-tdd` **132 PASS / 0 FAIL**;
+  `lifecycle-verify` **145 PASS / 0 FAIL**; all 21 suites, `verify-package`,
+  `sync-skill --check` and the language check exit 0; `readme-version` reports
+  "match 0.1.24".
+- **Artifact:** `.local/dist/nanmicoder-dsh-agent-teams-0.1.24.tgz`, 2 263 430 bytes,
+  SHA256 `77423C113E25F6FC6C81A09AA7FC5FF58EB53A77C1312D0FF81EA2D28C104CBD`; copied to
+  `D:\OwlCats\AI_Tools\dsh-agent-teams-0.1.24.tgz` for the profile install.
+- **Deployed** into `C:\Users\whitl\.dsh\profiles\web` (the spec changed, so a plain
+  `add` resolved; the `bundles` order was already correct): installed version 0.1.24,
+  `lib/{client,index,tools,state,quality-gates,artwork}.js` byte-identical to this
+  checkout, `TEAM_TOOL_NAMES` = 18, the installed prompt carries the `team_id` rule and
+  the installed tools carry the listing error, `dsh --profile web --dump-config` still
+  resolves `id: agent-teams` with `stateDir: .agent-teams`. Backups:
+  `*.bak-2026-09-20-pre-0.1.24`; rollback target is the 0.1.23 tarball.
+- **Tag:** annotated `v0.1.24` with the branch marker and the artifact facts, pushed to
+  the fork together with the branch.
+- **Owner action:** restart the harness so the running `dsh web` process (PID 26400)
+  loads 0.1.24; the browser needs no cache work (artwork URLs keep their revision).
+- **Left for CI:** the whole `pnpm verify` chain, `compatibility.test.mjs`, and the
+  real-host matrix.
 
 ### S14 — WP11 phase 1: `team_id` addressing (green)
 

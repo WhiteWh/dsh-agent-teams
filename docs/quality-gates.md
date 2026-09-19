@@ -27,7 +27,7 @@ every required gate passes
 
 | Capability | Location | Must keep |
 |---|---|---|
-| Task state machine `pending → claimed → in_progress → completed\|failed\|cancelled`, plus the legalized retry `failed → pending` (v0.1.22) | `src/types.ts`, `src/state.ts` | `completed` and `cancelled` are read-only; a failed task is amendable and retryable; `claimed` cannot jump to `completed` |
+| Task state machine `pending → claimed → in_progress → completed\|failed\|cancelled`, plus the legalized retry `failed → pending` (v0.1.23) | `src/types.ts`, `src/state.ts` | `completed` and `cancelled` are read-only; a failed task is amendable and retryable; `claimed` cannot jump to `completed` |
 | Dependencies only accept an upstream `completed` | `unsatisfiedDependencies()` | `failed` / `cancelled` never unlock downstream work |
 | `attempt` + `attemptId` | `beginTaskAttempt()` / `update_task` | late writes must keep being rejected |
 | Captain dynamic planning | `taskPlanning: captain` | do not revert to requiring a fixed seed DAG |
@@ -93,7 +93,7 @@ punctuation), and a failure lists every uncovered criterion by name. Contract te
 remains human-readable prose rather than an opaque id, but it must not degrade into a
 wildcard.
 
-### 1.4 Added in v0.1.22: the whole contract is amendable, and a failed task retries
+### 1.4 Added in v0.1.23: the whole contract is amendable, and a failed task retries
 
 Field evidence is in `D:/OwlCats/AI_Tools/Docs/AGENT_TEAMS_IMPROVEMENT_PLAN.md` WP2 and
 `AGENT_TEAMS_FEEDBACK.md` section 1: the amendment covered five contract fields, rejected
@@ -137,7 +137,7 @@ that edit belongs to the replan operation with explicit attempt invalidation.
 values + reason + field list), and `agent_teams_status` prints `revised ×N` on a task whose
 contract was amended.
 
-### 1.5 Added in v0.1.22: `superseded` — replacing a lane that will not finish
+### 1.5 Added in v0.1.23: `superseded` — replacing a lane that will not finish
 
 Feedback §3: a red lane could only be removed by takeover plus cancel. The `failed` row
 stayed in the graph, descendants waited forever on a task nobody would complete, and a
@@ -170,6 +170,29 @@ never audited (the path loop follows `completed` work only). The scheduler never
 it, and the panel draws it in its own grey tone with the `task.status.superseded` label
 instead of the error colour — a replaced lane is dealt with, not failed.
 
+### 1.6 Added in v0.1.24: team identity is an argument (WP11 phase 1)
+
+The quality gates themselves did not change here; how a gate is addressed did. Until
+v0.1.23 the team was derived from the calling session (`findTeamByCaptain`), so a captain
+led exactly one team per workspace and a second team was refused. Since v0.1.24:
+
+- every team-scoped tool takes a `team_id`; `agent_teams_create` returns it and
+  `agent_teams_status` with no argument lists the caller's teams (or reports the single one
+  in detail). A missing id is an error naming the caller's teams — the parameter is optional
+  in the argument schema so that this error, and not a bare schema rejection, is what the
+  model sees;
+- `findTeamsByCaptain` / `findTeamsByParticipant` return lists, and the former `ambiguous`
+  failure is gone;
+- a second team needs `new_team: true`, and a captain may hold several; a workspace refuses
+  a fifth live team and a ninth member in `working` state (state-based fuses, configurable
+  in phase 3);
+- a member of exactly one team may omit the id — the plugin substitutes the only team it
+  takes part in, so member prompts and member calls are unchanged.
+
+Every gate decision (acceptance, waivers, scope audit, required reviewers, Delivery) stays
+per-team: the addressed team's tasks are the only ones in view, which is what makes a
+`reviewedTaskId`, an `inScope` overlap check and a Delivery report unambiguous again.
+
 ## 2. Allowed / not allowed
 
 ### 2.1 Allowed
@@ -196,7 +219,7 @@ instead of the error colour — a replaced lane is dealt with, not failed.
 - Do not let a repair task depend on a `failed` review task.
 - Do not rerun an old review with `reassign_task` instead of creating `review-N+1`. `beginTaskAttempt()` clears the previous output.
 - Do not treat `send_message` as a formal next review round. Mail has no gate.
-- Do not revive `failed` / `cancelled` tasks by hand. Since v0.1.22 a `failed` task may be **amended and retried** through `reassign_task` (the legal `failed → pending` transition), but `completed` and `cancelled` stay read-only; any other next round must create a new task.
+- Do not revive `failed` / `cancelled` tasks by hand. Since v0.1.23 a `failed` task may be **amended and retried** through `reassign_task` (the legal `failed → pending` transition), but `completed` and `cancelled` stay read-only; any other next round must create a new task.
 - Do not modify `~/.dsh/profiles/web/cordis.patch.yml` unless the user explicitly asks for it in the current window.
 - Do not commit or push `docs/multi-role-profiles.md`, `docs/personal-kb-delivery/`.
 - Do not commit / push / open a PR unless the user explicitly asks.
@@ -322,7 +345,7 @@ type ReviewVerdict =
   | 'pass'
   | 'needs_revision'
   | 'reject'
-  | 'stale' // durable only: a forced amendment invalidated this verdict (v0.1.22)
+  | 'stale' // durable only: a forced amendment invalidated this verdict (v0.1.23)
 
 type FindingSeverity =
   | 'low'
@@ -436,7 +459,7 @@ Configuration validation:
 - `requiredReviewers` may only contain known role aliases or member names.
 - Unknown fields keep being rejected by the existing profile allowlist.
 
-**`requiredReviewers` is enforced (v0.1.22, WP6.4).** The list used to be schema- and
+**`requiredReviewers` is enforced (v0.1.23, WP6.4).** The list used to be schema- and
 docs-only: a profile could demand a security review by role and Delivery would still clear
 on a single correctness pass. `canDeclareDelivery` now requires, for **every** entry, at
 least one `review` task that is `completed` with `verdict=pass` whose reviewer matches:
@@ -527,7 +550,7 @@ Creation rules:
 }
 ```
 
-**Undeclared paths become a decision, not a failure (v0.1.22, WP4).** A worker
+**Undeclared paths become a decision, not a failure (v0.1.23, WP4).** A worker
 reports what it really changed. When an `implementation`/`repair` completion lists a
 path outside its declared `inScope`, the completion gate does **not** fail the lane and
 does not accept the completion either: it refuses the `completed` transition with
@@ -779,7 +802,7 @@ Do not add a separate "publish" tool. The delivery condition is what the Captain
 - there is no `missing` coverage row;
 - there is no unaccounted out-of-scope path. Since v0.1.21 this audits only `completed`
   implementation/repair tasks: `changedPaths` left behind by a `cancelled` task no longer
-  reddens the delivery report (`superseded` joins the same filter in 0.1.22). This is
+  reddens the delivery report (`superseded` joins the same filter in 0.1.23). This is
   field feedback section 6.2 — the captain had to clear `changedPaths` by hand to get a
   clean report.
 - since v0.1.21 there is no unconfirmed waiver: any task with `hasWaivers` waits for a
