@@ -5,7 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 // to update it afterwards, so a README that still names an older plugin version is
 // only fixable by cutting another release. Catch it before the tag is pushed.
 
-const README_FILES = ['README.md', 'README_ZH.md']
+// English only: `README_ZH.md` is frozen legacy (see AGENTS.md
+// "Documentation language policy"), so the version gate neither reads nor
+// maintains it. A version bump touches `README.md` alone.
+const README_FILES = ['README.md']
 
 // A README may name only the version being released. Older plugin versions stay
 // reachable through their own release-notes links, which every check strips first.

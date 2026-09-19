@@ -7,6 +7,38 @@
 > Statuses: `todo` → `red` → `green` → `docs` → `done`; `blocked` when a step
 > cannot be made green without weakening an existing assertion.
 
+## Documentation language policy (owner instruction, 2026-09-19)
+
+All documentation is English. Chinese is **legacy: frozen, not read, not
+maintained**. The authoritative rule is the "Documentation language policy"
+section in `AGENTS.md`; the indexer exclusions are in `.socraticodeignore`.
+
+Translated to English so far (verified 0 CJK):
+
+| File | Note |
+| --- | --- |
+| `docs/quality-gates.md` | execution spec; all 48 `tdd.*` labels preserved (verified with `Compare-Object` against the pre-translation set) |
+| `docs/usage.md`, `docs/maintenance-workflow.md`, `docs/verification-guide.md`, `docs/progressive-loading.md` | product documentation |
+| `docs/developing-dsh-plugins.md`, `docs/readme-writing-guide.md`, `docs/alpha2-release-acceptance.md`, `docs/harness-0.1.5-rc.2-acceptance.md` | guides and acceptance records |
+| `docs/compatibility-audit-2026-09-05/README.md` | summary only; the four attachment tables are still Chinese |
+
+Deliberately **not** translated, and not to be read or maintained:
+
+| Area | Files | Why |
+| --- | --- | --- |
+| dated audits | `docs/*-audit-*`, `docs/maintenance-*`, `docs/session-latency-audit-*`, `docs/theme-support-*`, `docs/upgrade-skill-study-*`, `docs/releases/*` | historical records; excluded from the index |
+| Chinese README | `README_ZH.md` | superseded; version check no longer tracks it |
+| vendored skills | `skills/`, `.dsh/skills/` (83 files) | upstream material, "preserve upstream skill files" |
+| evidence dumps | `*.jsonl`, `*.json`, `*-snapshot.txt` under the dated audits | raw run data; translating would invalidate the recorded hashes |
+| functional code | `src/client/locales.ts` (`zh` dictionary), `src/client/artwork.ts` (CJK role matchers), `src/quality-gates.ts` (gate-test matchers), `scripts/fixtures/*` | product behaviour and test subject matter, not documentation |
+
+Language checks in the release gate:
+
+```sh
+node scripts/readme-version.mjs        # README.md only (English)
+node .local/lang-check.mjs             # fails on CJK in any English-only path
+```
+
 ## Baseline (measured 2026-09-19 on this machine, branch toolkit-fix @ 87c95c9)
 
 | Suite | Command | Result |

@@ -1,7 +1,3 @@
-<p align="right">
-  <strong>English</strong> · <a href="./README_ZH.md">简体中文</a>
-</p>
-
 <p align="center">
   <img src="./assets/readme/hero.svg" width="100%" alt="dsh-agent-teams turns one DeepSeek Harness session into a coordinated multi-agent team">
 </p>

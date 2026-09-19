@@ -1,0 +1,64 @@
+# SocratiCode indexer exclusions for dsh-agent-teams.
+#
+# The code that matters is `src/` (TypeScript) plus `scripts/` (the verification
+# suite, which is the executable specification of the plugin's behavior).
+# Everything excluded below is either generated, vendored, or a dated audit
+# artifact. The curated documents that *are* worth retrieving are registered as
+# context artifacts in `.socraticodecontextartifacts.json` instead of being
+# floated into the code index.
+
+# Generated output and local state (also covered by .gitignore)
+lib/
+node_modules/
+*.tsbuildinfo
+.agent-teams/
+tmp/
+
+# Vendored community skills: upstream material pinned by commit hash, 245 files
+# of prose. Preserved as-is for maintenance tooling, never read as project code.
+skills/dsh-benchmark-case/
+skills/dsh-plugin-development/
+skills/dsh-upgrade-audit/
+skills/plugin-heavy-dep/
+skills/plugin-release/
+skills/plugin-runtime-debug/
+skills/plugin-test/
+skills/plugin-upgrade/
+skills/plugin-workflow/
+skills/plugin-write/
+.dsh/
+.agents/
+
+# Legacy Chinese documentation: frozen by the policy in AGENTS.md ("Documentation
+# language policy"). Not read, not maintained, not indexed. Everything reachable
+# here is either a dated audit, a release-note archive, vendored skill prose in
+# Chinese, or the Chinese README. The English sources of the same material stay
+# in the index.
+README_ZH.md
+*.zh-CN.md
+
+# Dated audit output: run logs, cohort JSON, screenshots, transcripts. ~6 MB of
+# one-off evidence under docs/, plus release notes that restate the same facts.
+# The nine curated English docs/*.md guides stay in the index and are additionally
+# registered as context artifacts; the dated Chinese audits below do not.
+docs/compatibility-audit-2026-09-05/
+docs/harness-0.1.5-rc.1-audit-2026-09-10/
+docs/maintenance-2026-09-06/
+docs/releases/
+docs/session-latency-audit-2026-09-12/
+docs/theme-support-2026-09-11/
+docs/upgrade-skill-study-2026-09-06/
+release-notes/
+
+# Binary art: hero images, panel screenshots, UI mockups
+assets/
+
+# Local scratch from this working copy: setup notes, run logs, issue snapshots.
+# Deliberately outside the index - it is about this machine, not about the code.
+.local/
+
+# Binary art that slips past assets/
+*.png
+*.jpg
+*.jpeg
+*.zip

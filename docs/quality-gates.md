@@ -106,7 +106,7 @@ wildcard.
 - Change `create_task`'s automatic unhalt into an explicit `resume`.
 - Add a Captain coverage matrix / stage summary.
 - Add a mandatory TDD script and make `pnpm verify` run it.
-- Update the parts of `docs/usage.md`, `README.md`, `README_ZH.md` that relate directly to this feature.
+- Update the parts of `docs/usage.md` and `README.md` that relate directly to this feature. `README_ZH.md` is frozen legacy and is not maintained (see the documentation language policy in `AGENTS.md`).
 - Reuse the existing DAG, attempt, mailbox, halt and scheduler machinery.
 
 ### 2.2 Not allowed
@@ -667,7 +667,7 @@ Must be updated:
 - personas in `src/members.ts`.
 - `assignmentPrompt` in `src/scheduler.ts`.
 - `docs/usage.md`.
-- one short subsection each in `README.md` / `README_ZH.md` stating that quality gates exist and pointing at this document for details.
+- one short subsection in `README.md` stating that quality gates exist and pointing at this document for details.
 
 Do not paste this whole document into the usage prompt. The prompt keeps only a summary of the machine rules.
 
@@ -837,7 +837,7 @@ Do not move directories around for this feature. Prefer these files:
 | `scripts/quality-gates-tdd.mjs` | enforced TDD |
 | `scripts/verify.mjs` | a few pure-function additions |
 | `scripts/lifecycle-verify.mjs` | tool-level closed loop |
-| `docs/usage.md`, `README.md`, `README_ZH.md` | user-visible explanation |
+| `docs/usage.md`, `README.md` | user-visible explanation (`README_ZH.md` is frozen legacy, not maintained) |
 
 Minimum client requirements:
 

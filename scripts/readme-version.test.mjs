@@ -52,10 +52,11 @@ test('published versions come from the release notes themselves', () => {
   assert.ok(known.includes('0.1.18') && known.includes('0.1.16-rc.2'), known.join(', '))
 })
 
-test('the checked-in READMEs match the package version', () => {
+test('the checked-in README matches the package version', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  // English only: README_ZH.md is frozen legacy and is deliberately not checked.
   const files = Object.fromEntries(
-    ['README.md', 'README_ZH.md'].map(name => [name, readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')])
+    ['README.md'].map(name => [name, readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')])
   )
   const known = publishedVersions(fileURLToPath(new URL('../release-notes', import.meta.url)))
   assert.deepEqual(checkReadmeVersions({ version: pkg.version, known, files }), [])
