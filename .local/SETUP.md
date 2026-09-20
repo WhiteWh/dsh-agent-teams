@@ -45,6 +45,25 @@ node .local/fetch-upstream-issues.mjs   # writes .local/upstream-issues.{json,md
 
 ## Verification: what runs here and what does not
 
+### Working rules while other sessions run on this machine (owner instruction, 2026-09-20)
+
+The owner runs several sessions on this box, and a `dsh web` harness serves this
+conversation from the **live `web` profile**. Two habits of the previous rounds
+took the host down repeatedly and killed neighbouring sessions' work:
+
+- **No heavy background jobs.** The full `pnpm verify` chain spawns dozens of node
+  processes (and `pack`, `build`, headless Chrome on top of it). Run it **foreground,
+  one job at a time, with a timeout**, and only when the owner is not working — not
+  as a background job while other agents are running. Per step, run the affected
+  suites (`node scripts/verify.mjs`, the one TDD file) and defer the whole chain to
+  a release window.
+- **Never install into the live `web` profile while the harness is running.** pnpm
+  rewrites that profile's `node_modules` and lock underneath the running process.
+  Exercise source changes in the scratch profile described below; install into `web`
+  only as a deliberate step the owner has announced (they are restarting anyway).
+- The repository work itself — edits, commits, tags, `git push` — does not touch the
+  running harness and is safe at any time.
+
 Upstream CI (`.github/workflows/verify.yml`) runs `pnpm typecheck && pnpm build
 && pnpm verify` on Ubuntu **and** Windows Node 24, then a real-host matrix.
 On this machine the first three layers run, the fourth layer is blocked by the
