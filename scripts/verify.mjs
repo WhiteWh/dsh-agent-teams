@@ -834,24 +834,38 @@ check(
 // Member model badge contract (inline compact pill): the render path derives
 // one full member route and shows only its last segment visibly, while the
 // noninteractive span keeps the full route in title, aria-label, and the
-// data-member-model DOM probe. The badge must sit inside memberLine after the
-// role icon and before the state icon; the old standalone third-line row is gone.
+// data-member-model DOM probe. Both member variants render the one `modelBadge`
+// value, so the attributes are asserted where it is defined and its placement is
+// asserted in each variant: after the role mark, before the state word.
 const memberMapStart = activityPanelSource.indexOf('team.members.map((member) => {')
-const memberBadgeSection = activityPanelSource.slice(
+const memberMapSection = activityPanelSource.slice(
   memberMapStart,
-  activityPanelSource.indexOf('css.assignmentLine', memberMapStart),
+  activityPanelSource.indexOf('</div>}', memberMapStart),
 )
+const modelBadgeAt = memberMapSection.indexOf('const modelBadge = ')
+const modelBadgeSection = modelBadgeAt === -1 ? '' : memberMapSection.slice(modelBadgeAt, memberMapSection.indexOf('const portrait', modelBadgeAt))
+const badgeCompactAt = memberMapSection.indexOf('{compact ? (')
+const badgeElseAt = badgeCompactAt === -1 ? -1 : memberMapSection.indexOf(') : (', badgeCompactAt)
+const badgeRowEnd = memberMapSection.indexOf('</button>', badgeElseAt)
+const badgeCompactBranch = badgeCompactAt === -1 || badgeElseAt === -1 ? '' : memberMapSection.slice(badgeCompactAt, badgeElseAt)
+const badgeLargeBranch = badgeElseAt === -1 ? '' : memberMapSection.slice(badgeElseAt, badgeRowEnd)
+const badgeOrder = (branch, markers) => {
+  const at = markers.map((marker) => branch.indexOf(marker))
+  return at.every((value, index) => value !== -1 && (index === 0 || value > at[index - 1]))
+}
 check(
   'member model badge renders compact text inline with full-route metadata',
-  memberBadgeSection.includes('compactModelLabel(memberModel)')
-    && memberBadgeSection.includes('<span className={css.memberModel}')
-    && memberBadgeSection.includes('data-member-model={memberModel}')
-    && memberBadgeSection.includes('title={memberModel}')
-    && memberBadgeSection.includes('aria-label={memberModel}')
-    && memberBadgeSection.includes('role="img"')
-    && memberBadgeSection.indexOf('css.memberRoleIcon') < memberBadgeSection.indexOf('css.memberModel')
-    && memberBadgeSection.indexOf('css.memberModel') < memberBadgeSection.indexOf('css.memberStateIcon'),
-  'the badge must be a noninteractive role=img span inside memberLine after the role icon and before the state icon, carrying the full route in title/aria-label/data-member-model',
+  modelBadgeSection.includes('compactModelLabel(memberModel)')
+    && modelBadgeSection.includes('<span className={css.memberModel}')
+    && modelBadgeSection.includes('data-member-model={memberModel}')
+    && modelBadgeSection.includes('title={memberModel}')
+    && modelBadgeSection.includes('aria-label={memberModel}')
+    && modelBadgeSection.includes('role="img"')
+    && badgeCompactBranch.includes('{modelBadge}')
+    && badgeLargeBranch.includes('{modelBadge}')
+    && badgeOrder(badgeCompactBranch, ['css.memberRoleIcon', '{modelBadge}', 'css.memberStateIcon'])
+    && badgeOrder(badgeLargeBranch, ['css.memberRole}', '{modelBadge}', '{stateWord}']),
+  'the badge must be a noninteractive role=img span carrying the full route in title/aria-label/data-member-model, drawn after the role mark and before the state word in both variants',
 )
 // Stylesheet contract: a `css.<name>` a component renders must exist in the sheet
 // that component imports. A deleted rule leaves `className={undefined}` behind,
@@ -1544,6 +1558,28 @@ check(
     JSON.stringify(chained.edges.map((edge) => edge.path)),
   )
 }
+// Owner request (2026-09-20, round 3): the phases section collapses like the
+// members list and the checklist — same chevron header, same two words, open by
+// default, and the board body is only rendered while it is open.
+{
+  const toggleAt = activityPanelSource.indexOf('data-phases-toggle')
+  const boardAt = activityPanelSource.indexOf('<PhaseBoard')
+  check(
+    'the phases section collapses like the members list and the checklist',
+    toggleAt !== -1
+      && activityPanelSource.includes('className={css.phasesToggle}')
+      && activityPanelSource.includes('aria-expanded={phasesOpen}')
+      && toggleAt < boardAt
+      && activityPanelSource.includes("t('phase.toggle', { count:")
+      && activityPanelSource.includes("t(phasesOpen ? 'phase.collapse' : 'phase.expand')")
+      && /phasesOpen\s*&&\s*\(?\s*<PhaseBoard/u.test(activityPanelSource)
+      && /\.membersToggle,\s*\n?\.phasesToggle/u.test(activityPanelCss)
+      && ['phase.toggle', 'phase.collapse', 'phase.expand'].every((key) => localesSource.includes(`'${key}'`))
+      && Object.hasOwn(agentTeamsEn, 'phase.toggle')
+      && Object.hasOwn(agentTeamsZh, 'phase.toggle'),
+    `toggle=${String(toggleAt)} board=${String(boardAt)}`,
+  )
+}
 // Owner request (2026-09-20): work in the members tree is shown by a
 // full-node-height animated plaque — three dots wide — instead of the compact
 // six-dot mark, which read as a decoration rather than as a state of the node.
@@ -1587,25 +1623,48 @@ check(
       && /\.workBar \{[^}]*min-height: 22px/u.test(activityPanelCss),
     `rows=${/const rows = \[([^\]]*)\]/u.exec(barBody)?.[1] ?? '?'}`,
   )
-  // Owner request (2026-09-20, round 2): the member node is one compact line —
-  // role icon, status icon with its word, name, model badge, task chips — ending
-  // in the plaque. The retired role words and status sentence must not return.
-  const lineOpen = activityPanelSource.indexOf('className={css.memberRow}')
-  const lineClose = activityPanelSource.indexOf('</button>', lineOpen)
-  const rowSection = activityPanelSource.slice(lineOpen, lineClose)
-  const order = ['css.memberAvatar', 'css.memberRoleIcon', 'css.memberInfo', 'css.memberCount', 'css.assignmentLine', '<WorkBar active=']
-    .map((marker) => rowSection.indexOf(marker))
+  // Owner request (2026-09-20, round 3): the compact icon line is what a member
+  // looks like *collapsed* into a tray, not the default. The default node is the
+  // large one (portrait, role words, status sentence, labelled task chips) and a
+  // per-member control folds one member — and only that member — into the tray.
+  const rowButtonAt = activityPanelSource.indexOf('className={css.memberRow}')
+  const compactAt = activityPanelSource.indexOf('{compact ? (', rowButtonAt)
+  const elseAt = compactAt === -1 ? -1 : activityPanelSource.indexOf(') : (', compactAt)
+  const compactBranch = compactAt === -1 || elseAt === -1 ? '' : activityPanelSource.slice(compactAt, elseAt)
+  const largeBranch = elseAt === -1 ? '' : activityPanelSource.slice(elseAt, activityPanelSource.indexOf('</button>', elseAt))
+  const collapseAt = activityPanelSource.indexOf('data-member-collapse')
   check(
-    'the member row is one compact line that ends in the work plaque',
-    order.every((at, index) => at !== -1 && (index === 0 || at > order[index - 1]))
-      && rowSection.includes('data-member-model={memberModel}')
-      && rowSection.includes('css.memberStateIcon')
-      && !rowSection.includes('css.memberStatusLine')
-      && !rowSection.includes('css.assignmentLabel')
-      && !activityPanelCss.includes('.memberStatusLine')
-      && !activityPanelCss.includes('.assignmentLabel')
-      && !activityPanelSource.includes('member.status.'),
-    `order=[${order.join(',')}]`,
+    'a member node is large by default and folds into the compact tray on demand',
+    collapseAt !== -1
+      // A sibling *before* the row button: a button may not contain a button, and
+      // the row's own click navigates to the member session.
+      && collapseAt < rowButtonAt
+      && activityPanelSource.includes('aria-expanded={!compact}')
+      && activityPanelSource.includes('data-compact={compact}')
+      && /useState<ReadonlySet<string>>\(\(\) => new Set\(\)\)/u.test(activityPanelSource)
+      && activityPanelSource.includes("t(compact ? 'member.expandRow' : 'member.collapseRow')")
+      && compactBranch.includes('css.memberRoleIcon')
+      && compactBranch.includes('css.memberStateIcon')
+      && !compactBranch.includes('css.memberStatusLine')
+      && largeBranch.includes('css.memberStatusLine')
+      && largeBranch.includes('css.memberRole')
+      && largeBranch.includes('css.assignmentLabel')
+      && !largeBranch.includes('css.memberRoleIcon')
+      && /\.memberRow\[data-compact='false'\] \{[^}]*display: grid/u.test(activityPanelCss)
+      && /\.memberRow\[data-compact='false'\] > \.memberAvatar \{[^}]*max-height: 76px/u.test(activityPanelCss)
+      && /\.memberRow\[data-compact='true'\] \.memberAvatar \.memberArt \{[^}]*width: 24px/u.test(activityPanelCss)
+      && /\.memberStateIcon \.stateArt \{[^}]*position: static/u.test(activityPanelCss)
+      && activityPanelCss.includes('.memberCollapse')
+      && ['member.collapseRow', 'member.expandRow'].every((key) => localesSource.includes(`'${key}'`)),
+    `collapse=${String(collapseAt)} row=${String(rowButtonAt)} compact=${String(compactAt)} else=${String(elseAt)}`,
+  )
+  check(
+    'the compact tray row is one icon line that ends in the work plaque',
+    compactBranch !== ''
+      && ['{portrait}', 'css.memberRoleIcon', 'css.memberInfo', '{modelBadge}', 'css.memberCount', 'css.assignmentLine', '<WorkBar active=']
+        .map((marker) => compactBranch.indexOf(marker))
+        .every((at, index, all) => at !== -1 && (index === 0 || at > all[index - 1]))
+      && !compactBranch.includes('css.assignmentLabel'),
   )
 }
 // Owner request (2026-09-20, round 2): a cancelled node is painted in a very pale

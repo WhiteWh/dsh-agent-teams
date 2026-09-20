@@ -1,0 +1,33 @@
+members.toggle
+    '{count} 名成员'
+    'Members {count}'
+members.collapse
+    '收起'
+    'Collapse'
+members.expand
+    '展开'
+    'Expand'
+checklist.title
+    '任务清单（{count}）'
+    'Task checklist ({count})'
+checklist.collapse
+    '收起'
+    'Collapse'
+checklist.expand
+    '展开'
+    'Expand'
+phase.aria
+    '按阶段查看任务'
+    'Tasks by phase'
+phase.count
+    '{count} 项'
+    '{count} tasks'
+phase.autoHint
+    '阶段按依赖层级自动推导；计划声明阶段时以声明为准'
+    'Phases follow the dependency levels unless the plan declares its own'
+phase.column
+    '阶段 {order}'
+    'Phase {order}'
+phase.unphased
+    '未分阶段'
+    'Unphased'

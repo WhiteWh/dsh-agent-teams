@@ -16,7 +16,7 @@ const names = ['memberBlock', 'memberBranch', 'memberRow', 'memberAvatar', 'memb
   'workBar', 'workBarRow', 'workBarDot', 'delegationTree',
   'phaseBoardViewport', 'phaseBoardScroll', 'phaseHeaderRow', 'phaseColumn', 'phaseColumnHead',
   'phaseColumnCount', 'dagCanvas', 'dagEdges', 'dagNode', 'dagNodeHead', 'dagNodeDot', 'dagNodeLabel',
-  'phaseHint']
+  'phaseHint', 'dependencySection', 'phasesToggle', 'chevron']
 const classes = {}
 for (const name of names) {
   const match = new RegExp(`\\.(_[A-Za-z0-9]+_${name})\\b`).exec(bundle)
@@ -124,23 +124,29 @@ h2{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-tra
     ${member({ name: 'impl-b', role: 'Lane B implementer', model: '', action: 'action-sleeping', activity: 'idle', state: 'Awaiting assignment', count: '0/1', chips: [], active: false })}
   </div>
 
-  <h2 style="margin-top:16px">phases — chains run left to right, columns stretch</h2>
-  <div class="${classes.phaseBoardViewport}" data-phase-board>
-    <div class="${classes.phaseBoardScroll}" data-phase-scroll>
-      <div class="${classes.phaseHeaderRow}" style="width:${layout.width}px">
-        ${layout.columns.map((column) => `<div class="${classes.phaseColumn}" style="left:${column.x}px;width:${column.width}px" data-phase-id="${column.phaseId}">
-          <span class="${classes.phaseColumnHead}" title="${column.title ?? column.phaseId}">${column.title ?? column.phaseId}</span>
-          <span class="${classes.phaseColumnCount}">${column.taskIds.length} tasks</span>
-        </div>`).join('')}
+  <h2 style="margin-top:16px">phases — collapsible header, chains run left to right, columns stretch</h2>
+  <div class="${classes.dependencySection}" data-phase-section>
+    <button type="button" class="${classes.phasesToggle}" aria-expanded="true" data-phases-toggle style="width:100%;box-sizing:border-box">
+      <span><svg class="${classes.chevron}" data-open="true" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden><path d="M3.5 2l3 3-3 3"></path></svg>Phases (${layout.columns.length})</span>
+      <span>Collapse</span>
+    </button>
+    <div class="${classes.phaseBoardViewport}" data-phase-board>
+      <div class="${classes.phaseBoardScroll}" data-phase-scroll>
+        <div class="${classes.phaseHeaderRow}" style="width:${layout.width}px">
+          ${layout.columns.map((column) => `<div class="${classes.phaseColumn}" style="left:${column.x}px;width:${column.width}px" data-phase-id="${column.phaseId}">
+            <span class="${classes.phaseColumnHead}" title="${column.title ?? column.phaseId}">${column.title ?? column.phaseId}</span>
+            <span class="${classes.phaseColumnCount}">${column.taskIds.length} tasks</span>
+          </div>`).join('')}
+        </div>
+        <div class="${classes.dagCanvas}" data-layout="phases" style="width:${layout.width}px;height:${layout.height}px">
+          <svg class="${classes.dagEdges}" width="${layout.width}" height="${layout.height}" aria-hidden>
+            ${layout.edges.map((edge) => `<path d="${edge.path}" data-active="false"></path>`).join('')}
+          </svg>
+          ${layout.nodes.map(node).join('')}
+        </div>
       </div>
-      <div class="${classes.dagCanvas}" data-layout="phases" style="width:${layout.width}px;height:${layout.height}px">
-        <svg class="${classes.dagEdges}" width="${layout.width}" height="${layout.height}" aria-hidden>
-          ${layout.edges.map((edge) => `<path d="${edge.path}" data-active="false"></path>`).join('')}
-        </svg>
-        ${layout.nodes.map(node).join('')}
-      </div>
+      <p class="${classes.phaseHint}">Columns follow the declared phases; each one stretches to its longest chain.</p>
     </div>
-    <p class="${classes.phaseHint}">Columns follow the declared phases; each one stretches to its longest chain.</p>
   </div>
 </div>
 </body></html>`

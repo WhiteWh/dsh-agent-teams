@@ -90,6 +90,8 @@ the pre-step count, and FAIL must stay 0.
 | S21 | owner UI round + release 0.2.1 | done | | work plaque (full-node height, 3 dots wide) in the members tree; `cfe9338` UI commit + `09ac60e` release; verify 293 PASS/0 FAIL; artifact 2 318 783 B / SHA256 `2F73FAF8…D411` installed; tag v0.2.1 |
 | S22 | owner UI round 2 + release 0.2.2 | done | | compact one-line member node, phase columns as chains, hatched cancelled nodes, tree/queues views and their model projections deleted; declared-phase regression fixed; progress block reduced to one bar; verify 271 PASS/0 FAIL; full `pnpm verify` exit 0; artifact 2 301 430 B / SHA256 `A8B2FF78…C48B` installed; tag v0.2.2 |
 | S23 | round 3.1: three-row work plaque | done | | `WorkBar` rows 5 → 3; new check `the work plaque is three dot rows tall` (RED first: `rows=0, 1, 2, 3, 4`); verify 272 PASS/0 FAIL; full `pnpm verify` exit 0 |
+| S24 | round 3.2: collapsible phases section | done | | `phase.toggle`/`phase.expand`/`phase.collapse` header with the column count and `data-phases-toggle`, board body rendered only while open; new check `the phases section collapses like the members list and the checklist` (RED first: `toggle=-1`); verify green |
+| S25 | round 3.3: large member node by default, per-member fold to the tray | done | | 0.2.1 large node restored as the default, chevron folds one member into the compact tray; `memberStatusText` + 13 `member.status.*` + 4 `assignment.*` keys + `.memberRole`/`.memberStatusLine`/`.assignmentLabel` restored; tray action symbol un-stuck from the block corner; two RED-first checks |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -207,7 +209,27 @@ contract change.
   `phase.toggle` header with the column count, `phase.expand`/`phase.collapse`,
   `data-phases-toggle`, default open, and the board body rendered only while open.
   No new storage key: sibling sections keep their state in component state.
-- **S25 — a phase can be closed, and a closed phase accepts no new tasks.** The
+- **S25 (unplanned, owner request after seeing 0.2.2) — the large member node is the
+  default again, and one member folds into a tray.** "Участников я не просил делать
+  по умолчанию сколлапсированными — верни их по дефолту крупными. Дай мне кнопку на
+  мембере позволяющую его свернуть в такой трей." So the compact line introduced in
+  S22 stays, but as the **folded** state: the 0.2.1 large node (portrait spanning both
+  lines with the action ring, role in words, model badge, state word, status sentence,
+  labelled chip row) is what a member looks like until the reader folds it, and a
+  chevron on the node folds **that one** member. The fold control is a *sibling* of the
+  row button (a button may not contain a button, and the row navigates).
+  - Restored with it: `memberStatusText()`, the thirteen `member.status.*` keys, the
+    four `assignment.*` keys, `.memberRole`, `.memberStatusLine`, `.assignmentLabel`
+    (the key values are the 0.2.1 ones, taken from `09ac60e:src/client/locales.ts`).
+  - Also fixed while there: the tray's action symbol was absolutely positioned in the
+    block (the base `.stateArt` corner-ring rule leaked into the compact markup), so it
+    floated at the row's right edge instead of sitting inline before the state word;
+    `.memberStateIcon .stateArt` now resets it to a 12 px inline mark.
+  - New checks: `a member node is large by default and folds into the compact tray on
+    demand` and `the compact tray row is one icon line that ends in the work plaque`
+    (both RED first); the round-2 badge check was re-pointed to the shared `modelBadge`
+    value plus its position in each variant, because the badge is now built once.
+- **S26 — a phase can be closed, and a closed phase accepts no new tasks.** The
   captain closes a phase **after accepting its tasks** (his obligation, stated in
   the captain prompt), through one more operation of the captain-only replan batch:
   `close_phase`. A phase may close only when every task in it is settled
@@ -221,17 +243,76 @@ contract change.
     the running-plan editor never offers a closed phase as a target.
   State shape: `plan.phases[].closed` (+ `closedAt`), validated by
   `isTeamPlanPhase`, so an older `team.json` keeps loading as open phases.
-- **S26 — the overall progress bar is one line in three colours.** Segments:
+- **S27 — the overall progress bar is one line in three colours.** Segments:
   (1) the original plan, (2) work added while the team ran, (3) work added after the
   plan first completed — see D7 for how a task is attributed. The bar keeps its
   single width and the server-side percentage; the three slices are coloured and
   the legend names them, so "how much of this was the plan" is readable without
   reading the task list.
 
-Releases: **0.2.3** after S23+S24 (client only), **0.3.0** after S25+S26 (state and
-tool behaviour change, with an upgrade note for the new `closed` field).
+Releases: **0.2.3** after S23+S24 — and it also carries S25, which the owner asked
+for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool behaviour
+change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S25 — round 3.3: the large member node is the default, folded on demand (done)
+
+Owner request while looking at 0.2.2 (verbatim): "Участников я не просил делать по
+умолчанию сколлапсированными - верни их по дефолту крупными. Дай мне кнопку на
+мембере позволяющую его свернуть в такой трей."
+
+- **What changed:** S22's compact line stays, but as the *folded* state. A member is
+  now the 0.2.1 large node — portrait spanning both grid rows with the action ring,
+  head line (`name`, role in words, model badge, state word) and the status sentence
+  under it, chips on their own row behind the `Captain assigned` label, plaque over
+  the full height — until the reader folds **that one** member with the chevron at
+  the node's right edge. `data-compact` on the block and the row selects the variant;
+  `collapsedMembers` starts empty (`ReadonlySet<string>`), so the default is large.
+- **Why the control is a sibling:** the row is itself a `<button>` that navigates to
+  the member's session, and a button may not contain a button. The chevron therefore
+  sits in a 20 px strip reserved by the row's right padding, next to the plaque.
+- **Restored with the large node** (values from `09ac60e:src/client/locales.ts`):
+  `memberStatusText()`, the thirteen `member.status.*` keys, the four `assignment.*`
+  keys, and `.memberRole`, `.memberStatusLine`, `.assignmentLabel` in the stylesheet.
+- **Bug fixed on the way:** the tray's action symbol was stuck at the row's right
+  edge — the base `.stateArt` rule (absolute, 18 px, corner ring) still applied to the
+  compact markup, which puts it inside `.memberStateIcon`. `.memberStateIcon .stateArt`
+  now resets it to a 12 px inline mark, which is what the compact row was designed to
+  show.
+- **RED first:** `a member node is large by default and folds into the compact tray on
+  demand` (failed with `collapse=-1 row=51735 compact=-1`) and `the compact tray row is
+  one icon line that ends in the work plaque`. The round-2 badge check was re-pointed:
+  the badge is now built once as `modelBadge`, so its attributes are asserted where it
+  is defined and its position in **both** variants is asserted on the branches.
+- **Visual check:** `.local/preview-round3.mjs` renders two large nodes and two folded
+  trays from the built bundle with the real stylesheet
+  (`.local/logs/ui-round3/member-nodes.png`).
+- **Verification:** typecheck exit 0, build exit 0, `verify.mjs` green; the full chain
+  is deferred to the release window (see the working rules in SETUP: no long
+  background chains while other sessions run on this machine).
+
+### S24 — round 3.2: the phases section collapses like every other section (done)
+
+Owner request (round 3, item 2): "блок с 'фазами' должен быть сворачиваемым так же
+как и все остальные".
+
+- The board moved inside the same header the members list and the checklist use: a
+  `phase.toggle` button with the column count (`phaseColumns(...).length`), the
+  `phase.expand`/`phase.collapse` word, `aria-expanded={phasesOpen}`,
+  `data-phases-toggle`, default open, and the board body rendered only while open.
+  `.phasesToggle` joins `.membersToggle` in the stylesheet instead of duplicating the
+  twenty-line rule, and it joins the focus-visible list.
+- **RED first:** `the phases section collapses like the members list and the checklist`
+  — failed with `toggle=-1 board=41511` before the header existed.
+- **Locale keys:** `phase.toggle` (`阶段（{count}）` / `Phases ({count})`),
+  `phase.collapse` (`收起` / `Collapse`), `phase.expand` (`展开` / `Expand`).
+  The first insertion script split the dictionary on a key and rejoined only two of
+  three parts, truncating the English half and breaking the parse; it was reverted with
+  `git checkout -- src/client/locales.ts` and replaced by a line-based insert that
+  cannot lose the tail (and asserts the closing signature of the file).
+- **Verification:** typecheck exit 0, build exit 0, `verify.mjs` green (locale parity,
+  the new toggle check, the board's scroller and single-view checks all pass).
 
 ### S23 — round 3.1: the work plaque is three dot rows tall (done)
 
