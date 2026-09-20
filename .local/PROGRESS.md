@@ -258,7 +258,7 @@ change, with an upgrade note for the new `closed` field).
 
 ## Step log
 
-### S28 — hotfix: the phase board froze the web client (done, unreleased with 0.3.0)
+### S28 — hotfix + release 0.3.0: the phase board froze the web client (done)
 
 Field incident, 2026-09-20: after 0.2.2 was installed into the live `web` profile the
 owner could no longer open DSH in Chrome at all; the plugin had to be unmounted
