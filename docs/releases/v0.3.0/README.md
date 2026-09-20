@@ -46,9 +46,21 @@ plaque, collapsible phases, large member node with a fold control) rides along.
 | --- | --- | --- |
 | typecheck | `pnpm typecheck` | exit 0 |
 | build + revision gate | `pnpm build` | exit 0 |
-| offline suite | `node scripts/verify.mjs` | **285 PASS / 0 FAIL** |
-| full chain | `pnpm verify` | pending the owner's go-ahead — recorded here once it has run |
+| offline suite | `node scripts/verify.mjs` | **287 PASS / 0 FAIL** |
+| full chain | `pnpm verify` | exit 0 (all suites: `verify`, `fallback-tdd`, `member-failure-tdd`, `quality-gates-tdd` + two `node --test` files, `lifecycle-verify`, `stress-verify`, `multi-team-panel-tdd`, `web-routes`, `release-metadata`, `readme-version`, `sync-skill --check`, `harness-compat-tdd`, `stability-tdd`, `compatibility` + `doctor.mjs`, `http-body`, `capabilities`, `member-spawn-recovery`, `command-source`) |
 | visual checks | `.local/preview-round3.mjs`, `.local/preview-s27.mjs` | `.local/logs/ui-round3/member-nodes.png` (large node + folded tray), `.local/logs/ui-round3/progress-closed-phase.png` (three-colour bar + closed column) |
+| freeze measurement | `.local/diagnose-layout-depth.mjs` | 12 layers × 4 lanes = 48 tasks: **7 477 ms before the fix → 0.4 ms after**; 14 × 4 = 56 tasks: **130 230 ms → 0.4 ms** |
+
+## Artifact and deployment
+
+| Item | Value |
+| --- | --- |
+| Artifact | `.local/dist/nanmicoder-dsh-agent-teams-0.3.0.tgz` — 2 319 106 bytes |
+| SHA-256 | `f8c2ba3e33e22d8eb82c33ec50d42f6cefe84c92b28728671e01ca9f0ed6f43f` |
+| Installed into | `C:\Users\whitl\.dsh\profiles\web` (`file:D:/OwlCats/AI_Tools/dsh-agent-teams-0.3.0.tgz`), version 0.3.0, `lib/client.js`, `lib/index.js`, `lib/progress.js`, `lib/replan.js` and `lib/client/activity-model.js` byte-identical to this checkout |
+| Mount state | `@nanmicoder/dsh-agent-teams` restored to `dsh.profile.bundles` and the profile patch's temporary `disabled: true` removed; `dsh --profile web --dump-config` resolves the entry with the profile's config and no disabled flag |
+| Profile backups | `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `cordis.patch.yml` as `*.bak-2026-09-20-pre-0.3.0` (the disabled state) plus the earlier `*.bak-2026-09-20-pre-0.2.2`; rollback target is the 0.2.2 tarball, still on disk |
+| Owner action | restart the harness and open the **fresh** `?token=` URL it prints (the launch token is regenerated per process), then refresh the page |
 
 ## Not verified here (left for CI)
 
