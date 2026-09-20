@@ -258,6 +258,54 @@ change, with an upgrade note for the new `closed` field).
 
 ## Step log
 
+### S28 — hotfix: the phase board froze the web client (done, unreleased with 0.3.0)
+
+Field incident, 2026-09-20: after 0.2.2 was installed into the live `web` profile the
+owner could no longer open DSH in Chrome at all; the plugin had to be unmounted
+(`dsh.profile.bundles` entry removed + `disabled: true` in the profile patch) to get
+the app back. Owner's words: the harness fell, the app blocked its own launch, and the
+operation should not have run without a warning.
+
+- **What I ruled out, with evidence (read-only):** the artifact is intact (installed
+  copy byte-identical to the tarball, sha256 `A8B2FF78…C48B`); `lib/index.js` and
+  `cordis.patch.yml` are **byte-identical** between 0.2.0 (which ran) and 0.2.2, so the
+  host half cannot be the cause; my install changed nothing in the profile except the
+  plugin's own spec (the pre-0.2.2 lock backups differ only in that package — the host
+  runtimes were not re-resolved); the bundle keeps the same loader registration and
+  requires exactly one host module (`@deepseek-ai/dsh-client-ui-primitives`), which the
+  shell provides to a dozen host packages, so the client graph shape is fine.
+- **The cause (measured, not guessed):** `phaseBoardLayout`'s chain-depth walk visited
+  every dependency **path** — a fresh `seen` per branch, no memoisation — so a layered
+  plan multiplied paths by the layer width per layer:
+
+  | fixture | 0.2.2 | after the fix |
+  | --- | --- | --- |
+  | 12 layers x 4 lanes = 48 tasks | **7 477 ms** | 0.4 ms |
+  | 14 layers x 4 = 56 tasks | **130 230 ms** | 0.4 ms |
+  | 12 layers x 5 = 60 tasks | **96 601 ms** | 0.4 ms |
+
+  That runs inside the panel's render: the tab locks up while the panel loads, a reload
+  locks it again, and the reader concludes the app is broken. It only bites when a
+  **declared phase** holds a layered graph (auto-derived columns hold one task each,
+  which is why every fixture in the suite stayed fast — my own "dense" fixture was only
+  five layers deep, so it never crossed the threshold that the owner's real plan did).
+- **Fix:** memoise the depth per task (`depthCache`), keeping a `stack` set so malformed
+  cyclic state terminates instead of looping. One visit per task, linear.
+- **Second fix (defence in depth):** `PanelErrorBoundary` now wraps the activity overlay
+  and the conversation card. The shell's additive overlay does not isolate a plugin's
+  render exception, so any future fault in this panel would unmount the host's tree
+  again; the boundary renders one line naming the failure instead. It cannot help against
+  a hang, which is exactly why the memoisation is the primary fix.
+- **Checks:** `a dense declared phase lays out without walking every dependency path`
+  (the 12x4 fixture with the layout it must produce and a 1 s budget the old recursion
+  needs minutes for) and `a panel fault cannot take the shell down` (boundary, both
+  registrations, style and locale key). `verify.mjs` 287 PASS / 0 FAIL.
+- **Process change the owner asked for:** the dangerous operations (the whole `pnpm
+  verify` chain, `pnpm pack`, anything that writes into the live `web` profile) are now
+  gated on an explicit "можно" from the owner in the current turn. Recorded in
+  `.local/SETUP.md` together with the reason: this machine serves the conversation from
+  the very profile those operations touch.
+
 ### S26 — round 3.4: a phase can be closed, and a closed phase takes no new work (done)
 
 Owner request (round 3, item 3): "если все задачи в фазе выполнены/отменены, а также

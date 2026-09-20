@@ -1559,6 +1559,52 @@ check(
     JSON.stringify(chained.edges.map((edge) => edge.path)),
   )
 }
+// Regression (found in the field, 2026-09-20): the chain walk visited every
+// dependency *path*, and a layered plan multiplies paths by the layer width per
+// layer. A declared phase of 48 tasks in 12 layers cost 7.5 s per render and 56
+// tasks in 14 layers cost 130 s — the browser tab froze while loading the panel,
+// which is what took the owner's web profile down after 0.2.2 was installed. The
+// depth is memoised now; this fixture is the shape that exposed it, with a budget the
+// old recursion cannot come near (it needs minutes) plus the layout it must produce.
+{
+  const layered = (layers, width) => {
+    const tasks = []
+    let previous = []
+    let seq = 0
+    for (let layer = 0; layer < layers; layer += 1) {
+      const current = []
+      for (let index = 0; index < width; index += 1) {
+        seq += 1
+        const id = `t${String(seq)}`
+        current.push(id)
+        tasks.push({
+          id,
+          subject: `lane ${id}`,
+          status: 'pending',
+          state: 'open',
+          assignee: 'worker',
+          dependencies: [...previous],
+          depth: layer,
+        })
+      }
+      previous = current
+    }
+    return tasks
+  }
+  const dense = layered(12, 4)
+  const startedAt = Date.now()
+  const denseLayout = phaseBoardLayout(dense, [{ id: 'E0', title: 'One dense phase', taskIds: dense.map(task => task.id) }])
+  const denseElapsed = Date.now() - startedAt
+  check(
+    'a dense declared phase lays out without walking every dependency path',
+    denseLayout.nodes.length === dense.length
+      && denseLayout.columns[0]?.width === 12 * COMPACT_DAG_NODE_WIDTH + 11 * COMPACT_DAG_COLUMN_GAP
+      && denseLayout.height === 4 * COMPACT_DAG_NODE_HEIGHT + 3 * COMPACT_DAG_ROW_GAP
+      // The budget is generous on purpose: memoised this takes about a millisecond.
+      && denseElapsed < 1000,
+    `${String(denseElapsed)} ms for ${String(dense.length)} tasks in 12 layers`,
+  )
+}
 // Owner request (2026-09-20, round 3): the phases section collapses like the
 // members list and the checklist — same chevron header, same two words, open by
 // default, and the board body is only rendered while it is open.
@@ -1671,9 +1717,22 @@ check(
 // Owner request (2026-09-20, round 2): a cancelled node is painted in a very pale
 // scarlet hatch — settled history, not an alarm — and the panel keeps a single
 // graph view: the tree and the queues section are gone with their model code.
+// Field regression (2026-09-20): the shell's additive overlay does not isolate a
+// plugin's render exception, so a defect in this panel unmounted the host's tree and
+// left the reader with a blank app — the plugin has to fence itself off.
 check(
-  'a cancelled node is a pale hatched card, not an alarm',
-  /\.dagNode\[data-state='cancelled'\] \{[^}]*background-color: color-mix\(in srgb, #f2b8b5/u.test(activityPanelCss)
+  'a panel fault cannot take the shell down',
+  activityPanelSource.includes('export class PanelErrorBoundary')
+    && activityPanelSource.includes('static getDerivedStateFromError')
+    && activityPanelSource.includes("t('panel.error', { error: this.state.error })")
+    && activityPanelSource.includes('data-agent-teams-error')
+    && clientIndexSource.includes('<PanelErrorBoundary t={t}>')
+    && clientIndexSource.includes('<PanelErrorBoundary t={props.t}>')
+    && activityPanelCss.includes('.panelError')
+    && localesSource.includes("'panel.error'"),
+)
+check(
+  'a cancelled node is a pale hatched card, not an alarm',  /\.dagNode\[data-state='cancelled'\] \{[^}]*background-color: color-mix\(in srgb, #f2b8b5/u.test(activityPanelCss)
     && /\.dagNode\[data-state='cancelled'\] \{[^}]*repeating-linear-gradient\(\s*45deg/u.test(activityPanelCss)
     && !/\.dagNode\[data-state='cancelled'\] \{[^}]*state-error-primary/u.test(activityPanelCss),
 )

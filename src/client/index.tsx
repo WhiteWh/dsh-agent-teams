@@ -18,7 +18,7 @@ import type { UsePanelInfo } from '@deepseek-ai/dsh-client-ui-layout/client'
 // Official model catalog/directory service. The staged roster reads its
 // provider/model/effort metadata without mutating the captain's own selection.
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
-import { ActivityPanel } from './ActivityPanel.tsx'
+import { ActivityPanel, PanelErrorBoundary } from './ActivityPanel.tsx'
 import { AgentTeamsCard, type AgentTeamsCardInjected } from './AgentTeamsCard.tsx'
 import { agentTeamsCardDefinition } from './agent-teams-card-definition.ts'
 import {
@@ -67,13 +67,15 @@ export function apply(ctx: ClientContext): void {
     const usePanel = usePanelInfo ?? useLegacyPanelInfo
     const conversationVisible = usePanel(panel => panel.activePanelId === null)
     return (
-    <ActivityPanel
-      conversationVisible={conversationVisible}
-      sessionsList={ctx.sessions.list}
-      modelDirectories={ctx.modelDirectories}
-      openMember={openMember}
-      t={t}
-    />
+    <PanelErrorBoundary t={t}>
+      <ActivityPanel
+        conversationVisible={conversationVisible}
+        sessionsList={ctx.sessions.list}
+        modelDirectories={ctx.modelDirectories}
+        openMember={openMember}
+        t={t}
+      />
+    </PanelErrorBoundary>
     )
   }
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
@@ -100,5 +102,11 @@ export function apply(ctx: ClientContext): void {
     inject: (): AgentTeamsCardInjected => ({
       openMember,
     }),
-  }, AgentTeamsCard))
+    // The card lives inside a conversation node: a throw here would take the
+    // transcript with it, so it gets the same boundary as the overlay.
+  }, (props: Parameters<typeof AgentTeamsCard>[0]) => (
+    <PanelErrorBoundary t={props.t}>
+      <AgentTeamsCard {...props} />
+    </PanelErrorBoundary>
+  )))
 }

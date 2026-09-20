@@ -63,6 +63,13 @@ took the host down repeatedly and killed neighbouring sessions' work:
   only as a deliberate step the owner has announced (they are restarting anyway).
 - The repository work itself — edits, commits, tags, `git push` — does not touch the
   running harness and is safe at any time.
+- **Ask before a dangerous operation, in the same turn, and wait for the answer.** The
+  dangerous set is: the whole `pnpm verify` chain, `pnpm pack`, and *anything* that
+  writes into the live `web` profile (install, remove, patch edit). On 2026-09-20 the
+  owner asked for this explicitly after an install into the running profile was followed
+  by the app refusing to open in Chrome; the plugin had to be unmounted to recover. The
+  exact question to ask is "можно запускать опасную операцию?" with the command list and
+  the expected restart, and no such command runs until the owner answers yes.
 
 Upstream CI (`.github/workflows/verify.yml`) runs `pnpm typecheck && pnpm build
 && pnpm verify` on Ubuntu **and** Windows Node 24, then a real-host matrix.

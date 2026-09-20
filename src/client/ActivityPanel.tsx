@@ -19,7 +19,7 @@
 
 import {
   useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
-  type CSSProperties, type PointerEvent as ReactPointerEvent,
+  type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, Component,
 } from 'react'
 import {
   IconBranchOutline16, IconChevronDownOutline14, IconPanelLeftOutline16,
@@ -1440,6 +1440,40 @@ export type ActivityPanelProps = {
   readonly modelDirectories: ModelDirectoryResolver
   readonly openMember: (parentId: SessionId, childId: SessionId) => void
 } & PropsLocale<'agentTeams'>
+
+/**
+ * Keeps a panel fault from taking the shell down.
+ *
+ * The panel is mounted into the shell's additive overlay, which does not isolate a
+ * render exception: an error thrown here unmounts the host's tree and the reader is
+ * left with a blank page — which is exactly what a defect in this plugin must never
+ * be able to do. The boundary renders one line naming the failure instead, so the
+ * conversation keeps working and the panel can be dismissed.
+ *
+ * It catches throws. Long work is a separate matter: the layout is memoised (see
+ * `phaseBoardLayout`) precisely because a boundary cannot help against a hang.
+ */
+export class PanelErrorBoundary extends Component<
+  { readonly children: ReactNode; readonly t?: AgentTeamsTranslate },
+  { readonly error: string }
+> {
+  constructor(props: { readonly children: ReactNode; readonly t?: AgentTeamsTranslate }) {
+    super(props)
+    this.state = { error: '' }
+  }
+
+  static getDerivedStateFromError(error: unknown): { error: string } {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+
+  override render(): ReactNode {
+    if (this.state.error === '') return this.props.children
+    const message = this.props.t === undefined
+      ? `AgentTeams panel failed: ${this.state.error}`
+      : this.props.t('panel.error', { error: this.state.error })
+    return <span className={css.panelError} role="alert" data-agent-teams-error>{message}</span>
+  }
+}
 
 export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, conversationVisible = true }: ActivityPanelProps) {
   // Navigating to a member's subagent transcript is an explicit departure:

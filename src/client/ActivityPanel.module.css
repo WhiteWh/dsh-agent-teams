@@ -628,6 +628,19 @@
   50% { opacity: 1; }
 }
 
+/* What the panel renders instead of the shell's tree when its own render throws:
+   one readable line, so the conversation survives a defect in this plugin. */
+.panelError {
+  display: block;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
 .progressOverview {
   display: flex;
   flex-direction: column;
