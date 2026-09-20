@@ -194,6 +194,14 @@ plan's §5 was retitled when the owner answered them.
   - "нельзя добавлять задачи в закрытую фазу" is enforced where the captain can
     add them: `agent_teams_replan` (`add_task`, `move_phase`) and
     `agent_teams_create_task`.
+- **Owner confirmations (2026-09-20, after 0.3.0 was installed).**
+  - **No "close phase" control in the panel.** Closing is the captain's action, and
+    asking the panel for a button was my misreading — the caption-side note is
+    recorded here so it is not offered again. The panel keeps only what it is for:
+    marking a closed column and refusing to target it in the running-plan editor.
+  - **The three-segment attribution is accepted as implemented**: "the plan has
+    settled" means every plan-origin task is terminal at the moment of creation, and a
+    task created then is `followup`. No stricter definition is wanted.
 
 ## Round 3 scope (owner request, 2026-09-20, after 0.2.1 with the round-2 patch)
 
