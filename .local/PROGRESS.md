@@ -94,6 +94,7 @@ the pre-step count, and FAIL must stay 0.
 | S25 | round 3.3: large member node by default, per-member fold to the tray | done | | 0.2.1 large node restored as the default, chevron folds one member into the compact tray; `memberStatusText` + 13 `member.status.*` + 4 `assignment.*` keys + `.memberRole`/`.memberStatusLine`/`.assignmentLabel` restored; tray action symbol un-stuck from the block corner; two RED-first checks |
 | S26 | round 3.4: a phase can be closed | done | | captain-only `close_phase` replan op (allowed only when every task of the phase is terminal), closed phases refuse `create_task`/`add_task`/`move_phase` and point at a new phase, snapshot publishes `closed`/`closedAt`, board marks the column with a `Closed` chip and the plan editor disables it; five new checks; verify 285 PASS/0 FAIL |
 | S27 | round 3.5: one progress bar in three colours | done | | `origin` (`plan`/`added`/`followup`) stamped at creation from `planHasSettled`, `progress.segments` on the host payload, three-zoned bar + named legend in the panel, four locale keys; four new checks; verify 285 PASS/0 FAIL; preview `.local/logs/ui-round3/progress-closed-phase.png` |
+| S28 | hotfix + release 0.3.0 | done | | memoised chain walk (48 tasks/12 layers: 7 477 ms → 0.4 ms; 56/14: 130 230 ms → 0.4 ms) + `PanelErrorBoundary`; verify 287 PASS/0 FAIL; full `pnpm verify` exit 0; artifact 2 319 106 B / SHA256 `F8C2BA3E…F43F` installed and the bundle re-enabled in the web profile; tag v0.3.0 |
 
 ## Release tags (owner instruction, 2026-09-20)
 
