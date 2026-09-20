@@ -16,11 +16,12 @@
  *
  * @module dsh-agent-teams/replan
  */
-import { OPEN_TASK_STATUSES, type TaskKind, type TeamPlanPhase, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskKind, type TeamPlanPhase, type TeamState, type TeamTask } from './types.ts'
 import {
   CAPTAIN_KEY,
   applySupersession,
   invalidateTaskAttempt,
+  originForNewTask,
   planOf,
   revisePlan,
   sanitizeReviewAcceptance,
@@ -48,17 +49,18 @@ export type ReplanAction =
   | 'accept_paths'
   | 'amend_task'
   | 'move_phase'
+  | 'close_phase'
 
 /**
  * A replan operation, in the snake_case shape the tool and the Web route receive.
  *
- * One flat shape covers all seven actions on purpose: a batch arrives from a
+ * One flat shape covers all eight actions on purpose: a batch arrives from a
  * model or from the browser editor, and a per-action union would only move the
  * same field names one level down.
  */
 export interface ReplanOperation {
   readonly action: ReplanAction
-  /** Target task for every action except `add_task`. */
+  /** Target task for every action except `add_task` and `close_phase`. */
   readonly task_id?: string
   /** `add_task`: subject; `update_task`: replacement subject. */
   readonly subject?: string
@@ -111,7 +113,9 @@ export interface ReplanInvalidation {
 /** One applied operation, as reported back to the captain. */
 export interface ReplanChange {
   readonly action: ReplanAction
-  readonly taskId: string
+  /** The task the operation touched; absent for the phase-scoped `close_phase`. */
+  readonly taskId?: string
+  /** The task's subject, or the phase's id/title for `close_phase`. */
   readonly subject: string
   readonly detail: string
   /** Set when the batch revoked a running attempt for this task. */
@@ -146,6 +150,7 @@ export const MAX_REPLAN_OPERATIONS = 32
 
 const ACTIONS: readonly ReplanAction[] = [
   'add_task', 'update_task', 'supersede_task', 'cancel_task', 'accept_paths', 'amend_task', 'move_phase',
+  'close_phase',
 ]
 
 /** Deep-copy the parts of a team a batch can touch, so the input stays intact. */
@@ -202,7 +207,35 @@ function hasOtherOpenWork(draft: TeamState, memberName: string, exceptTaskId: st
     && OPEN_TASK_STATUSES.includes(task.status))
 }
 
-/** Validate and resolve a declared phase for `move_phase` / `add_task`. */
+/**
+ * Whether a task can still move.
+ *
+ * Closing a phase is only honest once every task in it reached a terminal status.
+ * `failed` counts: it is settled evidence of a real attempt, and Delivery — not the
+ * phase — is what judges it. `pending`/`claimed`/`in_progress` still expect the
+ * scheduler or a member, so they hold the phase open.
+ */
+function isTaskSettled(task: TeamTask): boolean {
+  return TERMINAL_TASK_STATUSES.includes(task.status)
+}
+
+/** Resolve a declared phase by id, or throw naming the declared ones. */
+function declaredPhase(draft: TeamState, phaseId: string, label: string): TeamPlanPhase {  const phases = draft.plan?.phases ?? []
+  const phase = phases.find((candidate) => candidate.id === phaseId)
+  if (phase === undefined) {
+    throw new Error(`${label}: unknown phase "${phaseId}"; declared phases: ${phases.map((candidate) => candidate.id).join(', ') || 'none'}`)
+  }
+  return phase
+}
+
+/**
+ * Validate and resolve a declared phase for `move_phase` / `add_task`.
+ *
+ * Round 3: a phase the captain closed takes no new work. The refusal names the
+ * phase and points at the only way forward — declaring a new one — because the
+ * owner's rule is "новые задачи в закрытую фазу добавлять нельзя, только создать
+ * новую фазу".
+ */
 function phaseFor(
   draft: TeamState,
   phaseId: string,
@@ -212,7 +245,15 @@ function phaseFor(
   const phases = draft.plan?.phases ?? []
   if (phaseId === '') return undefined
   const existing = phases.find((phase) => phase.id === phaseId)
-  if (existing !== undefined) return existing
+  if (existing !== undefined) {
+    if (existing.closed === true) {
+      throw new Error(
+        `phase "${existing.id}" is closed and takes no new work`
+        + ' (declare a new phase: move_phase / add_task with a new phase_id and a title)',
+      )
+    }
+    return existing
+  }
   if (!create || title === undefined || title.trim() === '') {
     throw new Error(
       `unknown phase "${phaseId}"; declared phases: ${phases.map((phase) => phase.id).join(', ') || 'none'}`
@@ -323,6 +364,9 @@ function appendTask(draft: TeamState, operation: ReplanOperation, now: number): 
     dependencies,
     attempt: 0,
     kind,
+    // Round 3: which stretch of the plan's life this task belongs to, decided once
+    // at creation (a later reopen of the plan must not shuffle the segments).
+    origin: originForNewTask(draft),
     createdAt: now,
     updatedAt: now,
     ...operation.round === undefined ? {} : { round: operation.round },
@@ -479,6 +523,32 @@ export function replanTeam(
       if (phase === undefined) throw new Error(`${label}: phase "${phaseId}" cannot be resolved`)
       attachToPhase(draft, phase, task.id)
       changes.push({ action: 'move_phase', taskId: task.id, subject: task.subject, detail: `moved ${task.id} to phase ${phase.id}` })
+      continue
+    }
+
+    // Round 3: closing a phase is the captain's own bookkeeping step after he
+    // accepted its tasks. A phase may only close when nothing in it can still
+    // move, otherwise a later update would have to reopen it.
+    if (operation.action === 'close_phase') {
+      const phaseId = (operation.phase_id ?? '').trim()
+      if (phaseId === '') throw new Error(`${label}: close_phase requires phase_id ('' is not a phase)`)
+      const phase = declaredPhase(draft, phaseId, label)
+      if (phase.closed === true) throw new Error(`${label}: phase "${phase.id}" is already closed`)
+      const open = draft.tasks.filter((task) => phase.taskIds.includes(task.id) && !isTaskSettled(task))
+      if (open.length > 0) {
+        throw new Error(
+          `${label}: phase "${phase.id}" still has ${String(open.length)} open task(s): `
+          + open.slice(0, 5).map((task) => `${task.id} (${task.status})`).join(', ')
+          + ' — accept and settle them first',
+        )
+      }
+      phase.closed = true
+      phase.closedAt = now
+      changes.push({
+        action: 'close_phase',
+        subject: phase.title ?? phase.id,
+        detail: `closed phase ${phase.id} (${String(phase.taskIds.length)} task(s))`,
+      })
       continue
     }
 

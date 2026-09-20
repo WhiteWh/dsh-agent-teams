@@ -76,6 +76,9 @@ export interface TeamActivityPhase {
   readonly id: string
   readonly title?: string
   readonly taskIds: readonly string[]
+  /** Round 3: set once the captain closed the phase; it takes no new work. */
+  readonly closed?: boolean
+  readonly closedAt?: number
 }
 
 /** The plan identity the panel renders (WP7/S17). */
@@ -243,6 +246,9 @@ export async function assembleTeamSnapshot(
         id: phase.id,
         ...phase.title === undefined ? {} : { title: phase.title },
         taskIds: [...phase.taskIds],
+        // Round 3: the panel marks a closed column and never offers it as a target.
+        ...phase.closed === true ? { closed: true } : {},
+        ...phase.closedAt === undefined ? {} : { closedAt: phase.closedAt },
       })),
     },
     messageCount: captainInbox.length

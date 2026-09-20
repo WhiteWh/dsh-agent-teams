@@ -17,7 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskOrigin, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isKnownDelta, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
@@ -174,6 +174,36 @@ export function unsatisfiedDependencies(tasks: TeamTask[], dependencies: string[
     return satisfied(next, new Set([...seen, next]))
   }
   return dependencies.filter((id) => !satisfied(id, new Set([id])))
+}
+
+/**
+ * Whether the original plan has nothing left to run (round 3).
+ *
+ * This is what makes "work the user adds after the plan first completed" a fact
+ * rather than a guess: a task created while the plan still owes work is `added`,
+ * and one created after every original task settled is a `followup`. Tasks without
+ * an `origin` count as plan work, so a state file written before the field existed
+ * still answers the question. An empty plan is not settled — nothing was planned.
+ *
+ * @param team - the team whose tasks to inspect.
+ * @returns true when at least one plan task exists and every one of them is terminal.
+ */
+export function planHasSettled(team: Pick<TeamState, 'tasks'>): boolean {
+  const planned = team.tasks.filter((task) => (task.origin ?? 'plan') === 'plan')
+  return planned.length > 0 && planned.every((task) => TERMINAL_TASK_STATUSES.includes(task.status))
+}
+
+/**
+ * The origin to stamp on a task being created right now (round 3).
+ *
+ * Called at creation time only: a task keeps the stretch it was born into even
+ * after the plan is reopened, so the three progress segments never shuffle.
+ *
+ * @param team - the team the task is being added to.
+ * @returns `followup` when the plan had already settled, otherwise `added`.
+ */
+export function originForNewTask(team: Pick<TeamState, 'tasks'>): TaskOrigin {
+  return planHasSettled(team) ? 'followup' : 'added'
 }
 
 /**
@@ -972,6 +1002,8 @@ function isTeamPlanPhase(value: unknown): boolean {
     && typeof value['id'] === 'string'
     && value['id'].trim() !== ''
     && isOptionalString(value['title'])
+    && (value['closed'] === undefined || typeof value['closed'] === 'boolean')
+    && (value['closedAt'] === undefined || isFiniteNumber(value['closedAt']))
     && Array.isArray(value['taskIds'])
     && value['taskIds'].every((taskId) => typeof taskId === 'string' && taskId.trim() !== '')
 }
@@ -1082,6 +1114,10 @@ export function isTeamTask(value: unknown): value is TeamTask {  if (!isRecord(v
     && isOptionalString(value['handoffId'])
     && isOptionalString(value['handoffFromMemberId'])
     && isOptionalString(value['supersededBy'])
+    && (value['origin'] === undefined
+      || value['origin'] === 'plan'
+      || value['origin'] === 'added'
+      || value['origin'] === 'followup')
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])

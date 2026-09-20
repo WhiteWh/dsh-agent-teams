@@ -51,6 +51,17 @@ export type TaskKind =
   | 'integration'
   | 'work'
 
+/**
+ * Which stretch of a plan's life a task belongs to (round 3).
+ *
+ * `plan` — the approved plan (also the meaning of an absent `origin`, so state
+ * files written before this field keep working); `added` — the captain added it
+ * while the plan was still running; `followup` — it arrived after the original
+ * plan had settled, which is what a user's later request turns into (the replan
+ * tool is the captain's, so nothing distinguishes a "user" task otherwise).
+ */
+export type TaskOrigin = 'plan' | 'added' | 'followup'
+
 export const TASK_KINDS: readonly TaskKind[] = [
   'requirements',
   'implementation',
@@ -195,6 +206,14 @@ export interface TeamTask {
   id: string
   /** Brief title for the task. */
   subject: string
+  /**
+   * Round 3: which stretch of the plan's life created this task. `plan` is the
+   * approved plan (and the meaning of an absent value, so older state files keep
+   * working), `added` is work the captain put in while the plan was still running,
+   * `followup` is work added after the original plan had settled — a user's later
+   * request. The progress bar colours the three.
+   */
+  origin?: TaskOrigin
   /** What needs to be done. */
   description?: string
   status: TaskStatus
@@ -412,6 +431,14 @@ export interface TeamPlanPhase {
   title?: string
   /** Task ids assigned to this phase, in display order. */
   taskIds: string[]
+  /**
+   * Round 3: set once the captain closed the phase after accepting its tasks. A
+   * closed phase takes no new work — neither a `create_task` nor a replan
+   * `add_task`/`move_phase` may target it — so later work goes into a new phase.
+   */
+  closed?: boolean
+  /** When the phase closed; kept for the report and the panel's tooltip. */
+  closedAt?: number
 }
 
 /** Plan-level record of a team's graph (WP7). */

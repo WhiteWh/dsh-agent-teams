@@ -650,12 +650,88 @@
 }
 
 .progressBar {
-  display: block;
+  display: flex;
   flex: 1;
+  gap: 1px;
   height: 6px;
   border-radius: 3px;
   background: var(--dsw-alias-border-l3);
   overflow: hidden;
+}
+
+/* Round 3: the bar is one line in three colours — the original plan, what was
+   added while it ran, and what arrived after the plan had settled. Each zone takes
+   its width from how much work the stretch holds and fills with its own delivered
+   share, so the reader sees both the split and the progress inside each part. */
+.progressSegment {
+  display: block;
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 100%;
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 22%, transparent);
+  overflow: hidden;
+}
+
+.progressSegment:first-child {
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+
+.progressSegment:last-child {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+
+.progressSegmentFill {
+  display: block;
+  height: 100%;
+  background: var(--dsw-alias-state-business-primary);
+  transition: width 0.2s ease;
+}
+
+.progressSegment[data-origin='added'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 22%, transparent);
+}
+
+.progressSegment[data-origin='added'] .progressSegmentFill {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.progressSegment[data-origin='followup'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 22%, transparent);
+}
+
+.progressSegment[data-origin='followup'] .progressSegmentFill {
+  background: var(--dsw-alias-state-success-primary);
+}
+
+.progressSegmentLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+}
+
+.progressSegmentKey::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-state-business-primary);
+  content: '';
+  vertical-align: middle;
+}
+
+.progressSegmentKey[data-origin='added']::before {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.progressSegmentKey[data-origin='followup']::before {
+  background: var(--dsw-alias-state-success-primary);
 }
 
 .progressBarFill {
@@ -2714,6 +2790,12 @@
   height: 30px;
 }
 
+/* The closed marker is a third header line, so the row only grows for a board that
+   actually has a closed phase — an open plan keeps its compact header. */
+.phaseHeaderRow:has(.phaseColumn[data-closed='true']) {
+  height: 45px;
+}
+
 .phaseColumn {
   position: absolute;
   top: 0;
@@ -2722,6 +2804,25 @@
   gap: 1px;
   padding-bottom: 3px;
   border-bottom: 1px solid var(--dsw-alias-border-l3);
+}
+
+/* Round 3: a phase the captain closed is settled history — its underline turns to
+   the delivered tone and the header says so, so nobody wonders why the column
+   accepts no new work. */
+.phaseColumn[data-closed='true'] {
+  border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, var(--dsw-alias-border-l3));
+}
+
+.phaseClosedMark {
+  align-self: flex-start;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 18%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  white-space: nowrap;
 }
 
 .phaseColumnHead {

@@ -55,6 +55,7 @@ import {
   sanitizeReviewAcceptance,
   sanitizeReviewObjective,
   normalizeBlankOptionalTaskFields,
+  originForNewTask,
   taskHasWaivers,
   taskKindOf,
   applySupersession,
@@ -824,7 +825,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     return {
       revision: applied.result.revision,
       applied: applied.result.changes.length,
-      changes: applied.result.changes.map((change) => `${change.action} ${change.taskId}: ${change.detail}`),
+      changes: applied.result.changes.map((change) => `${change.action}${change.taskId === undefined ? '' : ` ${change.taskId}`}: ${change.detail}`),
       added: [...applied.result.added],
       removed: [...applied.result.removed],
       rebound: [...applied.result.rebound],
@@ -1306,7 +1307,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_replan',
-    description: 'Captain-only atomic replan of a RUNNING team: repair the plan instead of cancelling and re-creating it. One batch, one reason, validated as a whole under the team lock — if any operation is invalid, nothing is written. Operations: add_task (full create_task contract fields), update_task (subject/description/assignee/dependencies of a pending or failed task; a task a member currently holds needs invalidate=true, which revokes the attempt, stops that member and leaves a mailbox note), supersede_task (replace a failed or abandoned lane with an existing replacement_task_id or one created in the same call), cancel_task, accept_paths (settle a task held in awaiting_scope_review), amend_task (rewrite a wrong contract; force=true overrides a post-review freeze), move_phase (put a task in a declared phase; pass a title to declare a new one). Prefer this over cancel + create: a replan keeps members, satisfied dependencies and their context.',
+    description: 'Captain-only atomic replan of a RUNNING team: repair the plan instead of cancelling and re-creating it. One batch, one reason, validated as a whole under the team lock — if any operation is invalid, nothing is written. Operations: add_task (full create_task contract fields), update_task (subject/description/assignee/dependencies of a pending or failed task; a task a member currently holds needs invalidate=true, which revokes the attempt, stops that member and leaves a mailbox note), supersede_task (replace a failed or abandoned lane with an existing replacement_task_id or one created in the same call), cancel_task, accept_paths (settle a task held in awaiting_scope_review), amend_task (rewrite a wrong contract; force=true overrides a post-review freeze), move_phase (put a task in a declared phase; pass a title to declare a new one), close_phase (close a phase after you accepted its tasks: allowed only when every task in it is terminal, and a closed phase then takes no new work — declare a new phase for that). Prefer this over cancel + create: a replan keeps members, satisfied dependencies and their context.',
     parameters: {
       team_id: teamIdParam(),
       reason: { type: 'string', required: true, description: 'Why the plan is being revised; recorded on the event and used as the default reason of every operation.' },
@@ -1321,9 +1322,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             action: {
               type: 'string',
               required: true,
-              enum: ['add_task', 'update_task', 'supersede_task', 'cancel_task', 'accept_paths', 'amend_task', 'move_phase'],
+              enum: ['add_task', 'update_task', 'supersede_task', 'cancel_task', 'accept_paths', 'amend_task', 'move_phase', 'close_phase'],
             },
-            task_id: { type: 'string', description: 'Target task for every action except add_task.' },
+            task_id: { type: 'string', description: 'Target task for every action except add_task and close_phase.' },
             subject: { type: 'string', description: 'add_task: the new task title. update_task: replacement title. supersede_task: the replacement title when the replacement is created inline.' },
             description: { type: 'string', description: 'Optional description (an empty value clears it on update_task/amend_task).' },
             assignee: { type: 'string', description: 'Active member name; an empty string moves the task to the shared pool.' },
@@ -1343,8 +1344,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
             replacement_task_id: { type: 'string', description: 'supersede_task: an existing task to promote instead of creating one inline.' },
             paths: { type: 'array', items: { type: 'string' }, description: 'accept_paths: workspace-relative paths to ADD to inScope.' },
-            phase_id: { type: 'string', description: 'move_phase / add_task: the phase to place the task in (an empty string removes it from every phase).' },
-            title: { type: 'string', description: 'move_phase / add_task: title for a phase that does not exist yet.' },
+            phase_id: { type: 'string', description: 'move_phase / add_task: the phase to place the task in (an empty string removes it from every phase; a closed phase is refused). close_phase: the phase to close.' },
+            title: { type: 'string', description: 'move_phase / add_task: title for a phase that does not exist yet — the way to open a new phase after one was closed.' },
             reason: { type: 'string', description: 'Per-operation reason; the batch reason is the default.' },
             force: { type: 'boolean', description: 'amend_task / accept_paths: override the freeze a passing review verdict put on the contract (the verdict becomes stale).' },
             invalidate: { type: 'boolean', description: 'Required to rewrite, cancel or replace a task a member currently holds: revokes the attempt, stops that member and leaves a mailbox note explaining the replan.' },
@@ -1604,7 +1605,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       sourceTaskId: { type: 'string', description: 'Source implementation/artifact. Required for kind=repair.' },
       sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids this repair must close.' },
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
-      phase: { type: 'string', description: 'Declared phase id to place this task in (`plan.phases`, from `taskPlanning.phases` or a replan `move_phase`). An unknown phase is refused; omit it for an unphased task.' },
+      phase: { type: 'string', description: 'Declared phase id to place this task in (`plan.phases`, from `taskPlanning.phases` or a replan `move_phase`). An unknown phase is refused, and so is a closed one — declare a new phase instead. Omit it for an unphased task.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
     },
@@ -1709,6 +1710,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           createdAt: Date.now(),
           updatedAt: Date.now(),
           kind,
+          // Round 3: this is the door a user's later request comes through, so the
+          // task records which stretch of the plan's life created it.
+          origin: originForNewTask(fresh),
           ...args.round === undefined ? {} : { round: args.round },
           ...objective === undefined ? {} : { objective },
           ...inScope === undefined ? {} : { inScope },
@@ -1724,13 +1728,21 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
-        // WP7/S17: a task added to a declared phase joins that phase.
+        // WP7/S17: a task added to a declared phase joins that phase. Round 3: a
+        // phase the captain closed takes no new work — the refusal points at the
+        // declared phases and at the only way forward, a new phase.
         const phaseId = args.phase?.trim() ?? ''
         if (phaseId !== '') {
           const phases = fresh.plan?.phases ?? []
           const phase = phases.find((candidate) => candidate.id === phaseId)
           if (phase === undefined) {
             throw new Error(`unknown phase "${phaseId}"; declared phases: ${phases.map((candidate) => candidate.id).join(', ') || 'none'}`)
+          }
+          if (phase.closed === true) {
+            throw new Error(
+              `phase "${phase.id}" is closed and takes no new work`
+              + ' — declare a new phase instead (agent_teams_replan: add_task with a new phase_id and a title)',
+            )
           }
           phase.taskIds.push(task.id)
         }
@@ -1993,6 +2005,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             createdAt: now,
             updatedAt: now,
             kind,
+            // A replacement inherits the stretch of the lane it replaces, so a
+            // repaired plan lane does not turn into "added during the run".
+            origin: replaced.origin ?? 'plan',
             ...(args.round ?? replaced.round) === undefined ? {} : { round: args.round ?? replaced.round },
             ...inline.objective === undefined ? {} : { objective: inline.objective },
             ...inline.inScope === undefined ? {} : { inScope: inline.inScope },
@@ -3220,6 +3235,8 @@ async function initializeProfileTeam(input: {
       assignee: template.assignee,
       dependencies: template.dependencies.map((dependency) => seedToActual.get(dependency) ?? dependency),
       attempt: 0,
+      // A seeded task is the original plan (round 3).
+      origin: 'plan' as const,
       createdAt: now,
       updatedAt: now,
     })),
@@ -3359,6 +3376,9 @@ export function applyQualityFollowUp(team: TeamState, closed: TeamTask): { creat
       assignee: draft.assignee,
       dependencies,
       attempt: 0,
+      // The loop's own repair/re-review tasks belong to the stretch that spawned
+      // them (round 3), so a later user request cannot relabel plan history.
+      origin: closed.origin ?? 'plan',
       createdAt: now,
       updatedAt: now,
       kind: draft.kind,

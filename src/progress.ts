@@ -13,7 +13,7 @@
  * A plan with nothing left in the denominator reports 0 percent rather than
  * inventing 100.
  */
-import type { TeamTask } from './types.ts'
+import type { TaskOrigin, TeamTask } from './types.ts'
 import { hasFollowUpRepair } from './quality-gates.ts'
 import { taskDepthsById, unsatisfiedDependencies } from './state.ts'
 
@@ -81,7 +81,24 @@ export interface PlanProgress {
   readonly cancelled: number
   /** One row per phase (declared phases, otherwise the DAG levels). */
   readonly byPhase: readonly PlanProgressPhase[]
+  /**
+   * Round 3: how much of the work is the original plan, how much the captain added
+   * while it ran, and how much arrived after the plan had settled. One bar, three
+   * colours — see the owner decision in `.local/PROGRESS.md` (D7).
+   */
+  readonly segments: readonly PlanProgressSegment[]
 }
+
+/** One stretch of a plan's life, as the progress bar colours it. */
+export interface PlanProgressSegment {
+  readonly origin: TaskOrigin
+  readonly completed: number
+  readonly total: number
+  readonly percent: number
+}
+
+/** The three stretches, in the order the bar draws them. */
+export const TASK_ORIGINS: readonly TaskOrigin[] = ['plan', 'added', 'followup']
 
 /** Statuses that hold a slot without being finished work. */
 const RUNNING_STATUSES: ReadonlySet<string> = new Set(['claimed', 'in_progress', 'awaiting_scope_review'])
@@ -272,6 +289,19 @@ export function planProgress(
       blocked += 1
     }
   }
+  const segments: PlanProgressSegment[] = TASK_ORIGINS.map((origin) => {
+    const members = tasks.filter((task) => (task.origin ?? 'plan') === origin)
+    let segmentCompleted = 0
+    for (const task of members) {
+      if (task.status === 'completed') segmentCompleted += 1
+    }
+    return {
+      origin,
+      completed: segmentCompleted,
+      total: members.length,
+      percent: percentOf(segmentCompleted, members.length),
+    }
+  })
   return {
     mode: table.mode,
     percent: table.mode === 'equal' ? overall.percentEqual : overall.percentByKind,
@@ -287,5 +317,6 @@ export function planProgress(
     superseded,
     cancelled,
     byPhase,
+    segments,
   }
 }

@@ -37,6 +37,7 @@ import {
   isAcceptanceCriterion,
   isKnownDelta,
   isTeamTask,
+  originForNewTask,
   readMailbox,
   readTeam,
   removeTeamDir,
@@ -2209,6 +2210,48 @@ const progressPlan = [
       && planProgress(progressPlan, { weights: 'equal' }).percent === 50
       && planProgress(progressPlan, { weights: 'equal' }).mode === 'equal',
   )
+  // Round 3 (owner request): one bar, three colours — the original plan, what the
+  // captain added while it ran, and what arrived after the plan had settled. The
+  // attribution is recorded on the task at creation, so it cannot shuffle later.
+  check(
+    'progress splits the plan into the three stretches of its life',
+    (() => {
+      const segments = planProgress([
+        { id: 't1', status: 'completed', kind: 'work', dependencies: [], origin: 'plan' },
+        { id: 't2', status: 'pending', kind: 'work', dependencies: [], origin: 'plan' },
+        { id: 't3', status: 'completed', kind: 'work', dependencies: [], origin: 'added' },
+        { id: 't4', status: 'completed', kind: 'work', dependencies: [], origin: 'followup' },
+        // A task with no origin is plan work: state written before round 3 keeps working.
+        { id: 't5', status: 'pending', kind: 'work', dependencies: [] },
+      ]).segments
+      return segments.length === 3
+        && segments.map(segment => segment.origin).join(',') === 'plan,added,followup'
+        && segments[0]?.completed === 1 && segments[0]?.total === 3
+        && segments[1]?.completed === 1 && segments[1]?.total === 1
+        && segments[2]?.completed === 1 && segments[2]?.total === 1
+        && segments[2]?.percent === 100
+    })(),
+  )
+  check(
+    'a task added before the plan settles is "added", after it settles "followup"',
+    originForNewTask({ tasks: [{ origin: 'plan', status: 'pending' }] }) === 'added'
+      && originForNewTask({ tasks: [{ origin: 'plan', status: 'completed' }] }) === 'followup'
+      && originForNewTask({ tasks: [{ status: 'completed' }] }) === 'followup'
+      && originForNewTask({ tasks: [{ origin: 'added', status: 'pending' }] }) === 'added'
+      && originForNewTask({ tasks: [] }) === 'added',
+  )
+  check(
+    'the panel draws three coloured zones and names them',
+    activityPanelSource.includes('data-progress-segments')
+      && activityPanelSource.includes('data-origin={segment.origin}')
+      && activityPanelSource.includes('t(`progress.segment.${segment.origin}`)')
+      && activityPanelSource.includes('data-progress-segment-legend')
+      && activityPanelCss.includes(".progressSegment[data-origin='added']")
+      && activityPanelCss.includes(".progressSegment[data-origin='followup']")
+      && activityPanelCss.includes('.progressSegmentLegend')
+      && ['progress.segment.plan', 'progress.segment.added', 'progress.segment.followup', 'progress.segment.title']
+        .every((key) => localesSource.includes(`'${key}'`)),
+  )
   check(
     'a repaired failure leaves the denominator and its repair carries the weight',
     (() => {
@@ -2485,6 +2528,120 @@ console.log('6d/8 replan a live team (WP7/S17)')
       verify: ['pnpm test'],
     }], { reason: 'bad lane' }))),
   )
+
+  // Round 3 (owner request): a phase closes only after the captain accepted its
+  // tasks, and a closed phase then takes no new work. A phase is the captain's own
+  // bookkeeping, so the transfer is one more operation of the replan batch.
+  {
+    const phased = () => ({
+      ...replanFixture(),
+      tasks: [
+        { id: 't1', subject: 'recon', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1 },
+        { id: 't2', subject: 'build', status: 'pending', dependencies: ['t1'], attempt: 0, kind: 'work', assignee: 'worker', createdAt: 2, updatedAt: 2 },
+      ],
+      plan: {
+        revision: 3,
+        updatedAt: 1,
+        phases: [{ id: 'E0', title: 'Recon', taskIds: ['t1'] }, { id: 'E1', title: 'Build', taskIds: ['t2'] }],
+      },
+    })
+    const closed = replanTeam(phased(), [{ action: 'close_phase', phase_id: 'E0' }], { reason: 'recon accepted', now: 500 })
+    check(
+      'a phase closes once every task in it is settled',
+      closed.team.plan?.phases?.[0]?.closed === true
+        && closed.team.plan?.phases?.[0]?.closedAt === 500
+        && closed.team.plan?.phases?.[1]?.closed === undefined
+        && closed.result.changes[0]?.action === 'close_phase'
+        && closed.result.changes[0]?.taskId === undefined
+        && closed.result.revision === 4,
+    )
+    check(
+      'closing a phase with open work is refused and names the tasks',
+      /phase "E1" still has 1 open task\(s\): t2 \(pending\)/.test(
+        failureOf(() => replanTeam(phased(), [{ action: 'close_phase', phase_id: 'E1' }], { reason: 'too early' })),
+      ),
+    )
+    check(
+      'closing an unknown or already closed phase is refused',
+      /unknown phase "E9"/.test(failureOf(() => replanTeam(phased(), [{ action: 'close_phase', phase_id: 'E9' }], { reason: 'typo' })))
+        && /already closed/.test(failureOf(() => replanTeam(
+          replanTeam(phased(), [{ action: 'close_phase', phase_id: 'E0' }], { reason: 'recon accepted' }).team,
+          [{ action: 'close_phase', phase_id: 'E0' }],
+          { reason: 'again' },
+        ))),
+    )
+    const closedPhased = replanTeam(phased(), [{ action: 'close_phase', phase_id: 'E0' }], { reason: 'recon accepted', now: 500 }).team
+    // Round 3: the task records the stretch it was born into, so the three progress
+    // segments stay put even after the plan is repaired or reopened.
+    check(
+      'a replanned task records the stretch that created it',
+      replanTeam(phased(), [{ action: 'add_task', subject: 'lane while running' }], { reason: 'more' })
+        .team.tasks.at(-1)?.origin === 'added'
+        && replanTeam({
+          ...phased(),
+          tasks: [{ id: 't1', subject: 'recon', status: 'completed', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1, origin: 'plan' }],
+        }, [{ action: 'add_task', subject: 'lane after the plan' }], { reason: 'user asked' })
+          .team.tasks.at(-1)?.origin === 'followup',
+    )
+    check(
+      'a closed phase refuses new work and points at a new phase',
+      /phase "E0" is closed and takes no new work/.test(failureOf(() => replanTeam(closedPhased, [{
+        action: 'add_task',
+        subject: 'late lane',
+        phase_id: 'E0',
+      }], { reason: 'more work' })))
+        && /phase "E0" is closed/.test(failureOf(() => replanTeam(closedPhased, [{
+          action: 'move_phase',
+          task_id: 't2',
+          phase_id: 'E0',
+        }], { reason: 'move it back' })))
+        // The way forward the refusal names: a brand-new phase is open.
+        && replanTeam(closedPhased, [{
+          action: 'move_phase',
+          task_id: 't2',
+          phase_id: 'E2',
+          title: 'Follow-up',
+        }], { reason: 'new phase' }).team.plan?.phases?.find((phase) => phase.id === 'E2')?.closed === undefined,
+    )
+    const snapshot = await assembleTeamSnapshot(
+      { logger: { warn() {} } },
+      '.agent-teams-verify-closed-phase',
+      'verify-workspace',
+      closedPhased,
+      { historic: true },
+    )
+    check(
+      'the snapshot publishes closed phases and their tasks',
+      snapshot.plan?.phases?.[0]?.closed === true
+        && snapshot.plan?.phases?.[0]?.closedAt === 500
+        && snapshot.plan?.phases?.[1]?.closed === undefined
+        && snapshot.plan?.phases?.[0]?.taskIds.join(',') === 't1',
+      JSON.stringify(snapshot.plan?.phases),
+    )
+    check(
+      'the panel marks a closed column and never targets it in the plan editor',
+      activityPanelSource.includes('data-closed={column.closed === true}')
+        && activityPanelSource.includes("t('phase.closed')")
+        && activityPanelSource.includes('disabled={phase.closed === true}')
+        && activityPanelCss.includes(".phaseColumn[data-closed='true']")
+        && activityPanelCss.includes('.phaseClosedMark')
+        && activityModelSource.includes('readonly closed?: boolean')
+        && localesSource.includes("'phase.closed'"),
+    )
+    // `agent_teams_create_task` is the other door work comes through, so it carries
+    // the same refusal (source-level, the way the other tool contracts are checked).
+    const createTaskBlock = toolsSource.slice(
+      toolsSource.indexOf("name: 'agent_teams_create_task'"),
+      toolsSource.indexOf("name: 'agent_teams_update_task'"),
+    )
+    check(
+      'create_task refuses to place work in a closed phase',
+      createTaskBlock.includes('if (phase.closed === true) {')
+        && createTaskBlock.includes('is closed and takes no new work')
+        && createTaskBlock.includes('declare a new phase instead'),
+      `create_task block is ${String(createTaskBlock.length)} characters`,
+    )
+  }
 
   const beforeAtomicity = JSON.stringify(replanFixture())
   const atomicError = failureOf(() => replanTeam(replanFixture(), [

@@ -92,6 +92,8 @@ the pre-step count, and FAIL must stay 0.
 | S23 | round 3.1: three-row work plaque | done | | `WorkBar` rows 5 → 3; new check `the work plaque is three dot rows tall` (RED first: `rows=0, 1, 2, 3, 4`); verify 272 PASS/0 FAIL; full `pnpm verify` exit 0 |
 | S24 | round 3.2: collapsible phases section | done | | `phase.toggle`/`phase.expand`/`phase.collapse` header with the column count and `data-phases-toggle`, board body rendered only while open; new check `the phases section collapses like the members list and the checklist` (RED first: `toggle=-1`); verify green |
 | S25 | round 3.3: large member node by default, per-member fold to the tray | done | | 0.2.1 large node restored as the default, chevron folds one member into the compact tray; `memberStatusText` + 13 `member.status.*` + 4 `assignment.*` keys + `.memberRole`/`.memberStatusLine`/`.assignmentLabel` restored; tray action symbol un-stuck from the block corner; two RED-first checks |
+| S26 | round 3.4: a phase can be closed | done | | captain-only `close_phase` replan op (allowed only when every task of the phase is terminal), closed phases refuse `create_task`/`add_task`/`move_phase` and point at a new phase, snapshot publishes `closed`/`closedAt`, board marks the column with a `Closed` chip and the plan editor disables it; five new checks; verify 285 PASS/0 FAIL |
+| S27 | round 3.5: one progress bar in three colours | done | | `origin` (`plan`/`added`/`followup`) stamped at creation from `planHasSettled`, `progress.segments` on the host payload, three-zoned bar + named legend in the panel, four locale keys; four new checks; verify 285 PASS/0 FAIL; preview `.local/logs/ui-round3/progress-closed-phase.png` |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -255,6 +257,78 @@ for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool beha
 change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S26 — round 3.4: a phase can be closed, and a closed phase takes no new work (done)
+
+Owner request (round 3, item 3): "если все задачи в фазе выполнены/отменены, а также
+сам координатор после приемки задач этой фазы закрыл её (что он обязан сделать) —
+фаза считается закрытой. Новые задачи в закрытую фазу добавлять нельзя, только
+создать новую фазу."
+
+- **One more operation of the captain's own tool** (never a user tool — owner note D7):
+  `agent_teams_replan` gained `close_phase` with `phase_id`. `ReplanAction`, `ACTIONS`,
+  the tool's action enum and its description list it; the tool result now prints a
+  change without a task id (`close_phase: closed phase E0 (2 task(s))`), which is why
+  `ReplanChange.taskId` became optional.
+- **The gate:** a phase closes only when every task in it is terminal
+  (`TERMINAL_TASK_STATUSES` — `failed` counts, because it is settled evidence and
+  Delivery, not the phase, judges it). Otherwise the operation is refused with the open
+  tasks named: `phase "E1" still has 1 open task(s): t2 (pending) — accept and settle
+  them first`. Closing an unknown or already closed phase is refused too.
+- **Enforcement at both doors work comes through:** `phaseFor()` in the replan module
+  refuses a closed phase for `add_task`/`move_phase` (the message names the phase and
+  says to declare a new one), and `agent_teams_create_task` refuses the same `phase`
+  argument. A new phase declared with a `title` is open by construction.
+- **State and panel:** `plan.phases[].closed` + `closedAt`, validated by
+  `isTeamPlanPhase` (both optional, so an older `team.json` loads as open phases); the
+  snapshot publishes them; the board draws the closed column's underline in the
+  delivered tone with a `Closed` marker (the header row only grows when such a column
+  exists — `:has()`); the running-plan editor lists a closed phase as a disabled option
+  instead of hiding it.
+- **Captain obligation:** protocol rule 7 now ends with the phase bookkeeping — close a
+  phase once its tasks are accepted, and put later work in a **new** phase.
+- **RED first:** five checks — `a phase closes once every task in it is settled`,
+  `closing a phase with open work is refused and names the tasks`, `closing an unknown
+  or already closed phase is refused`, `a closed phase refuses new work and points at a
+  new phase`, `create_task refuses to place work in a closed phase` — plus the snapshot
+  and panel contracts. Two fixture mistakes were fixed on the way: the snapshot call
+  needed the real `assembleTeamSnapshot(ctx, root, workspace, team, options)` signature
+  with `historic: true` (a live probe needs the host's agents registry), and the closed
+  fixture had to be built once with `now: 500` so `closedAt` was assertable.
+- **Verification:** typecheck exit 0, build exit 0, `verify.mjs` 285 PASS / 0 FAIL.
+
+### S27 — round 3.5: the overall progress bar is one line in three colours (done)
+
+Owner request (round 3, item 4): "overall progress надо разбить на 3 стейта —
+1. оригинальный план, 2. то что добавилось в процессе - репланирование, 3. всё что
+докидывает пользователь после завершения плана в первый раз. Всё в одной линейке,
+просто размечаем разными цветами."
+
+- **Attribution without guessing** (owner note D7: the replan tool is the captain's, so
+  no tool call says "the user asked"): `TeamTask.origin` is stamped when a task is
+  created — `plan` for the seeded/approved plan, `added` while the plan still owes work,
+  `followup` once every plan task is terminal. `state.planHasSettled()` +
+  `state.originForNewTask()` hold those two rules; a task with no `origin` counts as
+  plan work, so a `team.json` written before the field keeps answering. A replacement
+  inherits the lane it replaces (`replaced.origin ?? 'plan'`) and the review loop's
+  repair tasks inherit the task they follow up, so history cannot be relabelled later.
+- **Host payload:** `PlanProgress.segments` — always the three stretches in bar order
+  with `completed`/`total`/`percent` — computed in `src/progress.ts` and published by
+  the snapshot; the status text keeps its single percentage.
+- **Panel:** the bar becomes a flex row of three zones (`data-origin`, `flex-grow` = the
+  stretch's size) whose inner fill is that stretch's delivered share — blue for the plan,
+  amber for what was added while running, green for what came after — with a named legend
+  under it (`Original plan 14/16 · Added while running 3/5 · Added after the plan 1/3`)
+  and a tooltip per zone. A host payload without segments degrades to one plan-only zone
+  instead of inventing a split.
+- **Checks:** `progress splits the plan into the three stretches of its life`,
+  `a task added before the plan settles is "added", after it settles "followup"`,
+  `the panel draws three coloured zones and names them` and
+  `a replanned task records the stretch that created it`.
+- **Visual check:** `.local/preview-s27.mjs` →
+  `.local/logs/ui-round3/progress-closed-phase.png` shows the three zones and a closed
+  phase column side by side.
+- **Verification:** typecheck exit 0, build exit 0, `verify.mjs` 285 PASS / 0 FAIL.
 
 ### S25 — round 3.3: the large member node is the default, folded on demand (done)
 

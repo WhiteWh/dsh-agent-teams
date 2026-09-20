@@ -1,5 +1,7 @@
 /** Pure relationship projections used by the AgentTeams activity panel. */
 
+import type { TaskOrigin } from '../types.ts'
+
 /** Reference-panel geometry: narrow nodes with enough room for curved edges. */
 export const COMPACT_DAG_NODE_WIDTH = 92
 export const COMPACT_DAG_NODE_HEIGHT = 30
@@ -161,6 +163,20 @@ export interface PlanProgressView {
   readonly waived: number
   readonly superseded: number
   readonly cancelled: number
+  /**
+   * Round 3: the bar is one line in three colours — the original plan, what the
+   * captain added while it ran, and what arrived after the plan had settled. Always
+   * three entries, in that order, so the bar can draw its zones without guessing.
+   */
+  readonly segments: readonly ProgressSegmentView[]
+}
+
+/** One coloured stretch of the progress bar. */
+export interface ProgressSegmentView {
+  readonly origin: TaskOrigin
+  readonly completed: number
+  readonly total: number
+  readonly percent: number
 }
 
 /**
@@ -180,6 +196,8 @@ interface ProgressPayload {
   readonly superseded: number
   readonly cancelled: number
   readonly byPhase: readonly { phaseId: string; title?: string; percentByKind: number; percentEqual: number; completed: number; total: number }[]
+  /** Round 3: the three stretches of the plan, in bar order. */
+  readonly segments?: readonly { origin: TaskOrigin; completed: number; total: number; percent: number }[]
 }
 
 /** A stored progress-mode preference, or `null` when nothing usable was stored. */
@@ -188,8 +206,11 @@ export function parseProgressMode(raw: string | null | undefined): ProgressMode 
   return null
 }
 
+/** The three stretches in bar order; a host payload is normalized against it. */
+const FALLBACK_ORIGINS: readonly TaskOrigin[] = ['plan', 'added', 'followup']
+
 /** Equal-weight percentage over the tasks themselves (no host payload). */
-function fallbackProgress(tasks: readonly { readonly status: string; readonly state?: string }[]): PlanProgressView {
+function fallbackProgress(tasks: readonly { readonly status: string; readonly state?: string; readonly origin?: TaskOrigin }[]): PlanProgressView {
   let total = 0
   let completed = 0
   let running = 0
@@ -197,10 +218,19 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
   let failed = 0
   let superseded = 0
   let cancelled = 0
+  const byOrigin = new Map<TaskOrigin, { completed: number; total: number }>()
+  const bucketOf = (origin: TaskOrigin) => {
+    const existing = byOrigin.get(origin) ?? { completed: 0, total: 0 }
+    byOrigin.set(origin, existing)
+    return existing
+  }
   for (const task of tasks) {
+    const bucket = bucketOf(task.origin ?? 'plan')
     if (task.status === 'completed') {
       completed += 1
       total += 1
+      bucket.completed += 1
+      bucket.total += 1
       continue
     }
     if (task.status === 'cancelled') {
@@ -212,6 +242,7 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
       continue
     }
     total += 1
+    bucket.total += 1
     if (task.status === 'failed') failed += 1
     else if (task.state === 'blocked') blocked += 1
     else if (task.status !== 'pending') running += 1
@@ -232,6 +263,15 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
     waived: 0,
     superseded,
     cancelled,
+    segments: FALLBACK_ORIGINS.map((origin) => {
+      const bucket = byOrigin.get(origin) ?? { completed: 0, total: 0 }
+      return {
+        origin,
+        completed: bucket.completed,
+        total: bucket.total,
+        percent: bucket.total === 0 ? 0 : Math.round((bucket.completed / bucket.total) * 100),
+      }
+    }),
   }
 }
 
@@ -249,7 +289,7 @@ function fallbackProgress(tasks: readonly { readonly status: string; readonly st
  * @returns the numbers the panel draws.
  */
 export function planProgress(
-  team: { readonly tasks: readonly { readonly status: string; readonly state?: string }[]; readonly progress?: ProgressPayload },
+  team: { readonly tasks: readonly { readonly status: string; readonly state?: string; readonly origin?: TaskOrigin }[]; readonly progress?: ProgressPayload },
   mode?: ProgressMode | null,
 ): PlanProgressView {
   const payload = team.progress
@@ -271,6 +311,17 @@ export function planProgress(
     waived: payload.waived,
     superseded: payload.superseded,
     cancelled: payload.cancelled,
+    // A payload from a host older than round 3 carries no segments; the bar then
+    // shows the whole plan as one zone instead of inventing a split.
+    segments: payload.segments === undefined
+      ? FALLBACK_ORIGINS.map((origin) => ({
+        origin,
+        completed: origin === 'plan' ? payload.completed : 0,
+        total: origin === 'plan' ? payload.total : 0,
+        percent: origin === 'plan' ? percentOf(payload) : 0,
+      }))
+      : FALLBACK_ORIGINS.map((origin) => payload.segments?.find((segment) => segment.origin === origin)
+        ?? { origin, completed: 0, total: 0, percent: 0 }),
   }
 }
 
@@ -370,6 +421,9 @@ export interface ManualPhase {
   readonly id: string
   readonly title?: string
   readonly taskIds: readonly string[]
+  /** Round 3: a closed phase takes no new work; the board marks its column. */
+  readonly closed?: boolean
+  readonly closedAt?: number
 }
 
 /** One phase column of the phase board. */
@@ -379,6 +433,9 @@ export interface PhaseColumn<T extends PhaseTask> {
   readonly order: number
   readonly title?: string
   readonly tasks: readonly T[]
+  /** Round 3: the captain closed this phase, so its column is marked as settled. */
+  readonly closed?: boolean
+  readonly closedAt?: number
 }
 
 /** One dependency level of an auto-derived phase column. */
@@ -428,6 +485,8 @@ export function phaseColumns<T extends PhaseTask>(
       order,
       ...phase.title === undefined ? {} : { title: phase.title },
       tasks: members.slice().sort(byTaskId),
+      ...phase.closed === true ? { closed: true } : {},
+      ...phase.closedAt === undefined ? {} : { closedAt: phase.closedAt },
     })
   }
   const rest = tasks.filter((task) => !assigned.has(task.id))
@@ -513,6 +572,9 @@ export interface PhaseBoardLayout<T extends PhaseTask> {
     readonly width: number
     /** Task ids of this column, so a reader never has to infer them from x. */
     readonly taskIds: readonly string[]
+    /** Round 3: the column belongs to a phase the captain closed. */
+    readonly closed?: boolean
+    readonly closedAt?: number
   }[]
   readonly nodes: readonly PhaseNode<T>[]
   readonly edges: readonly PhaseEdge[]
@@ -542,7 +604,16 @@ export function phaseBoardLayout<T extends PhaseTask>(
   const columns = phaseColumns(tasks, manualPhases)
   const positions = new Map<string, { x: number; y: number }>()
   const nodes: PhaseNode<T>[] = []
-  const placed: { phaseId: string; order: number; title?: string; x: number; width: number; taskIds: string[] }[] = []
+  const placed: {
+    phaseId: string
+    order: number
+    title?: string
+    x: number
+    width: number
+    taskIds: string[]
+    closed?: boolean
+    closedAt?: number
+  }[] = []
   let columnX = 0
   let boardHeight = 0
   for (const column of columns) {
@@ -585,6 +656,8 @@ export function phaseBoardLayout<T extends PhaseTask>(
       x: columnX,
       width,
       taskIds: column.tasks.map((task) => task.id),
+      ...column.closed === true ? { closed: true } : {},
+      ...column.closedAt === undefined ? {} : { closedAt: column.closedAt },
     })
     for (const task of column.tasks) {
       const x = columnX + (depths.get(task.id) ?? 0) * (COMPACT_DAG_NODE_WIDTH + COMPACT_DAG_COLUMN_GAP)

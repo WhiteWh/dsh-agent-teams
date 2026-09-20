@@ -389,8 +389,31 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
         ? <span className={css.progressEmpty} />
         : (
           <span className={css.progressBarBlock} data-progress-bar={progress.percent}>
-            <span className={css.progressBar}>
-              <span className={css.progressBarFill} style={{ width: `${String(progress.percent)}%` }} data-progress-fill />
+            {/* Round 3 (owner request): one line, three colours. Each zone is as
+                wide as its stretch is big, and the filled part of the zone is the
+                work already delivered in that stretch — so "how much of this was
+                the plan" reads off the bar itself. */}
+            <span className={css.progressBar} data-progress-segments>
+              {progress.segments.map((segment) => (
+                <span
+                  key={segment.origin}
+                  className={css.progressSegment}
+                  data-origin={segment.origin}
+                  style={{ flexGrow: Math.max(segment.total, 0.0001) }}
+                  title={t('progress.segment.title', {
+                    label: t(`progress.segment.${segment.origin}`),
+                    percent: segment.percent,
+                    completed: segment.completed,
+                    total: segment.total,
+                  })}
+                >
+                  <span
+                    className={css.progressSegmentFill}
+                    style={{ width: `${String(segment.percent)}%` }}
+                    data-segment-fill={segment.origin}
+                  />
+                </span>
+              ))}
             </span>
             <span className={css.progressPercent}>
               {t('progress.percent', { percent: progress.percent, completed: progress.completed, total: progress.total })}
@@ -406,6 +429,15 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
             </button>
           </span>
         )}
+      {!discarded && progress.segments.some((segment) => segment.total > 0) && (
+        <span className={css.progressSegmentLegend} data-progress-segment-legend>
+          {progress.segments.filter((segment) => segment.total > 0).map((segment) => (
+            <span key={segment.origin} className={css.progressSegmentKey} data-origin={segment.origin}>
+              {`${t(`progress.segment.${segment.origin}`)} ${String(segment.completed)}/${String(segment.total)}`}
+            </span>
+          ))}
+        </span>
+      )}
       {team.tasks.length > 0 ? (
         <span className={css.progressSegments} aria-hidden>
           {team.tasks.map((task) => <span key={task.id} data-state={discarded ? 'cancelled' : taskTone(task.state, task.status)} />)}
@@ -566,9 +598,11 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
                 className={css.phaseColumn}
                 style={{ left: column.x, width: column.width }}
                 data-phase-id={column.phaseId}
+                data-closed={column.closed === true}
               >
                 <span className={css.phaseColumnHead} title={title}>{title}</span>
                 <span className={css.phaseColumnCount}>{t('phase.count', { count })}</span>
+                {column.closed === true && <span className={css.phaseClosedMark}>{t('phase.closed')}</span>}
               </div>
             )
           })}
@@ -683,6 +717,8 @@ function declaredPhasesOf(team: ActivityTeam): ManualPhase[] {
     id: phase.id,
     ...phase.title === undefined ? {} : { title: phase.title },
     taskIds: phase.taskIds,
+    ...phase.closed === true ? { closed: true } : {},
+    ...phase.closedAt === undefined ? {} : { closedAt: phase.closedAt },
   }))
 }
 
@@ -886,7 +922,7 @@ function RunningPlanEditor({ team, t }: {
                     </button>
                   </>
                 )}
-                {editable && phases.length > 0 && (
+                {editable && phases.some((phase) => phase.closed !== true) && (
                   <select
                     className={css.replanInput}
                     value={row.phase ?? ''}
@@ -895,7 +931,16 @@ function RunningPlanEditor({ team, t }: {
                     onChange={(event) => { edit(task.id, { phase: event.target.value, action: 'move' }) }}
                   >
                     <option value="">—</option>
-                    {phases.map((phase) => <option key={phase.id} value={phase.id}>{phase.title ?? phase.id}</option>)}
+                    {/* Round 3: a closed phase is never a target. It stays listed but
+                        disabled, so the reader sees why the phase is missing instead
+                        of wondering where it went; a new phase is typed by hand. */}
+                    {phases.map((phase) => (
+                      <option key={phase.id} value={phase.id} disabled={phase.closed === true}>
+                        {phase.closed === true
+                          ? `${phase.title ?? phase.id} · ${t('phase.closed')}`
+                          : phase.title ?? phase.id}
+                      </option>
+                    ))}
                   </select>
                 )}
                 {live && (

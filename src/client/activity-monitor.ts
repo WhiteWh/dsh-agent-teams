@@ -80,6 +80,9 @@ export interface ActivityPlanPhase {
   readonly id: string
   readonly title?: string
   readonly taskIds: readonly string[]
+  /** Round 3: closed by the captain after accepting its tasks; takes no new work. */
+  readonly closed?: boolean
+  readonly closedAt?: number
 }
 
 /** Plan identity of a team (WP7): the revision and its declared phases. */
