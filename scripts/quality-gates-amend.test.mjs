@@ -199,9 +199,20 @@ test('an amended reviewedTaskId must name an existing, reviewable task', () => {
   const missing = amendTaskContract(team, review, { reviewedTaskId: 't404' }, 'captain', 'r')
   assert.equal(missing.ok, false)
   assert.match(missing.error, /does not exist/)
-  const notReviewable = amendTaskContract(team, review, { reviewedTaskId: 't3' }, 'captain', 'r')
+  // Φ1 feedback F5: a `work` lane carries a full contract and can report a waiver, so a
+  // review may judge it — the old rule left such a waiver unconfirmable for a whole phase.
+  const workTarget = amendTaskContract(team, review, { reviewedTaskId: 't3' }, 'captain', 'review the work lane')
+  assert.equal(workTarget.ok, true)
+  assert.equal(workTarget.task.reviewedTaskId, 't3')
+  // A kind that stays outside the reviewable set is still refused, by name.
+  const requirementsTeam = teamWith([
+    implTask(),
+    { id: 't5', subject: 'requirements', status: 'pending', attempt: 0, createdAt: 0, updatedAt: 0, kind: 'requirements' },
+    { id: 't2', subject: 'review', status: 'in_progress', dependencies: ['t1'], createdAt: 0, updatedAt: 0, kind: 'review', reviewedTaskId: 't1' },
+  ])
+  const notReviewable = amendTaskContract(requirementsTeam, requirementsTeam.tasks[2], { reviewedTaskId: 't5' }, 'captain', 'r')
   assert.equal(notReviewable.ok, false)
-  assert.match(notReviewable.error, /kind=work/)
+  assert.match(notReviewable.error, /kind=requirements/)
   const itself = amendTaskContract(team, review, { reviewedTaskId: 't2' }, 'captain', 'r')
   assert.equal(itself.ok, false)
   assert.match(itself.error, /itself/)

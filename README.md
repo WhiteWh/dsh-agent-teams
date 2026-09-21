@@ -114,14 +114,14 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.3.0`. Harness remains a prerelease.**
+**Recommended pair: DeepSeek Harness `0.1.5-rc.1` + AgentTeams `0.4.0`. Harness remains a prerelease.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended installation** | **`0.1.5-rc.1`** | **`0.3.0`** |
-| Retaining an older RC | `0.1.2-rc.1` | `0.3.0` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.3.0` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.3.0` |
+| **Recommended installation** | **`0.1.5-rc.1`** | **`0.4.0`** |
+| Retaining an older RC | `0.1.2-rc.1` | `0.4.0` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.4.0` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.4.0` |
 
 ### 1. Install DeepSeek Harness
 
@@ -137,12 +137,12 @@ Skip this if you already run this version. Alpha is opt-in: select an exact Alph
 Install into the `web` profile. Replace the profile name if needed:
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.3.0
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.4.0
 ```
 
 **After installation, stop and restart Harness for that profile, then refresh the browser.**
 
-The default npm `latest` tag points to `0.3.0`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.3.0/README.md).
+The default npm `latest` tag points to `0.4.0`, so `dsh plugin --profile web add @nanmicoder/dsh-agent-teams` installs this version on a fresh profile. Use the exact-version command above to pin it. The recommended Harness version is `0.1.5-rc.1`; installing the plugin does not upgrade the host. See the [source installation guide](./docs/maintenance-workflow.md) and [release verification](./docs/releases/v0.4.0/README.md).
 
 > Desktop users must check the app's embedded Harness core; upgrading the global CLI does not upgrade it. For older `0.1.0-*` / `0.1.1-*` or unlisted hosts, keep a working pair and follow the [older-version and diagnostic guide](./docs/maintenance-workflow.md).
 
