@@ -1,8 +1,8 @@
 # v0.4.0 release record — the plan's own vocabulary, and the Φ1 defects
 
 Nine defects from the dx9 `Φ1` run (183 tasks, 11 members) and the material-layers report
-before it, plus the plan-vocabulary work the owner asked for. **Built and packed, not yet
-rolled out**: the artifact waits for the owner's go-ahead to be installed.
+before it, plus the plan-vocabulary work the owner asked for. Built, packed and rolled out
+on 2026-09-21 with the owner's go-ahead; the profile was backed up before the install.
 
 ## What shipped
 
