@@ -695,6 +695,10 @@
   border-bottom-right-radius: 3px;
 }
 
+.progressSegment[data-phase] .progressSegmentFill {
+  background: var(--agent-teams-phase, var(--dsw-alias-state-business-primary));
+}
+
 .progressSegmentFill {
   display: block;
   height: 100%;
@@ -717,6 +721,32 @@
 .progressSegment[data-origin='followup'] .progressSegmentFill {
   background: var(--dsw-alias-state-success-primary);
 }
+
+/* One zone per declared phase: the fill colours cycle so a reader can tell the zones
+   apart, and each fill is that phase own percentage. */
+.progressSegment[data-phase-index='0'] .progressSegmentFill { background: var(--dsw-alias-state-business-primary); }
+
+.progressSegment[data-phase-index='1'] .progressSegmentFill { background: var(--dsw-alias-state-success-primary); }
+
+.progressSegment[data-phase-index='2'] .progressSegmentFill { background: var(--dsw-alias-state-warn-primary); }
+
+.progressSegment[data-phase-index='3'] .progressSegmentFill { background: var(--dsw-alias-state-error-primary); }
+
+.progressSegment[data-phase-index='4'] .progressSegmentFill { background: var(--dsw-alias-label-secondary); }
+
+.progressSegment[data-phase-index='5'] .progressSegmentFill { background: var(--dsw-alias-label-tertiary); }
+
+.progressSegmentKey[data-phase-index='0']::before { background: var(--dsw-alias-state-business-primary); }
+
+.progressSegmentKey[data-phase-index='1']::before { background: var(--dsw-alias-state-success-primary); }
+
+.progressSegmentKey[data-phase-index='2']::before { background: var(--dsw-alias-state-warn-primary); }
+
+.progressSegmentKey[data-phase-index='3']::before { background: var(--dsw-alias-state-error-primary); }
+
+.progressSegmentKey[data-phase-index='4']::before { background: var(--dsw-alias-label-secondary); }
+
+.progressSegmentKey[data-phase-index='5']::before { background: var(--dsw-alias-label-tertiary); }
 
 .progressSegmentLegend {
   display: flex;

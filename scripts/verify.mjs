@@ -2402,6 +2402,23 @@ const progressPlan = [
       && ['progress.segment.plan', 'progress.segment.added', 'progress.segment.followup', 'progress.segment.title']
         .every((key) => localesSource.includes(`'${key}'`)),
   )
+  // Owner request (2026-09-21): the bar supports phases — one zone per declared phase,
+  // each filled with **that phase's own percentage**, and the team's percentage on its own
+  // line. A plan without declared phases keeps the three-colour origin split above.
+  check(
+    'the progress bar splits into one zone per declared phase, each with its own percent',
+    activityPanelSource.includes("data-progress-split={phaseBar ? 'phase' : 'origin'}")
+      && activityPanelSource.includes('data-phase={row.phaseId}')
+      && activityPanelSource.includes('flexGrow: Math.max(row.total, 0.0001)')
+      && activityPanelSource.includes("'--agent-teams-phase': PHASE_FILLS[index % PHASE_FILLS.length]")
+      && activityPanelSource.includes('style={{ width: `${String(phasePercent(row))}%` }}')
+      && activityPanelSource.includes('data-progress-phase-legend')
+      && activityPanelSource.includes('data-progress-overall')
+      && activityPanelCss.includes(".progressSegment[data-phase-index='1']")
+      && ['progress.phase.title', 'progress.phase.legend'].every((key) => localesSource.includes(`'${key}'`))
+      // The per-phase percentage is the host's own number, not a client estimate.
+      && activityPanelSource.includes("progress.mode === 'equal' ? row.percentEqual : row.percentByKind"),
+  )
   check(
     'a repaired failure leaves the denominator and its repair carries the weight',
     (() => {

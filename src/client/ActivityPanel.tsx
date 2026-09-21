@@ -358,8 +358,16 @@ function taskSummary(team: ActivityTeam, t: AgentTeamsTranslate, discarded = fal
   return t('task.summary.waitingSchedule')
 }
 
-function ProgressOverview({ team, t, discarded = false }: { readonly team: ActivityTeam; readonly t: AgentTeamsTranslate; readonly discarded?: boolean }) {
-  const running = discarded ? 0 : team.tasks.filter((task) => task.state === 'running').length
+const PHASE_FILLS = [
+  'var(--dsw-alias-state-business-primary)',
+  'var(--dsw-alias-state-success-primary)',
+  'var(--dsw-alias-state-warn-primary)',
+  'var(--dsw-alias-state-error-primary)',
+  'var(--dsw-alias-label-secondary)',
+  'var(--dsw-alias-label-tertiary)',
+] as const
+
+function ProgressOverview({ team, t, discarded = false }: { readonly team: ActivityTeam; readonly t: AgentTeamsTranslate; readonly discarded?: boolean }) {  const running = discarded ? 0 : team.tasks.filter((task) => task.state === 'running').length
   const blocked = discarded ? 0 : team.tasks.filter((task) => task.state === 'blocked').length
   const completed = discarded ? 0 : team.tasks.filter((task) => task.status === 'completed').length
   const settled = !discarded && team.tasks.length > 0 && team.tasks.every((task) => settledTask(task.status))
@@ -383,6 +391,20 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
       // A blocked localStorage only costs the preference, never the switch.
     }
   }
+  // Owner request (2026-09-21): when the plan declares phases, the bar is split into one
+  // zone per phase, each filled with **that phase's own percentage**, and the overall
+  // percentage gets its own line under it. A plan without declared phases keeps the
+  // three-colour split by origin (plan / added while running / added after the plan).
+  const phaseRows = (team.progress?.byPhase ?? []).filter((row) => row.total > 0)
+  const phaseBar = phaseRows.length > 0
+  const phasePercent = (row: { readonly percentByKind: number; readonly percentEqual: number }): number => (
+    progress.mode === 'equal' ? row.percentEqual : row.percentByKind
+  )
+  const phaseLabel = (row: { readonly phaseId: string; readonly title?: string }, index: number): string => (
+    row.title === undefined || row.title === ''
+      ? (row.phaseId === 'unphased' ? t('phase.unphased') : t('phase.column', { order: index + 1 }))
+      : row.title
+  )
   return (
     <section className={css.progressOverview} aria-label={t('progress.aria')} data-progress-summary>
       <span className={css.progressTitle}>{t('progress.title')}</span>
@@ -390,34 +412,53 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
         ? <span className={css.progressEmpty} />
         : (
           <span className={css.progressBarBlock} data-progress-bar={progress.percent}>
-            {/* Round 3 (owner request): one line, three colours. Each zone is as
-                wide as its stretch is big, and the filled part of the zone is the
-                work already delivered in that stretch — so "how much of this was
-                the plan" reads off the bar itself. */}
-            <span className={css.progressBar} data-progress-segments>
-              {progress.segments.map((segment) => (
-                <span
-                  key={segment.origin}
-                  className={css.progressSegment}
-                  data-origin={segment.origin}
-                  style={{ flexGrow: Math.max(segment.total, 0.0001) }}
-                  title={t('progress.segment.title', {
-                    label: t(`progress.segment.${segment.origin}`),
-                    percent: segment.percent,
-                    completed: segment.completed,
-                    total: segment.total,
-                  })}
-                >
+            <span className={css.progressBar} data-progress-segments data-progress-split={phaseBar ? 'phase' : 'origin'}>
+              {phaseBar
+                ? phaseRows.map((row, index) => (
                   <span
-                    className={css.progressSegmentFill}
-                    style={{ width: `${String(segment.percent)}%` }}
-                    data-segment-fill={segment.origin}
-                  />
-                </span>
-              ))}
-            </span>
-            <span className={css.progressPercent}>
-              {t('progress.percent', { percent: progress.percent, completed: progress.completed, total: progress.total })}
+                    key={row.phaseId}
+                    className={css.progressSegment}
+                    data-phase={row.phaseId}
+                    data-phase-index={index % 6}
+                    // A phase owns the share of the bar its size earns it; the fill inside
+                    // is that phase's own percentage, not the team's. The zone's colour
+                    // travels as a custom property, so it cannot be lost to a selector
+                    // fight with the base fill rule.
+                    style={{ flexGrow: Math.max(row.total, 0.0001), '--agent-teams-phase': PHASE_FILLS[index % PHASE_FILLS.length] } as CSSProperties}
+                    title={t('progress.phase.title', {
+                      label: phaseLabel(row, index),
+                      percent: phasePercent(row),
+                      completed: row.completed,
+                      total: row.total,
+                    })}
+                  >
+                    <span
+                      className={css.progressSegmentFill}
+                      style={{ width: `${String(phasePercent(row))}%` }}
+                      data-segment-fill={row.phaseId}
+                    />
+                  </span>
+                ))
+                : progress.segments.map((segment) => (
+                  <span
+                    key={segment.origin}
+                    className={css.progressSegment}
+                    data-origin={segment.origin}
+                    style={{ flexGrow: Math.max(segment.total, 0.0001) }}
+                    title={t('progress.segment.title', {
+                      label: t(`progress.segment.${segment.origin}`),
+                      percent: segment.percent,
+                      completed: segment.completed,
+                      total: segment.total,
+                    })}
+                  >
+                    <span
+                      className={css.progressSegmentFill}
+                      style={{ width: `${String(segment.percent)}%` }}
+                      data-segment-fill={segment.origin}
+                    />
+                  </span>
+                ))}
             </span>
             <button
               type="button"
@@ -430,7 +471,28 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
             </button>
           </span>
         )}
-      {!discarded && progress.segments.some((segment) => segment.total > 0) && (
+      {/* The overall percentage keeps its own line, so the phase zones above can be read
+          one by one without losing the team's number. */}
+      {!discarded && (
+        <span className={css.progressPercent} data-progress-overall>
+          {t('progress.percent', { percent: progress.percent, completed: progress.completed, total: progress.total })}
+        </span>
+      )}
+      {!discarded && phaseBar && (
+        <span className={css.progressSegmentLegend} data-progress-phase-legend>
+          {phaseRows.map((row, index) => (
+            <span key={row.phaseId} className={css.progressSegmentKey} data-phase-index={index % 6}>
+              {t('progress.phase.legend', {
+                label: phaseLabel(row, index),
+                percent: phasePercent(row),
+                completed: row.completed,
+                total: row.total,
+              })}
+            </span>
+          ))}
+        </span>
+      )}
+      {!discarded && !phaseBar && progress.segments.some((segment) => segment.total > 0) && (
         <span className={css.progressSegmentLegend} data-progress-segment-legend>
           {progress.segments.filter((segment) => segment.total > 0).map((segment) => (
             <span key={segment.origin} className={css.progressSegmentKey} data-origin={segment.origin}>
