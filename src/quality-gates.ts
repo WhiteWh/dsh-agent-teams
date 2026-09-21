@@ -1067,7 +1067,11 @@ const AMENDABLE_CONTRACT_FIELDS = [
 ] as const
 
 /** Task kinds a review or repair contract may point at through `reviewedTaskId`. */
-const REVIEWABLE_TASK_KINDS: readonly TaskKind[] = ['implementation', 'repair', 'verification', 'integration']
+// Φ1 feedback F5: a `work` lane carries a full contract (objective/acceptance/verify) and
+// can therefore report a waiver — as the dx9 run's seven-line lane did. Refusing a review
+// that targets it left that waiver unconfirmable for the rest of the phase, so a lane
+// whose work is honest could never be discharged.
+const REVIEWABLE_TASK_KINDS: readonly TaskKind[] = ['work', 'implementation', 'repair', 'verification', 'integration']
 
 /**
  * Controlled contract amendment (the pure rule; tooling keeps it

@@ -95,6 +95,17 @@ export interface ReplanOperation {
   readonly reason?: string
   /** `amend_task` / `accept_paths`: override the post-review contract freeze. */
   readonly force?: boolean
+  /**
+   * `update_task`: release a stale handoff marker (Φ1 feedback F2).
+   *
+   * A task the captain invalidated while a member held it keeps `reassigning` until that
+   * member's drain finishes. A task that was **pooled** when it was invalidated has
+   * nobody to drain, so the marker stayed forever: `claim_task` answered "t115 is being
+   * reassigned; wait for the handoff to finish" and `reassign_task` refused with "t112 is
+   * already being reassigned", for minutes, until the only way out was a supersede. This
+   * clears the marker when no member holds a live attempt.
+   */
+  readonly release?: boolean
   /** Live attempts (`claimed`/`in_progress`) require this to be rewritten. */
   readonly invalidate?: boolean
   /**
@@ -447,6 +458,24 @@ function updateTask(
       changed = true
     }
   }
+  if (operation.release === true) {
+    // Φ1/F2: a pooled task with a stale marker had no way out at all. Release only what
+    // nobody is holding: a live attempt is revoked through `invalidate`, not released.
+    const holder = task.assignee
+    const live = task.status === 'claimed' || task.status === 'in_progress'
+    const holderIsMember = holder !== undefined && holder !== '' && holder !== CAPTAIN_KEY
+      && draft.members.some((member) => member.name === holder && member.status !== 'removed')
+    if (live && holderIsMember) {
+      throw new Error(`${label}: task ${task.id} is held by "${holder}"; revoke it with invalidate=true instead of release`)
+    }
+    if (task.reassigning === true || task.handoffFromMemberId !== undefined || task.handoffId !== undefined) {
+      task.reassigning = false
+      task.handoffFromMemberId = undefined
+      task.handoffId = undefined
+      task.updatedAt = Date.now()
+      changed = true
+    }
+  }
   if (operation.retry === true) {
     // "Amend and retry" (WP7): the repaired contract runs again on the same
     // lane. The transition table owns the legality, so a completed or cancelled
@@ -738,7 +767,13 @@ export function replanTeam(
     const { task, changed } = updateTask(draft, operation, label)
     if (isLiveAttempt(task) && operation.invalidate === true) {
       const holder = holderOf(draft, task)
-      invalidateTaskAttempt(task, task.assignee, true)
+      // Φ1/F2: a live attempt is revoked *and* handed off — the marker is what stops the
+      // member's next update until its drain finishes. A task nobody can drain (no held
+      // attempt, no active owner) must not keep that marker, or the lane is frozen with
+      // no tool able to release it.
+      const ownerActive = task.assignee !== undefined && task.assignee !== ''
+        && draft.members.some((member) => member.name === task.assignee && member.status !== 'removed')
+      invalidateTaskAttempt(task, task.assignee, ownerActive)
       task.updatedAt = now
       invalidated.push(task.id)
       if (holder !== undefined) {

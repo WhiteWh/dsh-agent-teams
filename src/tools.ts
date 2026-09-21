@@ -1352,6 +1352,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             phase_id: { type: 'string', description: 'move_phase / add_task: the phase to place the task in (an empty string removes it from every phase; a closed phase is refused). close_phase: the phase to close.' },
             title: { type: 'string', description: 'move_phase / add_task: title for a phase that does not exist yet — the way to open a new phase after one was closed.' },
             reason: { type: 'string', description: 'Per-operation reason; the batch reason is the default.' },
+            release: { type: 'boolean', description: 'update_task: clear a stale handoff marker (reassigning) on a task nobody holds, so a pooled lane the captain invalidated can be claimed or reassigned again. Refused while a member holds a live attempt — revoke that with invalidate=true.' },
             force: { type: 'boolean', description: 'amend_task / accept_paths: override the freeze a passing review verdict put on the contract (the verdict becomes stale).' },
             invalidate: { type: 'boolean', description: 'Required to rewrite, cancel or replace a task a member currently holds: revokes the attempt, stops that member and leaves a mailbox note explaining the replan.' },
             retry: { type: 'boolean', description: 'update_task: put a failed (or scope-held) task back in the queue after its contract was repaired, instead of replacing the lane.' },

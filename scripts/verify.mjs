@@ -37,8 +37,10 @@ import {
   isAcceptanceCriterion,
   isKnownDelta,
   isTeamTask,
+  invalidateTaskAttempt,
   declarePhaseOnUse,
   originForNewTask,
+  validateCreateTask,
   requeueMemberTasks,
   readMailbox,
   readTeam,
@@ -2967,6 +2969,84 @@ console.log('6d/8 replan a live team (WP7/S17)')
         && ['phase.progress', 'phase.failedCount', 'phase.verifiedCount', 'task.verified']
           .every((key) => localesSource.includes(`'${key}'`))
         && toolsSource.includes("label: { type: 'string', description: \"The plan's own human id"),
+    )
+  }
+  // Φ1 feedback F2: a stale `(reassigning)` marker no tool could clear. `update_task
+  // {invalidate:true}` on a task a member held left the handoff marker; the drain clears
+  // it, but a **pooled** task has nobody to drain, so the lane froze: `claim_task`
+  // answered "t115 is being reassigned; wait for the handoff to finish" for minutes, and
+  // `reassign_task` refused with "t112 is already being reassigned". The only exit was a
+  // supersede, which loses the history. `release` clears the marker when nobody holds a
+  // live attempt, and an invalidate on a task with no active owner no longer sets it.
+  {
+    const staleHandoff = () => ({
+      ...replanFixture(),
+      tasks: [
+        { id: 't1', subject: 'pooled lane', status: 'pending', dependencies: [], attempt: 1, kind: 'work', createdAt: 1, updatedAt: 1, reassigning: true, handoffId: 'h1', handoffFromMemberId: 'sess-worker' },
+        { id: 't2', subject: 'live lane', status: 'in_progress', dependencies: [], attempt: 1, kind: 'work', assignee: 'worker', attemptId: 'a1', createdAt: 2, updatedAt: 2, reassigning: true, handoffId: 'h2' },
+      ],
+    })
+    const released = replanTeam(staleHandoff(), [{ action: 'update_task', task_id: 't1', release: true }], { reason: 'unstick the pool' })
+    check(
+      'a pooled lane with a stale handoff marker can be released',
+      released.team.tasks[0]?.reassigning === false
+        && released.team.tasks[0]?.handoffId === undefined
+        && released.team.tasks[0]?.handoffFromMemberId === undefined
+        && released.team.tasks[0]?.status === 'pending',
+    )
+    check(
+      'releasing a lane a member actually holds is refused in favour of invalidate',
+      // The live-attempt guard runs first (a held task is rewritten through invalidate),
+      // so the release-specific refusal is what a caller passing both sees.
+      /is held by "worker"; revoke it with invalidate=true/.test(failureOf(() => replanTeam(staleHandoff(), [
+        { action: 'update_task', task_id: 't2', release: true, invalidate: true },
+      ], { reason: 'wrong tool' }))),
+    )
+    // The invalidate path itself: revoking an attempt with no active owner must not set
+    // the marker, or the lane would be frozen with nobody able to drain it. The mechanism
+    // is `invalidateTaskAttempt`'s `reassigning` argument, which the replan branch now
+    // derives from whether the owner is still a member.
+    const pooledAfterRevoke = { id: 't9', subject: 'pooled lane', status: 'pending', dependencies: [], attempt: 1, kind: 'work', reassigning: true, handoffId: 'h9' }
+    invalidateTaskAttempt(pooledAfterRevoke, undefined, false)
+    check(
+      'revoking an attempt with no active owner leaves no marker behind',
+      pooledAfterRevoke.reassigning === false && pooledAfterRevoke.status === 'pending',
+      `reassigning=${String(pooledAfterRevoke.reassigning)}`,
+    )
+  }
+  // Φ1 feedback F5: a `work` lane's waiver could never be confirmed — `kind=review`
+  // accepted only an implementation/repair/verification/integration target, so a work
+  // lane that honestly reported `waived` against a pinned delta sat unconfirmed for the
+  // rest of the phase, and superseding the lane was the only exit.
+  {
+    const workLane = {
+      ...replanFixture(),
+      tasks: [
+        { id: 't1', subject: 'work lane with a waiver', status: 'completed', dependencies: [], attempt: 1, kind: 'work', hasWaivers: true, createdAt: 1, updatedAt: 1 },
+      ],
+    }
+    const reviewOfWork = validateCreateTask(workLane, {
+      subject: 'review the work lane',
+      kind: 'review',
+      reviewedTaskId: 't1',
+      objective: 'judge the lane',
+      acceptance: ['the lane is judged'],
+    })
+    check(
+      'a review may target a work lane, so its waiver can be discharged',
+      reviewOfWork.ok === true,
+      reviewOfWork.error ?? '',
+    )
+    const reviewOfNothing = validateCreateTask(workLane, {
+      subject: 'review nothing',
+      kind: 'review',
+      reviewedTaskId: 't404',
+      objective: 'judge',
+      acceptance: ['judged'],
+    })
+    check(
+      'a review still refuses a target that does not exist',
+      reviewOfNothing.ok === false && /does not exist/.test(reviewOfNothing.error ?? ''),
     )
   }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced
