@@ -588,6 +588,18 @@ does not accept the completion either: it refuses the `completed` transition wit
 and `update_task` moves the task into that intermediate status with the evidence
 (`changedPaths`, `acceptanceResults`, `commandsRun`, `output`) already stored.
 
+**A shared page is declared once, not named per handback (Φ1 feedback F4c).** A plan that
+has every lane append to the same page (`docs/PLANS.md`, `docs/TROUBLESHOOTING.md`) must
+list those paths in `taskPlanning.sharedInScope`. They are then part of every
+implementation/repair lane's `inScope` — so the audit has nothing to hold — and excluded
+from the overlap comparison, so sibling lanes are not reported as racing over them. The
+alternative the dx9 run's members were told to follow (keep the page out of
+`changedPaths` and name it in the handback) is the opposite of what this audit reads: a
+changed file nobody declared is exactly the case that lands in `awaiting_scope_review`,
+and the captain then pays an `accept_paths` round for discipline rather than for a
+mistake. `inScope` itself also accepts globs (`C_Core/shaders/**`, `docs/*.md`) since
+v0.4.0, so a whole generated tree can be declared in one pattern.
+
 `awaiting_scope_review` is not terminal. It blocks descendants exactly like
 `in_progress`, is never claimable, and blocks Delivery with
 `<id> is awaiting a scope decision (accept_paths, or reassign/supersede it)`. The captain
