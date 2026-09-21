@@ -105,7 +105,7 @@ import {
 import { openAgentTeamMember } from '../lib/client/session-navigation.js'
 import { renderStatus, steerCaptainReport } from '../lib/tools.js'
 import { selectStatusTasks } from '../lib/status.js'
-import { verifiedTaskIds } from '../lib/quality-gates.js'
+import { classifyChangedPath, pathMatchesScope, verifiedTaskIds } from '../lib/quality-gates.js'
 import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt, resolveProfileSharedInScope, resolveProfileTaskPlanning } from '../lib/profiles.js'
 import { memberPersona, memberWelcome } from '../lib/members.js'
 import { assignmentPrompt, collectCompletedDependencyOutputs, formatDependencyOutputs, workingMemberNames } from '../lib/scheduler.js'
@@ -3047,6 +3047,31 @@ console.log('6d/8 replan a live team (WP7/S17)')
     check(
       'a review still refuses a target that does not exist',
       reviewOfNothing.ok === false && /does not exist/.test(reviewOfNothing.error ?? ''),
+    )
+  }
+  // Φ1 feedback F4b: `inScope` wildcards were compared literally, so a lane declaring
+  // `C_Core/shaders/**` had its four real files read as outside the contract; two lanes
+  // sat in awaiting_scope_review and cost three accept_paths rounds.
+  {
+    check(
+      'a wildcard scope covers the files it names',
+      pathMatchesScope('C_Core/shaders/light/horizon.glsl', 'C_Core/shaders/**')
+        && pathMatchesScope('C_Core/shaders/compiled/sm3/build.json', 'C_Core/shaders/**')
+        && pathMatchesScope('C_Core/shaders/_dx9.hfx', 'C_Core/shaders/**')
+        && pathMatchesScope('C_Core/shaders', 'C_Core/shaders/**')
+        && pathMatchesScope('C_Core/shaders/light/horizon.glsl', 'C_Core/shaders/light/**')
+        // `*` stays inside one segment, so a sibling directory is not covered.
+        && !pathMatchesScope('C_Core/other/horizon.glsl', 'C_Core/shaders/*')
+        && pathMatchesScope('C_Core/shaders/horizon.glsl', 'C_Core/shaders/*.glsl')
+        && !pathMatchesScope('C_Core/shaders/light/horizon.glsl', 'C_Core/shaders/*.glsl')
+        && pathMatchesScope('docs/PLANS.md', '**'),
+      `wildcard=${String(pathMatchesScope('C_Core/shaders/light/horizon.glsl', 'C_Core/shaders/**'))}`,
+    )
+    check(
+      'a wildcard scope is honoured by the completion audit',
+      classifyChangedPath('C_Core/shaders/light/horizon.glsl', ['C_Core/shaders/**']) === 'in_scope'
+        && classifyChangedPath('C_Core/other/x.glsl', ['C_Core/shaders/**']) === 'undeclared'
+        && classifyChangedPath('C_Core/shaders/x.glsl', [], ['C_Core/shaders/**']) === 'out_of_scope',
     )
   }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced

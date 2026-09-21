@@ -258,16 +258,45 @@ export function pathMatchesScope(path: string, pattern: string): boolean {
   const rawPattern = pattern.trim().replaceAll('\\', '/')
   if (rawPattern.startsWith('~') || rawPattern.startsWith('/') || /^[A-Za-z]:/.test(rawPattern)) return false
   const directory = rawPattern.endsWith('/')
+  // Φ1 feedback F4b: a lane declared `C_Core/shaders/**` and its four real files were read
+  // as *outside the contract* — the wildcard was compared literally. Two lanes were held
+  // in `awaiting_scope_review` and cost three accept_paths rounds. `**` spans directories,
+  // `*` and `?` stay inside one segment, and a trailing `/**` also matches the directory.
+  const glob = /[*?]/u.test(rawPattern)
   const normalizedPattern = normalizeWorkspacePath(rawPattern)
   if (normalizedPattern === undefined) {
     if (directory && (rawPattern === './' || rawPattern === '/' || rawPattern === '.')) return true
     return false
   }
-  if (directory || rawPattern === './' || rawPattern === '.') {
-    if (normalizedPattern === '') return true
+  if (glob) {
+    if (new RegExp(`^${globToRegex(normalizedPattern)}$`, 'u').test(normalizedPath)) return true
+    if (rawPattern.endsWith('/**') && normalizedPath === normalizedPattern.replace(/\/\*\*$/u, '')) return true
+    return false
+  }
+  if (directory || rawPattern === './' || rawPattern === '.' || rawPattern === '**' || rawPattern === '*') {
+    if (normalizedPattern === '' || rawPattern === '**' || rawPattern === '*') return true
     return normalizedPath === normalizedPattern || normalizedPath.startsWith(`${normalizedPattern}/`)
   }
   return normalizedPath === normalizedPattern
+}
+
+/** Translate one workspace glob into a regular expression source. */
+function globToRegex(pattern: string): string {
+  let source = ''
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index] ?? ''
+    if (character === '*') {
+      if (pattern[index + 1] === '*') {
+        source += '.*'
+        index += 1
+      } else {
+        source += '[^/]*'
+      }
+      continue
+    }
+    source += character === '?' ? '[^/]' : character.replace(/[.+^${}()|[\]\\]/gu, '\\$&')
+  }
+  return source
 }
 
 function isDefaultExcluded(path: string): boolean {
