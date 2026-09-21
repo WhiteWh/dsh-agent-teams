@@ -3049,6 +3049,57 @@ console.log('6d/8 replan a live team (WP7/S17)')
       reviewOfNothing.ok === false && /does not exist/.test(reviewOfNothing.error ?? ''),
     )
   }
+  // Φ1 feedback F4, narrowed by the owner: two of the six refusals he reported were
+  // correct and are withdrawn. What remains is reproducible — `supersede_task` validated
+  // its inline replacement against the task being replaced, before the link that
+  // serializes them: `supersede_task(t115, …)` with a replacement declaring `chain.py`
+  // answered «inScope overlaps t115 at chain.py», where t115 is the lane it inherits.
+  {
+    const replaceeTeam = (extra = []) => ({
+      ...replanFixture(),
+      tasks: [
+        { id: 't115', subject: 'the lane being replaced', status: 'failed', dependencies: [], attempt: 1, kind: 'work', inScope: ['dcb/render/post/chain.py'], createdAt: 1, updatedAt: 1 },
+        ...extra,
+      ],
+    })
+    const replacementInput = {
+      subject: 'the replacement lane',
+      kind: 'implementation',
+      objective: 'take the lane over',
+      acceptance: ['the lane lands'],
+      verify: ['pytest -q'],
+      inScope: ['dcb/render/post/chain.py'],
+      nextTaskId: 't115',
+    }
+    const accepted = validateCreateTask(replaceeTeam(), replacementInput)
+    check(
+      'a replacement may declare the paths of the lane it replaces',
+      accepted.ok === true,
+      accepted.error ?? '',
+    )
+    const unrelated = validateCreateTask(replaceeTeam([
+      { id: 't209', subject: 'an unrelated open lane', status: 'in_progress', dependencies: [], attempt: 1, kind: 'implementation', inScope: ['tools/build_shaders.py'], createdAt: 2, updatedAt: 2 },
+    ]), { ...replacementInput, inScope: ['tools/build_shaders.py'] })
+    check(
+      'a replacement is still refused when another open lane holds the same path',
+      unrelated.ok === false && /overlaps t209/.test(unrelated.error ?? ''),
+      unrelated.error ?? '',
+    )
+    const staleFailed = validateCreateTask(replaceeTeam([
+      { id: 't182', subject: 'a lane that failed an hour ago', status: 'failed', dependencies: [], attempt: 1, kind: 'work', inScope: ['C_Core/shaders/**'], createdAt: 2, updatedAt: 2 },
+    ]), { ...replacementInput, inScope: ['C_Core/shaders/light/x.glsl'], nextTaskId: 't404' })
+    check(
+      'a failed lane does not reserve paths today, and the refusal text is ready if it ever does',
+      // Measured, not assumed: the overlap loop walks `OPEN_STATUSES`
+      // (pending/claimed/in_progress), so a `failed` lane — retryable as it is — is
+      // already skipped. The owner asked the refusal to name retryability when it fires;
+      // the wording is in place for the case a failed holder becomes reachable, and this
+      // check pins the behaviour that exists so the two cannot drift apart silently.
+      staleFailed.ok === true
+        && gatesSource.includes('failed and is retryable, so its paths stay reserved'),
+      staleFailed.error ?? 'a failed lane was treated as an open holder',
+    )
+  }
   // Φ1 feedback F4b: `inScope` wildcards were compared literally, so a lane declaring
   // `C_Core/shaders/**` had its four real files read as outside the contract; two lanes
   // sat in awaiting_scope_review and cost three accept_paths rounds.

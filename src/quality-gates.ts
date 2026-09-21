@@ -495,12 +495,26 @@ export function validateCreateTask(team: TeamState, input: CreateTaskInput): Val
       // serialization: nothing orders the candidate after `other` there, so that
       // conflict is still reported.
       if (serializedAgainst(team.tasks, other, dependencies, input.nextTaskId)) continue
+      // Φ1/F4, narrowed by the owner (2026-09-21): an inline replacement was validated
+      // against the very task it replaces, **before** the link that serializes them
+      // existed — `supersede_task(t115, …)` with a replacement declaring `chain.py`
+      // answered «inScope overlaps t115 at chain.py», where t115 is the lane it inherits.
+      // A replacement exists to take that lane over, so the two are serialized by
+      // construction: the replaced task counts as serialized for the duration of the call.
+      if (input.nextTaskId !== undefined && other.id === input.nextTaskId) continue
       const otherScope = shared.length === 0 ? (other.inScope ?? []) : subtractScope(other.inScope ?? [], shared)
       const overlap = inScopeOverlap(ownScope, otherScope)
       if (overlap.length > 0) {
+        // A `failed` lane still reserves its paths because `retry` can bring it back —
+        // and the refusal has to say that, or a captain who reads "terminal" cannot tell
+        // why the check refuses (the field refusal for t182 came from a lane that failed
+        // an hour earlier and was never retried).
+        const why = other.status === 'failed'
+          ? ` (${other.id} failed and is retryable, so its paths stay reserved; retry, supersede or cancel it to free them)`
+          : ''
         return {
           ok: false,
-          error: `inScope overlaps ${other.id} at ${overlap.join(', ')}; serialize these tasks or split the paths`,
+          error: `inScope overlaps ${other.id} at ${overlap.join(', ')}; serialize these tasks or split the paths${why}`,
         }
       }
     }
