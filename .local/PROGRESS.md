@@ -95,6 +95,8 @@ the pre-step count, and FAIL must stay 0.
 | S26 | round 3.4: a phase can be closed | done | | captain-only `close_phase` replan op (allowed only when every task of the phase is terminal), closed phases refuse `create_task`/`add_task`/`move_phase` and point at a new phase, snapshot publishes `closed`/`closedAt`, board marks the column with a `Closed` chip and the plan editor disables it; five new checks; verify 285 PASS/0 FAIL |
 | S27 | round 3.5: one progress bar in three colours | done | | `origin` (`plan`/`added`/`followup`) stamped at creation from `planHasSettled`, `progress.segments` on the host payload, three-zoned bar + named legend in the panel, four locale keys; four new checks; verify 285 PASS/0 FAIL; preview `.local/logs/ui-round3/progress-closed-phase.png` |
 | S28 | hotfix + release 0.3.0 | done | | memoised chain walk (48 tasks/12 layers: 7 477 ms → 0.4 ms; 56/14: 130 230 ms → 0.4 ms) + `PanelErrorBoundary`; verify 287 PASS/0 FAIL; full `pnpm verify` exit 0; artifact 2 319 106 B / SHA256 `F8C2BA3E…F43F` installed and the bundle re-enabled in the web profile; tag v0.3.0 |
+| S29 | Φ1/F1: replaced session no longer disables replan | done | | validation skips terminal tasks (settled = history, `failed` included) + the retry path demands an owner; four RED-first checks; verify 291 PASS/0 FAIL; `fc8a6b9` |
+| S30 | Φ1/F3: a removal requeues only live work | done | | `requeueMemberTasks` + `requeueableOnRemoval` (pending/claimed/in_progress/awaiting_scope_review); RED showed the old filter requeueing `t1,t2,t3,t4,t6,t7,t8` (failed, cancelled, superseded); verify 293 PASS/0 FAIL; `a49e306` |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -311,6 +313,37 @@ for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool beha
 change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S30 — Φ1/F3: a member removal requeues only the work that still needs an owner (done)
+
+The dx9 run answered `remove_member frame` with
+`requeued tasks: t89, t93, t102, t109, t112, t113, t114, t164`; six of the eight had been
+superseded long before, and the pool made them look claimable. Four incidents followed in
+one hour: two lanes were claimed by the wrong member, and `t102` put a **second writer** on
+a file a live lane was editing (the holder noticed the tree change inside its own turn and
+stopped — the plugin never told either lane).
+
+- **Cause:** the removal loop skipped only `completed`, and `invalidateTaskAttempt` sets
+  `status = 'pending'` while clearing the attempt — so `failed`, `cancelled` and
+  `superseded` lanes were resurrected into the shared pool and reported as requeued work.
+- **Fix:** the requeue is now an exported state helper, `requeueMemberTasks(team, name)`,
+  driven by `requeueableOnRemoval` (`LIVE_TASK_STATUSES`: `pending`, `claimed`,
+  `in_progress`, `awaiting_scope_review`). Every settled status is history and keeps both
+  its status and the name of the member that did the work; the tool handler is three lines
+  shorter and the rule is testable without a tool context.
+- **Why the claim path needed no change:** `TASK_TRANSITIONS` already refuses
+  `superseded/cancelled/completed → claimed`, and the scheduler's ready filter only ever
+  offers a `pending` task — the pool listing them was the only way a dead lane could run.
+  The new check asserts both halves, so a future edit cannot quietly reopen the door.
+- **Interaction with F1:** because a removal now leaves a red (`failed`) lane untouched, a
+  settled `failed` task keeps the replaced member's name — so F1's historical set had to
+  cover **every** terminal status, `failed` included. The only path that can revive such a
+  lane is `retry`, and that path refuses without a new owner (S29). A check asserts the
+  batch still works with a red lane of the replaced session in the graph.
+- **RED first:** `a member removal requeues only the work that still needs an owner` failed
+  with `requeued t1,t2,t3,t4,t6,t7,t8` — the field's exact shape (failed, cancelled and
+  superseded lanes coming back) — plus `a dead lane never becomes claimable work again`.
+- **Verification:** build exit 0; `verify.mjs` 293 PASS / 0 FAIL.
 
 ### S29 — Φ1/F1: a replaced session's name on history no longer disables replan (done)
 
