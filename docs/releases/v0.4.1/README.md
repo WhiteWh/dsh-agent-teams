@@ -35,8 +35,9 @@ green, so both modes are pinned.
 
 | Item | Value |
 | --- | --- |
-| Artifact | `.local/dist/nanmicoder-dsh-agent-teams-0.4.1.tgz` |
-| SHA-256 | recorded below with the rollout |
+| Artifact | `.local/dist/nanmicoder-dsh-agent-teams-0.4.1.tgz` — 2 337 862 bytes |
+| SHA-256 | `72968dc7b089c4c9f0c00a69a8ce3c7c83894e24c928a903e113589da111257b` |
+| Staged copy | `D:\OwlCats\AI_Tools\dsh-agent-teams-0.4.1.tgz` for the profile install |
 | Rollout | pending the owner's go-ahead; the live profile carries 0.4.0, installed from the 0.4.0 tarball |
 | Rollback target | the 0.4.0 tarball, still on disk |
 | Owner action at rollout | install with `--save-exact file:…0.4.1.tgz`, then refresh the page (a client-only change needs no restart, but a restart is harmless) |
