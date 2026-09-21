@@ -88,6 +88,7 @@ import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeam
 import { installMailboxAdmission, mailboxPrompt } from './mailbox.ts'
 import { resolveTeamProfile } from './profiles.ts'
 import { planProgress } from './progress.ts'
+import { selectStatusTasks } from './status.ts'
 import { replanTeam } from './replan.ts'
 
 export { steerCaptainReport } from './members.ts'
@@ -2843,9 +2844,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_status',
-    description: 'Team snapshot: members with live activity and tasks with status/assignee/dependencies/output. Captains also see every team mailbox; members see only their own inbox. Use after mailbox progress deliveries or for an explicit status request. After dispatch, end your turn while members work; do not repeatedly poll.',
+    description: 'Team snapshot: members with live activity, the progress percentage and the tasks that still need attention (pending, running, held for a scope review or failed). Settled history — completed, cancelled, superseded lanes — is counted but not printed, and its output text is left out unless asked for: pass live=false for every task, task_id for one task in full, since to see what changed, include_output for the history\'s output text. Captains also see every team mailbox; members see only their own inbox. Use after mailbox progress deliveries or for an explicit status request. After dispatch, end your turn while members work; do not repeatedly poll.',
     parameters: {
-      team_id: { type: 'string', description: 'Team id to report on. Omit it to list every team the caller leads or belongs to.' },},
+      team_id: { type: 'string', description: 'Team id to report on. Omit it to list every team the caller leads or belongs to.' },
+      live: { type: 'boolean', description: 'Default true: report only the work that still needs attention. Pass false to list every task, including settled history.' },
+      task_id: { type: 'string', description: 'Report exactly one task in full, including its output text.' },
+      since: { type: 'number', description: 'Only tasks updated at or after this epoch-millisecond timestamp — "what changed since my last call".' },
+      include_output: { type: 'boolean', description: 'Include the output text of settled tasks (completed/cancelled/superseded). Off by default to keep the report readable.' },},
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
       render: (_args, value) => [{ type: 'text', text: renderStatus(value) }],
@@ -2911,7 +2916,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           activity: member.id !== '' ? (activity.get(member.id) ?? 'unknown') : 'unspawned',
           ...member.spawnError === undefined ? {} : { spawn_error: member.spawnError },
         }))
-      const tasks = team.tasks.map((task) => ({
+      // Φ1 feedback F6: the report is bounded by default. 183 tasks with their output
+      // text was 20–30 KB per call and crashed the session twice; the selection keeps
+      // the work a captain must act on, counts the history it left out, and can still
+      // reach everything through `live`, `task_id`, `since` and `include_output`.
+      const selection = selectStatusTasks(team.tasks, {
+        ..._args.live === undefined ? {} : { live: _args.live },
+        ..._args.task_id === undefined ? {} : { task_id: _args.task_id },
+        ..._args.since === undefined ? {} : { since: _args.since },
+        ..._args.include_output === undefined ? {} : { include_output: _args.include_output },
+      })
+      const tasks = selection.tasks.map((task) => ({
         id: task.id,
         subject: task.subject,
         status: task.status,
@@ -3001,6 +3016,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         viewer: identity.name,
         members,
         tasks,
+        // Φ1 feedback F6: the report states what it left out instead of silently
+        // truncating, so "183 tasks" is still visible as a fact.
+        tasks_total: team.tasks.length,
+        tasks_hidden: selection.hidden,
+        tasks_outputs_dropped: selection.outputs_dropped,
+        tasks_filter: {
+          live: _args.live !== false,
+          ..._args.task_id === undefined ? {} : { task_id: _args.task_id },
+          ..._args.since === undefined ? {} : { since: _args.since },
+          include_output: _args.include_output === true,
+        },
         // WP8/S16: the plan percentage is computed here, not in the panel, so
         // the text report and the GUI cannot disagree about the same team.
         progress: progressPayload(team.tasks, team.profile?.progressWeights),
@@ -3500,7 +3526,7 @@ function taskCheckGlyph(status: string): string {
 }
 
 /** Render the status snapshot as compact text for the model. */
-function renderStatus(value: JsonValue): string {
+export function renderStatus(value: JsonValue): string {
   const listed = value as {
     teams?: { team_id: string; name: string; phase: string; halted: boolean; tasks: { total: number; done: number }; members: number; activeWorkers: number; slots?: string[]; queued?: number; role: string }[]
     limits?: { max_teams_per_workspace: number; max_teams_per_session: number; max_workers_per_team: number; max_concurrent_workers_global: number }
@@ -3539,6 +3565,10 @@ function renderStatus(value: JsonValue): string {
       spawn_error?: string
     }[]
     tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
+    tasks_total?: number
+    tasks_hidden?: number
+    tasks_outputs_dropped?: number
+    tasks_filter?: { live: boolean; task_id?: string; since?: number; include_output: boolean }
     progress?: { percent: number; mode: string; percent_by_kind: number; percent_equal: number; completed: number; total: number; running: number; blocked: number; failed: number; waived: number; superseded: number; cancelled: number }
     slots?: { working: { member: string; task: string }[]; queued: number; team_workers: number; max_workers_per_team: number }
     limits?: { max_teams_per_workspace: number; max_teams_per_session: number; max_workers_per_team: number; max_concurrent_workers_global: number }
@@ -3556,9 +3586,13 @@ function renderStatus(value: JsonValue): string {
     coverage?: { goal_item: string; status: string; task_ids: string[] }[]
     delivery?: { ok: boolean; blockers: string[] }
   }
+  // Φ1 feedback F6: the report says what it left out, so a bounded answer never reads
+  // as a small team.
+  const tasksTotal = team.tasks_total ?? team.tasks.length
+  const tasksHidden = team.tasks_hidden ?? Math.max(0, tasksTotal - team.tasks.length)
+  const outputsDropped = team.tasks_outputs_dropped ?? 0
   const flags = [
-    team.halted ? 'halted' : undefined,
-    team.escalated ? 'escalated' : undefined,
+    team.halted ? 'halted' : undefined,    team.escalated ? 'escalated' : undefined,
     team.deliverable ? 'deliverable' : undefined,
     team.loop_state && team.loop_state !== 'running' && team.loop_state !== 'halted' && team.loop_state !== 'escalated'
       ? team.loop_state
@@ -3595,7 +3629,7 @@ function renderStatus(value: JsonValue): string {
       + ` running ${String(team.progress.running)}, blocked ${String(team.progress.blocked)},`
       + ` failed ${String(team.progress.failed)}, waived ${String(team.progress.waived)})`,
     ],
-    `Tasks (${team.tasks.length}):`,
+    `Tasks (${String(team.tasks.length)}${tasksHidden === 0 ? '' : ` shown of ${String(tasksTotal)}`}):`,
     ...team.tasks.map((task) => {
       const deps = task.dependencies.length > 0 ? ` (deps: ${task.dependencies.join(',')})` : ''
       const output = task.output !== undefined ? `\n      output: ${task.output.slice(0, 300)}` : ''
@@ -3612,6 +3646,12 @@ function renderStatus(value: JsonValue): string {
       const revised = task.revisions === undefined || task.revisions === 0 ? '' : ` revised ×${task.revisions}`
       return `  - ${taskCheckGlyph(task.status)} ${task.id} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
     }),
+    ...tasksHidden === 0 ? [] : [
+      `  … ${String(tasksHidden)} settled task(s) hidden`
+      + `${outputsDropped === 0 ? '' : `, ${String(outputsDropped)} output text(s) dropped`}`
+      + ' — pass live=false for every task, task_id for one task in full,'
+      + ' since for what changed, include_output for the history\'s output.',
+    ],
     ...team.coverage === undefined || team.coverage.length === 0 ? [] : [
       'Coverage:',
       ...team.coverage.map((row) => `  - ${row.goal_item}: ${row.status} (${row.task_ids.join(',') || 'none'})`),

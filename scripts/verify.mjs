@@ -100,7 +100,8 @@ import {
   zh as agentTeamsZh,
 } from '../lib/client/locales.js'
 import { openAgentTeamMember } from '../lib/client/session-navigation.js'
-import { steerCaptainReport } from '../lib/tools.js'
+import { renderStatus, steerCaptainReport } from '../lib/tools.js'
+import { selectStatusTasks } from '../lib/status.js'
 import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt, resolveProfileSharedInScope, resolveProfileTaskPlanning } from '../lib/profiles.js'
 import { memberPersona, memberWelcome } from '../lib/members.js'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, assignmentPrompt } from '../lib/scheduler.js'
@@ -1319,6 +1320,90 @@ check('t1 depth 0', depths.get('t1') === 0)
 check('t2 depth 1 (longest path)', depths.get('t2') === 1)
 check('t3 depth 2', depths.get('t3') === 2)
 check('missing dep contributes no depth', depths.get('t4') === 0)
+
+// Φ1 feedback F6 (dx9 run): `agent_teams_status` echoed every task with its output —
+// 20–30 KB at 183 tasks, which crashed the session twice and pushed the captain to grep
+// the harness spill file instead of asking the plugin. The report is bounded now, and
+// the selection is a pure module so the payload and the text cannot disagree.
+{
+  const statusFixture = () => {
+    const tasks = []
+    for (let index = 1; index <= 183; index += 1) {
+      const settled = index <= 170
+      tasks.push({
+        id: `t${String(index)}`,
+        subject: `lane ${String(index)}`,
+        status: settled ? 'completed' : index <= 175 ? 'pending' : index <= 178 ? 'in_progress' : 'failed',
+        assignee: 'worker',
+        dependencies: [],
+        attempt: settled ? 1 : 0,
+        kind: 'work',
+        // 300 characters is what the report used to print for each settled task.
+        output: settled ? `result of lane ${String(index)}: ${'x'.repeat(280)}` : `report of lane ${String(index)}`,
+        createdAt: index,
+        updatedAt: index,
+      })
+    }
+    return tasks
+  }
+  const fixture = statusFixture()
+  const view = selectStatusTasks(fixture)
+  check(
+    'the status report shows the work that needs attention, not the settled history',
+    view.tasks.length === 13
+      && view.hidden === 170
+      && view.outputs_dropped === 0
+      && view.tasks.every(task => task.status !== 'completed')
+      && view.tasks.some(task => task.status === 'failed'),
+    `shown=${String(view.tasks.length)} hidden=${String(view.hidden)} dropped=${String(view.outputs_dropped)}`,
+  )
+  check(
+    'a status call can still reach every task, one task, or what changed',
+    selectStatusTasks(fixture, { live: false }).tasks.length === 183
+      && selectStatusTasks(fixture, { live: false, include_output: true }).tasks.filter(task => task.output !== undefined).length === 183
+      && selectStatusTasks(fixture, { task_id: 't7' }).tasks.length === 1
+      && selectStatusTasks(fixture, { task_id: 't7' }).tasks[0]?.output !== undefined
+      && selectStatusTasks(fixture, { since: 180 }).tasks.length === 4
+      && selectStatusTasks(fixture, { live: false }).outputs_dropped === 170,
+    `live=false → ${String(selectStatusTasks(fixture, { live: false }).tasks.length)}, since=180 → ${String(selectStatusTasks(fixture, { since: 180 }).tasks.length)}`,
+  )
+  const boundedPayload = {
+    team_name: 'dx9',
+    viewer: 'captain',
+    members: [{ name: 'worker', role: 'implementer', provider: 'p', model: 'm', reasoning_effort: '', status: 'idle', activity: 'idle' }],
+    tasks: selectStatusTasks(fixture).tasks,
+    tasks_total: fixture.length,
+    tasks_hidden: selectStatusTasks(fixture).hidden,
+    tasks_outputs_dropped: 0,
+    progress: { percent: 93, mode: 'byKind', percent_by_kind: 93, percent_equal: 93, completed: 170, total: 183, running: 3, blocked: 0, failed: 5, waived: 0, superseded: 0, cancelled: 0 },
+    captain_inbox: [],
+    member_inboxes: {},
+    mailbox_warnings: [],
+    mailbox_warning_count: 0,
+  }
+  const unboundedPayload = { ...boundedPayload, tasks: fixture, tasks_hidden: 0, member_inboxes: {} }
+  const rendered = renderStatus(boundedPayload)
+  const renderedUnbounded = renderStatus(unboundedPayload)
+  check(
+    'the rendered status stays bounded and says what it left out',
+    rendered.length < 4000
+      && rendered.includes('170 settled task(s) hidden')
+      && rendered.includes('live=false for every task')
+      // The flood this replaced, measured on the same fixture.
+      && renderedUnbounded.length > 40000,
+    `bounded=${String(rendered.length)} chars, unbounded=${String(renderedUnbounded.length)} chars`,
+  )
+  const statusBlock = toolsSource.slice(
+    toolsSource.indexOf("name: 'agent_teams_status'"),
+    toolsSource.indexOf("name: 'agent_teams_resume'"),
+  )
+  check(
+    'the status tool exposes the filters that make a bounded report usable',
+    ['live: { type:', 'task_id: { type:', 'since: { type:', 'include_output: { type:']
+      .every((marker) => statusBlock.includes(marker))
+      && statusBlock.includes('selectStatusTasks(team.tasks, {'),
+  )
+}
 
 console.log('6/8 client panel projections')
 const liveTeam = {
