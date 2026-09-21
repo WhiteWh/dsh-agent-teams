@@ -46,9 +46,11 @@ run: `verify.mjs` **315 PASS / 0 FAIL**, `lifecycle-verify` **161 PASS / 0 FAIL*
 | Artifact | `.local/dist/nanmicoder-dsh-agent-teams-0.4.0.tgz` — 2 335 026 bytes |
 | SHA-256 | `0d5e04b369a0c3cc76b235e5c6c34d49d6771eea08695b559167d7d7a76e546c` |
 | Staged copy | `D:\OwlCats\AI_Tools\dsh-agent-teams-0.4.0.tgz` for the profile install |
-| Rollout | **not installed** — the owner rolls it out later; the live profile still carries 0.3.0 and was not touched |
+| Rollout | **installed** into `C:\Users\whitl\.dsh\profiles\web` (`file:D:/OwlCats/AI_Tools/dsh-agent-teams-0.4.0.tgz`): version 0.4.0, `lib/client.js`, `lib/index.js`, `lib/progress.js`, `lib/replan.js`, `lib/status.js` and `lib/client/activity-model.js` byte-identical to this checkout, `@nanmicoder/dsh-agent-teams` present in `dsh.profile.bundles`, the profile patch's `disabled` flag absent, and `dsh --profile web --dump-config` resolving `id: agent-teams` with the profile's config |
+| Profile backups | `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `cordis.patch.yml` as `*.bak-2026-09-21-pre-0.4.0` |
+| Tag | annotated `v0.4.0` with the branch marker and the artifact facts, pushed to the fork together with the branch |
 | Rollback target | the 0.3.0 tarball, still on disk |
-| Owner action at rollout | install with `--save-exact file:…0.4.0.tgz`, restart Harness, open the fresh `?token=` URL it prints |
+| Owner action | restart Harness and open the **fresh** `?token=` URL it prints (the launch token is regenerated per process), then refresh the page |
 
 ## Not done (declared, with reasons)
 
