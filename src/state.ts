@@ -17,7 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { OPEN_TASK_STATUSES, SETTLED_TASK_STATUSES, TERMINAL_TASK_STATUSES, requeueableOnRemoval, type TaskOrigin, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, SETTLED_TASK_STATUSES, TERMINAL_TASK_STATUSES, requeueableOnRemoval, type TaskOrigin, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamPlanPhase, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isKnownDelta, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
@@ -416,6 +416,37 @@ export function requeueMemberTasks(team: TeamState, memberName: string): string[
     requeued.push(task.id)
   }
   return requeued
+}
+
+/**
+ * Declare a phase on first use (Φ1 feedback F7.1).
+ *
+ * The dx9 run ran **209 tasks with no phase at all**: `create_task(phase=…)` accepted
+ * only an already declared phase, and the only way to declare one was a `replan`
+ * `move_phase` — the tool that had died for that team (F1). A captain cutting the first
+ * lane of a phase knows that phase's name; refusing him until a second, heavier tool
+ * works is what left the owner staring at a graph grouped by nothing.
+ *
+ * The phase joins `plan.phases` with the task ids it already owns, and the caller
+ * attaches the new task (the graph is the caller's draft).
+ *
+ * @param team - the team record, mutated in place.
+ * @param phaseId - the phase id to declare (`Φ2`, `E0`, …).
+ * @param title - optional human title for the new phase.
+ * @returns the declared phase.
+ */
+export function declarePhaseOnUse(team: TeamState, phaseId: string, title?: string): TeamPlanPhase {
+  const plan = planOf(team)
+  const existing = (plan.phases ?? []).find((candidate) => candidate.id === phaseId)
+  if (existing !== undefined) return existing
+  const trimmedTitle = title?.trim() ?? ''
+  const phase: TeamPlanPhase = {
+    id: phaseId,
+    ...trimmedTitle === '' ? {} : { title: trimmedTitle },
+    taskIds: [],
+  }
+  team.plan = { ...plan, phases: [...(plan.phases ?? []), phase] }
+  return phase
 }
 
 /**

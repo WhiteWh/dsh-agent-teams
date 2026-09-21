@@ -37,6 +37,7 @@ import {
   isAcceptanceCriterion,
   isKnownDelta,
   isTeamTask,
+  declarePhaseOnUse,
   originForNewTask,
   requeueMemberTasks,
   readMailbox,
@@ -2868,6 +2869,51 @@ console.log('6d/8 replan a live team (WP7/S17)')
       workingMemberNames(capTeam).join(',') === 'busy'
         && !schedulerSource.includes("member.status === 'working').length"),
       `working=${workingMemberNames(capTeam).join(',')}`,
+    )
+  }
+  // Φ1 feedback F7.1 (the largest finding for a person watching the run): `create_task`
+  // accepted only an already declared phase, and declaring one was a `replan`
+  // `move_phase` — the tool that had died for that team (F1). The run therefore produced
+  // **209 tasks with no phase at all**, and the owner's board showed one derived column
+  // while his brief had Φ0…Φ4. A captain cutting the first lane of a phase knows its
+  // name; the phase is now declared on first use, with an optional title, and a staged
+  // plan stays strict.
+  {
+    const emptyPlanTeam = {
+      ...replanFixture(),
+      tasks: [],
+      taskSeq: 0,
+      plan: { revision: 3, updatedAt: 1 },
+    }
+    const declared = declarePhaseOnUse(emptyPlanTeam, 'Φ2', 'Φ2 — light')
+    declared.taskIds.push('t1')
+    const again = declarePhaseOnUse(emptyPlanTeam, 'Φ2', 'ignored for an existing phase')
+    check(
+      'create_task declares an undeclared phase on first use',
+      emptyPlanTeam.plan?.phases?.length === 1
+        && emptyPlanTeam.plan?.phases?.[0]?.id === 'Φ2'
+        && emptyPlanTeam.plan?.phases?.[0]?.title === 'Φ2 — light'
+        && emptyPlanTeam.plan?.phases?.[0]?.taskIds.join(',') === 't1'
+        // A second call is idempotent: the helper never appends a duplicate id.
+        && again === declared,
+      JSON.stringify(emptyPlanTeam.plan?.phases),
+    )
+    // Without a title the phase is still usable — it renders as "Phase N" until named.
+    const untitled = declarePhaseOnUse({ ...replanFixture(), tasks: [], taskSeq: 0, plan: { revision: 1, updatedAt: 1 } }, 'E9')
+    check(
+      'a phase declared without a title stays valid',
+      untitled.id === 'E9' && untitled.title === undefined && untitled.taskIds.length === 0,
+    )
+    const createTaskSource = toolsSource.slice(
+      toolsSource.indexOf("name: 'agent_teams_create_task'"),
+      toolsSource.indexOf("name: 'agent_teams_update_task'"),
+    )
+    check(
+      'the tool declares on first use, refuses a closed phase, and stays strict while staged',
+      createTaskSource.includes('declarePhaseOnUse(fresh, phaseId, args.phase_title)')
+        && createTaskSource.includes("existing === undefined && fresh.phase === 'staged'")
+        && createTaskSource.includes('phase_created: createdPhase')
+        && createTaskSource.includes('phase_title: { type:'),
     )
   }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced

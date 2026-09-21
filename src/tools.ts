@@ -29,6 +29,7 @@ import {
   CAPTAIN_KEY,
   createMessage,
   createTeamDir,
+  declarePhaseOnUse,
   findTeamsByCaptain,
   findTeamsByParticipant,
   listTeams,
@@ -1601,7 +1602,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       sourceTaskId: { type: 'string', description: 'Source implementation/artifact. Required for kind=repair.' },
       sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids this repair must close.' },
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
-      phase: { type: 'string', description: 'Declared phase id to place this task in (`plan.phases`, from `taskPlanning.phases` or a replan `move_phase`). An unknown phase is refused, and so is a closed one — declare a new phase instead. Omit it for an unphased task.' },
+      phase: { type: 'string', description: 'Phase id to place this task in. On a running team an unknown id declares the phase on first use (give it a phase_title), so lanes can be grouped from the first one; on a staged plan the id must already be declared. A closed phase is refused: declare a new one instead.' },
+      phase_title: { type: 'string', description: 'Title for a phase this call declares (Φ2 — light, Recon, …). Ignored for a phase that already exists.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
     },
@@ -1724,16 +1726,20 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
-        // WP7/S17: a task added to a declared phase joins that phase. Round 3: a
-        // phase the captain closed takes no new work — the refusal points at the
-        // declared phases and at the only way forward, a new phase.
+        // WP7/S17: a task added to a declared phase joins that phase. Φ1/F7.1: on a
+        // running team an unknown id **declares** the phase (with `phase_title`), so the
+        // captain can group lanes from the first one instead of waiting for a replan; a
+        // staged plan stays strict, because its phases are declared in the plan itself.
         const phaseId = args.phase?.trim() ?? ''
+        let createdPhase = false
         if (phaseId !== '') {
           const phases = fresh.plan?.phases ?? []
-          const phase = phases.find((candidate) => candidate.id === phaseId)
-          if (phase === undefined) {
+          const existing = phases.find((candidate) => candidate.id === phaseId)
+          if (existing === undefined && fresh.phase === 'staged') {
             throw new Error(`unknown phase "${phaseId}"; declared phases: ${phases.map((candidate) => candidate.id).join(', ') || 'none'}`)
           }
+          createdPhase = existing === undefined
+          const phase = existing ?? declarePhaseOnUse(fresh, phaseId, args.phase_title)
           if (phase.closed === true) {
             throw new Error(
               `phase "${phase.id}" is closed and takes no new work`
@@ -1759,6 +1765,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           status: task.status,
           kind: taskKindOf(task),
           ...task.assignee !== undefined ? { assignee: task.assignee } : {},
+          // Φ1/F7.1: the caller learns whether this call is what declared the phase.
+          ...phaseId === '' ? {} : { phase: phaseId, phase_created: createdPhase },
         }
       })
       await scheduler.kickTeam(workspace, team.id, captain)

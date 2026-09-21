@@ -2376,7 +2376,24 @@ try {
     staleTeam.members.find(member => member.name === 'stale').status = 'working'
     await writeTeam(capRoot, staleTeam)
 
-    const capTaskCreated = await capCall('agent_teams_create_task', { subject: 'lane for the idle member', assignee: 'fresh' })
+    const capTaskCreated = await capCall('agent_teams_create_task', {
+      subject: 'lane for the idle member',
+      assignee: 'fresh',
+      // Φ1/F7.1 end to end: the first lane of a phase declares it, title and all.
+      phase: 'Φ2',
+      phase_title: 'Φ2 — light',
+    })
+    const phaseAfterCreate = (await readTeam(capRoot, 'cap-fence')).plan?.phases ?? []
+    check(
+      'the first lane of a phase declares that phase with its title',
+      capTaskCreated.phase === 'Φ2'
+        && capTaskCreated.phase_created === true
+        && phaseAfterCreate.length === 1
+        && phaseAfterCreate[0].id === 'Φ2'
+        && phaseAfterCreate[0].title === 'Φ2 — light'
+        && phaseAfterCreate[0].taskIds.includes(capTaskCreated.task_id),
+      JSON.stringify(phaseAfterCreate),
+    )
     const capTeamState = async () => (await readTeam(capRoot, 'cap-fence')).tasks.find(task => task.id === capTaskCreated.task_id)
     let capTask = await capTeamState()
     const capDeadline = Date.now() + 1500
