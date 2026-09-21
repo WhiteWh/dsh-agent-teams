@@ -104,7 +104,7 @@ import { renderStatus, steerCaptainReport } from '../lib/tools.js'
 import { selectStatusTasks } from '../lib/status.js'
 import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt, resolveProfileSharedInScope, resolveProfileTaskPlanning } from '../lib/profiles.js'
 import { memberPersona, memberWelcome } from '../lib/members.js'
-import { collectCompletedDependencyOutputs, formatDependencyOutputs, assignmentPrompt } from '../lib/scheduler.js'
+import { assignmentPrompt, collectCompletedDependencyOutputs, formatDependencyOutputs, workingMemberNames } from '../lib/scheduler.js'
 import {
   installMemberSelectionRuntime,
   resolveMemberLlmSelection,
@@ -2843,6 +2843,31 @@ console.log('6d/8 replan a live team (WP7/S17)')
         && transitionError('completed', 'claimed') !== undefined
         // And the ready-work filter only ever offers a `pending` task.
         && /task\.status === 'pending'/.test(schedulerSource),
+    )
+  }
+  // Φ1 item 2 (owner report: a lane assigned and pending next to an idle member that
+  // nothing woke until the captain messaged it, seven times in one run). The dispatch
+  // caps counted `member.status`, a field written from the host's `agent/status` stream,
+  // so one missed idle event made a team of idle members look full.
+  {
+    const capTeam = {
+      members: [
+        { name: 'busy', status: 'working' },
+        { name: 'stale', status: 'working' },
+        { name: 'idle', status: 'idle' },
+        { name: 'gone', status: 'removed' },
+      ],
+      tasks: [
+        { id: 't1', status: 'in_progress', assignee: 'busy' },
+        { id: 't2', status: 'pending', assignee: 'stale' },
+        { id: 't3', status: 'claimed', assignee: 'gone' },
+      ],
+    }
+    check(
+      'the dispatch cap counts the work a member holds, not a recorded status',
+      workingMemberNames(capTeam).join(',') === 'busy'
+        && !schedulerSource.includes("member.status === 'working').length"),
+      `working=${workingMemberNames(capTeam).join(',')}`,
     )
   }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced

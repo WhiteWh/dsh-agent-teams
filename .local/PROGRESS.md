@@ -98,6 +98,7 @@ the pre-step count, and FAIL must stay 0.
 | S29 | Φ1/F1: replaced session no longer disables replan | done | | validation skips terminal tasks (settled = history, `failed` included) + the retry path demands an owner; four RED-first checks; verify 291 PASS/0 FAIL; `fc8a6b9` |
 | S30 | Φ1/F3: a removal requeues only live work | done | | `requeueMemberTasks` + `requeueableOnRemoval` (pending/claimed/in_progress/awaiting_scope_review); RED showed the old filter requeueing `t1,t2,t3,t4,t6,t7,t8` (failed, cancelled, superseded); verify 293 PASS/0 FAIL; `a49e306` |
 | S31 | Φ1/F6: bounded status report | done | | pure `src/status.ts` (`selectStatusTasks`): default view = 13 of 183 tasks, settled history counted but not printed, history outputs dropped; tool gained `live`/`task_id`/`since`/`include_output`; rendered text 64 432 → 1 518 chars on the run's shape; verify 297 PASS/0 FAIL; `8e4a337` |
+| S32 | material-layers item 2: the dispatch cap counted a recorded status | done | | `workingMemberNames` counts the work a member holds (claimed/in_progress) instead of `member.status`, which is written from the host's `agent/status` stream; a new lifecycle scenario (`maxWorkersPerTeam: 1`, stale `working` record, no member holding work) is RED `spawns=0 status=pending` and GREEN `spawns=1 status=claimed`; verify 298 PASS/0 FAIL, lifecycle 160 PASS/0 FAIL |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -314,6 +315,43 @@ for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool beha
 change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S32 — the dispatch cap counted a recorded status, so idle members were never woken (done)
+
+Owner report (the material-layers page, item 2): *"Диспетчер плагина не поднимает участника
+на назначенную задачу. Это измерено сегодня семь раз (t185, t186, t194, t195, t202, t203,
+t204): задача назначена и pending, участник idle — и ничего не происходит, пока я не отправлю
+письмо."* — two captain actions per lane instead of one.
+
+- **Two reproductions, and only the second one fires.** The obvious sequence (assign to a
+  busy member, wait for it to go idle) already worked: a new lifecycle check
+  (`a member picks up its assigned lane when it goes idle, without a message from the
+  captain`) passes against the unfixed code as well, because the scheduler already kicks a
+  member on its `agent/status` idle edge.
+- **The real mechanism:** `kickTeam` and the create-time guards counted workers with
+  `member.status === 'working'`, and that field is written from the host's status stream.
+  One missed idle event leaves a member marked `working` forever, the per-team cap
+  (`maxWorkersPerTeam`, 8 by default, lower in the field profiles) then looks full, and
+  `kickTeam` returns before dispatching anybody — team-wide, not per lane. A manual message
+  steers the member directly and bypasses the cap, which is exactly why the owner's
+  workaround worked. Seven stalls in an eleven-member run fits a systematic cap, not luck.
+- **Fix:** `workingMemberNames(team)` counts the work a member actually holds (a
+  `claimed`/`in_progress` task) and `workingCount` uses it, so the cap is state-based
+  exactly like the create-time guards of owner decision D6 and cannot drift from the graph
+  the report shows.
+- **New scenario** (`maxWorkersPerTeam: 1`, two members, one with a stale `working` record
+  and no task): with the old counting it is **RED** — `spawns=0 status=pending`, the lane
+  sits assigned and pending with nobody woken — and with the fix **GREEN** —
+  `spawns=1 status=claimed`. The old counting was restored for one build to capture that
+  RED evidence, then put back.
+- **Checks:** the lifecycle scenario's two checks, the idle-edge check above, and a unit
+  check in `verify.mjs` (`the dispatch cap counts the work a member holds, not a recorded
+  status`, which also asserts the recorded-status counting is gone from the source).
+- **Also in this step:** the F6 change had broken three `lifecycle-verify` assertions that
+  read the full task list from a status call; they now ask for it explicitly
+  (`agent_teams_status { live: false }`) and a new check asserts the bounded default
+  (`shown=1 of 2`), so the bounded report is covered in both directions.
+- **Verification:** `verify.mjs` 298 PASS / 0 FAIL; `lifecycle-verify` 160 PASS / 0 FAIL.
 
 ### S31 — Φ1/F6: the status report is bounded by default (done)
 

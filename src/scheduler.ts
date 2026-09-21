@@ -221,8 +221,28 @@ function workspaceOf(agent: Agent): string {
 }
 
 /** Members of one team that are working right now, for the concurrency caps. */
+/**
+ * The members that are actually working.
+ *
+ * Φ1 item 2 (owner report, measured seven times in the material-layers run: t185, t186,
+ * t194, t195, t202, t203, t204 — a lane assigned and pending next to an idle member that
+ * nothing woke until the captain sent a message). The dispatch caps used to count
+ * `member.status`, and that field is written from the host's `agent/status` stream: one
+ * missed idle event left a member marked `working` forever, the cap looked full, and
+ * every idle member with an assigned lane stayed undispatched. Counting the work a
+ * member actually holds is state-based, exactly like the create-time guards (owner
+ * decision D6), and it cannot drift from the graph the report shows.
+ */
+export function workingMemberNames(team: Pick<TeamState, 'members' | 'tasks'>): string[] {
+  return team.members
+    .filter((member) => member.status !== 'removed')
+    .filter((member) => team.tasks.some((task) => task.assignee === member.name
+      && (task.status === 'claimed' || task.status === 'in_progress')))
+    .map((member) => member.name)
+}
+
 function workingCount(team: TeamState): number {
-  return team.members.filter((member) => member.status === 'working').length
+  return workingMemberNames(team).length
 }
 
 function teamLockKey(stateRoot: string, teamId: string): string {

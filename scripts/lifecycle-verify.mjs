@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { haltTeamWork, registerAgentTeamsTools } from '../lib/tools.js'
 import { buildActivationDirective, invokedAgentTeamsGoal, invokedAgentTeamsInvocation, installAgentTeamsGestureBoundary, profileCommandName, registerAgentTeamsCommand } from '../lib/command.js'
-import { readArchivedTeam, readMailbox, readTeam, readUnreadMailbox } from '../lib/state.js'
+import { readArchivedTeam, readMailbox, readTeam, readUnreadMailbox, writeTeam } from '../lib/state.js'
 import { collectArchivedTeamsActivity } from '../lib/snapshot.js'
 
 const deliveryHarness = process.argv.includes('--delivery-harness')
@@ -539,7 +539,9 @@ try {
   check('unread mailbox prevents a same-kick new assignment',
     deliveries.length >= deliveriesAfterMail
       && (await readTeam(stateRoot, 'profile-demo'))?.tasks[1]?.assignee === 'implementer')
-  const profileStatus = await call('agent_teams_status', {})
+  // Φ1/F6: seed ids live on the plan tasks, which the bounded default counts instead of
+  // printing; the profile assertion is about the snapshot, so it asks for everything.
+  const profileStatus = await call('agent_teams_status', { live: false })
   check('status exposes profile snapshot and task seed ids',
     profileStatus.profile?.name === 'demo-delivery'
       && profileStatus.tasks.some(item => item.seed_id === 'requirements')
@@ -1318,10 +1320,19 @@ try {
   const registryStatus = await call('agent_teams_status', {})
   check('the status report carries the registry',
     registryStatus.known_deltas?.[0]?.id === 'lint-baseline')
+  // Φ1/F6: the default report is bounded — it shows the work that needs attention and
+  // counts the settled history. The text assertions below are about the *full* view, so
+  // they ask for it; the bounded default has its own check right here.
+  check('the bounded status report leaves settled history out and counts it',
+    registryStatus.tasks.every(task => task.status !== 'completed')
+      && registryStatus.tasks_total >= registryStatus.tasks.length
+      && registryStatus.tasks_hidden >= 1,
+    `shown=${String(registryStatus.tasks.length)} of ${String(registryStatus.tasks_total)}`)
+  const fullStatus = await call('agent_teams_status', { live: false })
   // WP8/S16: the text report leads with the same percentage the panel shows and
   // marks every task with a checkbox glyph.
   const statusText = definitions.get('agent_teams_status').output
-    .render({}, registryStatus)
+    .render({}, fullStatus)
     .map(part => part.text ?? '')
     .join('\n')
   check('the status report prints the plan percentage before the task list',
@@ -1737,6 +1748,32 @@ try {
     reused = await task(t4.task_id)
   }
   check('previously interrupted member is reused in a later round', reused?.assignee === 'alpha' && reused.status === 'claimed')
+
+  // Second feedback page, item 2 (the material-layers run, measured seven times: t185,
+  // t186, t194, t195, t202, t203, t204): a lane assigned to a member that is still busy
+  // waited forever — `create_task`'s kick finds the member unavailable, and the member's
+  // own completion kick is issued while it is still inside the turn that reports it. The
+  // captain's only way through was a second action (a message). Nothing here messages
+  // beta: the idle transition alone has to pick the lane up.
+  publishStatus(beta, 'running')
+  const forBusyBeta = await call('agent_teams_create_task', { subject: 'lane for a busy member', assignee: 'beta' })
+  const whileBusy = await task(forBusyBeta.task_id)
+  check('a lane assigned to a busy member waits for that member instead of running elsewhere',
+    whileBusy?.status === 'pending' && whileBusy.assignee === 'beta')
+  publishStatus(beta, 'idle')
+  let pickedUp = await task(forBusyBeta.task_id)
+  const pickDeadline = Date.now() + 1000
+  while (Date.now() < pickDeadline && pickedUp?.status !== 'claimed') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+    pickedUp = await task(forBusyBeta.task_id)
+  }
+  check('a member picks up its assigned lane when it goes idle, without a message from the captain',
+    pickedUp?.status === 'claimed' && pickedUp.assignee === 'beta')
+  await call('agent_teams_reassign_task', {
+    task_id: forBusyBeta.task_id, assignee: 'captain', reason: 'close the dispatch fixture',
+  })
+  await call('agent_teams_update_task', { task_id: forBusyBeta.task_id, status: 'in_progress' })
+  await call('agent_teams_update_task', { task_id: forBusyBeta.task_id, status: 'completed', output: 'closed' })
 
   const t5 = await call('agent_teams_create_task', { subject: 'must wait behind alpha', assignee: 'alpha' })
   let busyRejected = false
@@ -2249,6 +2286,116 @@ try {
     check('a member can complete the task it is holding', completed === 'completed', completed)
   } finally {
     await rm(attemptWorkspace, { recursive: true, force: true })
+  }
+}
+
+// Φ1 item 2 (owner report, measured seven times in the material-layers run: t185, t186,
+// t194, t195, t202, t203, t204): "задача назначена и pending, участник idle — и ничего не
+// происходит, пока я не отправлю письмо". The dispatch cap counted the *recorded*
+// member status, and that field comes from the host's `agent/status` stream — so one
+// missed idle event left a member marked `working`, the team looked full, and every idle
+// member with an assigned lane waited for a manual message. The cap counts the work a
+// member actually holds now.
+{
+  const capWorkspace = await mkdtemp(join(tmpdir(), 'dsh-lifecycle-cap-'))
+  try {
+    const defs = new Map()
+    const agents = new Map()
+    const spawns = []
+    let seq = 0
+    const capCaptain = {
+      id: 'captain-cap',
+      status: 'idle',
+      options: { provider: 'fake', model: 'fake-model' },
+      session: {
+        header: { cwd: capWorkspace, seedLength: 0 },
+        events: [],
+        append() {},
+        requestHeader() { return { config: { provider: 'fake', model: 'fake-model' } } },
+      },
+      followup() {}, steer() {}, inject() {}, cancel() {}, whenIdle() { return Promise.resolve() },
+    }
+    agents.set(capCaptain.id, capCaptain)
+    const capCtx = {
+      effect(setup) { return setup() },
+      tools: { register(definition) { defs.set(definition.name, definition) } },
+      on() { return () => {} },
+      agents: { get(id) { return agents.get(id) } },
+      llm: { async resolveCallConfig(config) { return config }, async listModels() { return [] } },
+      subagents: {
+        registerContinuableSetup() { return () => {} },
+        getProvider(name) {
+          return name === 'spawn' ? { prepareContinuable() {}, capabilities: { persona: true, toolFilter: true } } : undefined
+        },
+        list() { return ['spawn'] },
+        async startContinuable(spec) {
+          const id = `cap-child-${++seq}`
+          agents.set(id, {
+            id,
+            status: 'idle',
+            options: { provider: 'fake', model: 'fake-model' },
+            session: capCaptain.session,
+            followup() {},
+            steers: [],
+            steer(message) { this.steers.push(message); this.status = 'running' },
+            inject() {},
+            cancel() {},
+            whenIdle() { return Promise.resolve() },
+          })
+          spawns.push({ id, label: spec.label })
+          return { childId: id, messageId: `welcome-${seq}` }
+        },
+        async listChildren() { return spawns },
+        async listDescendants() { return spawns },
+        async followup() { return 'x' },
+        interrupt() {},
+        async drainContinuableChildren() {},
+      },
+      logger: { debug() {}, warn() {} },
+    }
+    const capRoot = join(capWorkspace, '.agent-teams')
+    // One worker per team: the stale record alone is enough to look "full".
+    registerAgentTeamsTools(capCtx, {
+      stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 1, maxMembers: 4, maxWorkersPerTeam: 1, profiles: {},
+    })
+    let capTeamId = ''
+    const capCall = async (name, args, subject = capCaptain) => {
+      const payload = { ...args }
+      if (payload.team_id === undefined && subject === capCaptain && capTeamId !== '') payload.team_id = capTeamId
+      const result = await defs.get(name).execute(payload, { agent: subject, signal: new AbortController().signal })
+      if (name === 'agent_teams_create' && subject === capCaptain && typeof result?.team_id === 'string') capTeamId = result.team_id
+      if (name === 'agent_teams_delete') capTeamId = ''
+      return result
+    }
+    await capCall('agent_teams_create', { name: 'Cap Fence', description: 'stale worker status' })
+    await capCall('agent_teams_add_member', { name: 'stale', role: 'implementer' })
+    await capCall('agent_teams_add_member', { name: 'fresh', role: 'implementer' })
+    // The missed idle event: the member's session is idle (it was never dispatched), yet
+    // its durable record still says `working`, which is all the old cap counted.
+    const staleTeam = await readTeam(capRoot, 'cap-fence')
+    staleTeam.members.find(member => member.name === 'stale').status = 'working'
+    await writeTeam(capRoot, staleTeam)
+
+    const capTaskCreated = await capCall('agent_teams_create_task', { subject: 'lane for the idle member', assignee: 'fresh' })
+    const capTeamState = async () => (await readTeam(capRoot, 'cap-fence')).tasks.find(task => task.id === capTaskCreated.task_id)
+    let capTask = await capTeamState()
+    const capDeadline = Date.now() + 1500
+    while (capTask?.status !== 'claimed' && Date.now() < capDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      capTask = await capTeamState()
+    }
+    check(
+      'a stale recorded worker does not block the dispatch of an idle teammate',
+      spawns.length > 0 && capTask?.status !== 'pending',
+      `stale record says working, no member holds a task → spawns=${spawns.length} status=${String(capTask?.status)}`,
+    )
+    check(
+      'the dispatched lane is claimed by the idle member',
+      capTask?.assignee === 'fresh' && capTask.status === 'claimed',
+      `status=${String(capTask?.status)} assignee=${String(capTask?.assignee)}`,
+    )
+  } finally {
+    await rm(capWorkspace, { recursive: true, force: true })
   }
 }
 
