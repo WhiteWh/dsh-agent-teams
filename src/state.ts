@@ -17,7 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { OPEN_TASK_STATUSES, TERMINAL_TASK_STATUSES, type TaskOrigin, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { OPEN_TASK_STATUSES, SETTLED_TASK_STATUSES, TERMINAL_TASK_STATUSES, requeueableOnRemoval, type TaskOrigin, type TaskStatus, type TeamMember, type TeamMessage, type TeamPlan, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isKnownDelta, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 
 export {
@@ -389,6 +389,33 @@ export function invalidateTaskAttempt(
   task.reassigning = reassigning
   task.output = undefined
   task.updatedAt = Date.now()
+}
+
+/**
+ * Return a removed member's work to the pool (Φ1 feedback F3).
+ *
+ * Only work that still expects an owner comes back. `completed`, `failed`,
+ * `cancelled` and `superseded` are history: reviving them made dead lanes look
+ * claimable again in the dx9 run — six of eight "requeued tasks" had been superseded
+ * long before, and one of them put a second writer on a file a live lane was editing.
+ *
+ * Extracted from the `agent_teams_remove_member` handler so the rule is testable
+ * without a tool execution context.
+ *
+ * @param team - the team record; requeued tasks are mutated in place.
+ * @param memberName - the member being removed.
+ * @returns the ids it requeued, in task order.
+ */
+export function requeueMemberTasks(team: TeamState, memberName: string): string[] {
+  const requeued: string[] = []
+  for (const task of team.tasks) {
+    if (task.assignee !== memberName) continue
+    if (!requeueableOnRemoval(task)) continue
+    invalidateTaskAttempt(task)
+    task.reassigning = false
+    requeued.push(task.id)
+  }
+  return requeued
 }
 
 /**
@@ -1071,11 +1098,12 @@ export function validateTeamGraph(team: TeamState, requireRunnable: boolean): vo
     // Φ1 feedback F1: an owner is only a live constraint while the task can still be
     // dispatched. A member session that had to be replaced (remove_member + add_member)
     // leaves its name on everything it finished, and checking those made every replan
-    // batch impossible in a healthy team — a completed lane cannot be reassigned and a
+    // batch impossible in a healthy team — a settled lane cannot be reassigned and a
     // removed name cannot be re-added, so the whole batch tool was lost for good.
-    // `failed` deliberately stays checked: `retry` can make it dispatchable again, and
-    // that path validates the owner it is about to revive (see `updateTask`).
-    const historical = task.status === 'completed' || task.status === 'cancelled' || task.status === 'superseded'
+    // Every terminal status is history here, `failed` included: a removal leaves a red
+    // lane untouched (Φ1/F3), and the only path that can revive it — `retry` — names the
+    // owner it is about to make dispatchable again (see `updateTask`).
+    const historical = SETTLED_TASK_STATUSES.includes(task.status)
     if (!historical && task.assignee !== undefined && task.assignee !== CAPTAIN_KEY && !memberNames.has(task.assignee)) {
       throw new Error(`task "${task.id}" assignee "${task.assignee}" is not an active member`)
     }

@@ -56,6 +56,7 @@ import {
   sanitizeReviewObjective,
   normalizeBlankOptionalTaskFields,
   originForNewTask,
+  requeueMemberTasks,
   taskHasWaivers,
   taskKindOf,
   applySupersession,
@@ -1546,13 +1547,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
         const member = fresh.members.find(item => item.name === args.name)
         if (member === undefined) throw new Error(`no member \"${args.name}\" in team \"${fresh.name}\"`)
-        const requeued: string[] = []
-        for (const task of fresh.tasks) {
-          if (task.assignee !== member.name || task.status === 'completed') continue
-          invalidateTaskAttempt(task)
-          task.reassigning = false
-          requeued.push(task.id)
-        }
+        const requeued = requeueMemberTasks(fresh, member.name)
         member.status = 'removed'
         await discardMailboxMessages(stateRoot, fresh.id, member.name, (await readUnreadMailbox(stateRoot, fresh.id, member.name)).map(message => message.id))
         await writeTeam(stateRoot, fresh)

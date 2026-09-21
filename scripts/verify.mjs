@@ -38,6 +38,7 @@ import {
   isKnownDelta,
   isTeamTask,
   originForNewTask,
+  requeueMemberTasks,
   readMailbox,
   readTeam,
   removeTeamDir,
@@ -224,6 +225,7 @@ const toolsSource = await readFile(new URL('../src/tools.ts', import.meta.url), 
 const gatesSource = await readFile(new URL('../src/quality-gates.ts', import.meta.url), 'utf8')
 const localesSource = await readFile(new URL('../src/client/locales.ts', import.meta.url), 'utf8')
 const stateSource = await readFile(new URL('../src/state.ts', import.meta.url), 'utf8')
+const schedulerSource = await readFile(new URL('../src/scheduler.ts', import.meta.url), 'utf8')
 const activityModelSource = await readFile(new URL('../src/client/activity-model.ts', import.meta.url), 'utf8')
 const localeKeys = Object.keys(agentTeamsZh).sort()
 const englishLocaleKeys = Object.keys(agentTeamsEn).sort()
@@ -2710,6 +2712,54 @@ console.log('6d/8 replan a live team (WP7/S17)')
     )
   }
 
+  // Φ1 feedback F3 (dx9 run): `remove_member frame` answered
+  // `requeued tasks: t89, t93, t102, …` where six of the eight had been **superseded**
+  // long before — the pool then made them look claimable, an idle member claimed one
+  // and put a second writer on a file a live lane was editing.
+  {
+    const memberTasks = () => ({
+      ...replanFixture(),
+      members: [{ id: 'sess-frame', name: 'frame', role: 'implementer', joinedAt: 1, status: 'idle', provider: 'p', model: 'm' }],
+      tasks: [
+        { id: 't1', subject: 'live pending', status: 'pending', dependencies: [], attempt: 0, kind: 'work', assignee: 'frame', createdAt: 1, updatedAt: 1 },
+        { id: 't2', subject: 'live claimed', status: 'claimed', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', attemptId: 'a1', createdAt: 2, updatedAt: 2 },
+        { id: 't3', subject: 'live in progress', status: 'in_progress', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', attemptId: 'a2', createdAt: 3, updatedAt: 3 },
+        { id: 't4', subject: 'held for scope review', status: 'awaiting_scope_review', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', attemptId: 'a3', createdAt: 4, updatedAt: 4 },
+        { id: 't5', subject: 'finished lane', status: 'completed', dependencies: [], attempt: 2, kind: 'work', assignee: 'frame', createdAt: 5, updatedAt: 5 },
+        { id: 't6', subject: 'red lane', status: 'failed', dependencies: [], attempt: 2, kind: 'work', assignee: 'frame', createdAt: 6, updatedAt: 6 },
+        { id: 't7', subject: 'cancelled lane', status: 'cancelled', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', createdAt: 7, updatedAt: 7 },
+        { id: 't8', subject: 'superseded lane', status: 'superseded', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', supersededBy: 't9', createdAt: 8, updatedAt: 8 },
+      ],
+      taskSeq: 9,
+    })
+    const removalTeam = memberTasks()
+    const requeued = requeueMemberTasks(removalTeam, 'frame')
+    check(
+      'a member removal requeues only the work that still needs an owner',
+      requeued.join(',') === 't1,t2,t3,t4'
+        && removalTeam.tasks[0]?.status === 'pending'
+        && removalTeam.tasks[1]?.status === 'pending'
+        && removalTeam.tasks[2]?.status === 'pending'
+        && removalTeam.tasks[3]?.status === 'pending'
+        // History keeps both its status and its record of the member who did the work.
+        && removalTeam.tasks[4]?.status === 'completed'
+        && removalTeam.tasks[5]?.status === 'failed'
+        && removalTeam.tasks[6]?.status === 'cancelled'
+        && removalTeam.tasks[7]?.status === 'superseded'
+        && removalTeam.tasks[7]?.supersededBy === 't9',
+      `requeued ${requeued.join(',')}`,
+    )
+    check(
+      'a dead lane never becomes claimable work again',
+      // The transition table is the claim gate: a superseded or cancelled task has no
+      // legal path to `claimed`, so the pool listing it was the only way it could run.
+      transitionError('superseded', 'claimed') !== undefined
+        && transitionError('cancelled', 'claimed') !== undefined
+        && transitionError('completed', 'claimed') !== undefined
+        // And the ready-work filter only ever offers a `pending` task.
+        && /task\.status === 'pending'/.test(schedulerSource),
+    )
+  }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced
   // (remove_member + add_member, the plugin's own route) left its name on the tasks it
   // had already completed, and the whole-plan validation then refused *every* replan
@@ -2725,8 +2775,11 @@ console.log('6d/8 replan a live team (WP7/S17)')
         { id: 't1', subject: 'lane of a replaced session', status: 'completed', dependencies: [], attempt: 2, kind: 'work', assignee: 'frame', createdAt: 1, updatedAt: 9 },
         { id: 't2', subject: 'live lane', status: 'pending', dependencies: ['t1'], attempt: 0, kind: 'work', assignee: 'worker', createdAt: 2, updatedAt: 2 },
         { id: 't3', subject: 'pooled stale lane', status: 'superseded', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', createdAt: 3, updatedAt: 9 },
+        // A removal leaves a red lane untouched (Φ1/F3), so it keeps the replaced
+        // name — the batch must still work, and only a retry has to name an owner.
+        { id: 't9', subject: 'red lane of a replaced session', status: 'failed', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', createdAt: 9, updatedAt: 9 },
       ],
-      taskSeq: 3,
+      taskSeq: 9,
     })
     const repaired = attempt(() => replanTeam(withRemovedOwner(), [
       { action: 'update_task', task_id: 't2', dependencies: [] },
@@ -2736,7 +2789,11 @@ console.log('6d/8 replan a live team (WP7/S17)')
       repaired.error === undefined
         && repaired.value?.team.tasks[0]?.assignee === 'frame'
         && repaired.value?.team.tasks[0]?.status === 'completed'
-        && repaired.value?.team.tasks[1]?.dependencies.join(',') === '',
+        && repaired.value?.team.tasks[1]?.dependencies.join(',') === ''
+        // The red lane of the same replaced session is history too: it keeps its owner
+        // and its status, and it does not stand in the way of the batch.
+        && repaired.value?.team.tasks[3]?.assignee === 'frame'
+        && repaired.value?.team.tasks[3]?.status === 'failed',
       repaired.error ?? `status=${String(repaired.value?.team.tasks[0]?.status)}`,
     )
     const cancelledOrphanLane = attempt(() => replanTeam(withRemovedOwner(), [{ action: 'cancel_task', task_id: 't2' }], { reason: 'cut it' }))

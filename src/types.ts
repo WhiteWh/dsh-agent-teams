@@ -36,6 +36,22 @@ export const DEAD_TASK_STATUSES: readonly TaskStatus[] = ['cancelled', 'supersed
 export const OPEN_TASK_STATUSES: readonly TaskStatus[] = ['pending', 'claimed', 'in_progress']
 
 /**
+ * Statuses that still expect an owner (Φ1 feedback F3): the work a member removal may
+ * return to the shared pool. Everything else — `completed`, `failed`, `cancelled`,
+ * `superseded` — is history, and requeuing it made dead lanes look claimable again.
+ */
+export const LIVE_TASK_STATUSES: readonly TaskStatus[] = ['pending', 'claimed', 'in_progress', 'awaiting_scope_review']
+
+/**
+ * Whether a member removal may requeue this task.
+ * @param task - the task, read for its status only.
+ * @returns true when the task still expects an owner.
+ */
+export function requeueableOnRemoval(task: { readonly status: TaskStatus }): boolean {
+  return LIVE_TASK_STATUSES.includes(task.status)
+}
+
+/**
  * Statuses that mean "this task is settled": finished, red, dead. The panel and
  * the progress summary treat all four the same way — the work is not pending.
  */
