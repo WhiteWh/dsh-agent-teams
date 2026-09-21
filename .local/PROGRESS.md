@@ -203,6 +203,51 @@ plan's §5 was retitled when the owner answered them.
     settled" means every plan-origin task is terminal at the moment of creation, and a
     task created then is `followup`. No stricter definition is wanted.
 
+## Φ1 feedback batch (owner file `DCB/docs/AGENT_TEAMS_FEEDBACK_PHI1.md`, 2026-09-21)
+
+The dx9 run: 183 tasks, 11 members, one captain session, phases Φ0 and Φ1 closed. The
+page reports seven items with the tool's own words; the owner's priority order is
+F1 → F3 → F6 → F2 → F4 → F5, and F7 is the list of behaviours that must not break while
+the rest is fixed. One step per item, RED-first checks, the affected suites per step and
+the whole `pnpm verify` once in the release window (asking the owner first).
+
+- **S29 — F1: a replaced session's name on history disabled the batch tools.** A member
+  that had to be replaced leaves its name on the tasks it completed; the whole-plan
+  validation then refused every `replan` batch, and since a terminal task cannot be
+  reassigned and a removed name cannot be re-added, `cancel_task`, `move_phase`,
+  `close_phase` and multi-task repair were lost permanently. Fix: the "assignee is an
+  active member" rule applies only to tasks that can still be dispatched (`completed`,
+  `cancelled` and `superseded` are history); `failed` stays checked because `retry` can
+  revive it, and the retry path itself now refuses to revive a lane whose owner is gone
+  unless the batch names one.
+- **S30 — F3: `remove_member` requeued superseded lanes into the pool.** Six of eight
+  "requeued tasks" had been superseded long before, and idle members claimed them —
+  one put a second writer on a file that a live lane was editing. Fix: a removal
+  requeues only live unfinished work and the pool never lists a dead lane; `claim_task`
+  refuses a superseded or cancelled task by name.
+- **S31 — F6: the status payload is unbounded.** `agent_teams_status` echoes every task
+  with its full output (20–30 KB at 183 tasks) and crashed the session twice. Fix:
+  bounded by default — counts plus live tasks, terminal outputs only on request — with
+  explicit filters (`live`, `task_id`, `since`, `include_output`).
+- **S32 — F2: a stale `(reassigning)` marker no tool could clear.** A pooled task kept
+  the handoff marker forever; the only exit was `supersede_task`. Fix: an explicit
+  release in the replan batch plus self-healing when the recorded holder is gone.
+- **S33 — F4, F4b, F4c: the `inScope` audit is too literal.** (a) the overlap predicate
+  ignores terminal tasks and dependency relations, so a successor is not a race;
+  (b) a `**` wildcard in `inScope` is not expanded by the audit, so four real files read
+  as "outside the contract"; (c) the shared-page convention (`docs/PLANS.md` and friends
+  kept out of `changedPaths`) is punished with `awaiting_scope_review`.
+- **S34 — F5: a `work` lane's waiver can never be confirmed.** `kind=review` only
+  accepts an implementation/repair/verification/integration target, so a `work` task that
+  reported `waived` against a registered pin sits unconfirmed for the rest of the phase.
+- **F7 is the regression list**: quality gates, pins, atomic plan validation,
+  `supersede_task`'s retargeting, durable mailboxes and the one-unfinished-task rule all
+  worked; each fix below keeps its check green.
+
+Release: **0.4.0** after the batch (relaxed validation, new tool parameters, scope-audit
+semantics). Tag with the branch marker as usual; the dangerous operations wait for the
+owner's go-ahead.
+
 ## Round 3 scope (owner request, 2026-09-20, after 0.2.1 with the round-2 patch)
 
 Four items, in the owner's order, one step at a time with RED-first checks, a full
@@ -266,6 +311,39 @@ for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool beha
 change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S29 — Φ1/F1: a replaced session's name on history no longer disables replan (done)
+
+The dx9 run replaced a wedged member session (`remove_member` + `add_member`, the
+plugin's own §8.4 route) and from that moment **every** `replan` batch was refused:
+
+```
+Error: task "t5" assignee "frame" is not an active member
+```
+
+Measured cost in the run: `cancel_task`, `move_phase`, `close_phase` and every
+multi-task repair unavailable for the rest of the phase; four stale pool entries could
+not be cancelled; a dependency correction had to be abandoned. It is permanent because a
+terminal task cannot be reassigned and a removed name cannot be re-added.
+
+- **Cause:** `validateTeamGraph` (shared by the staged editor and the live replan batch)
+  required *every* task's assignee to be an active member, including the tasks that had
+  already finished under that member's name.
+- **Fix 1 — history is not a live constraint:** the rule now skips `completed`,
+  `cancelled` and `superseded` (statuses that can never be dispatched again). `failed`
+  deliberately stays checked: `retry` can revive it.
+- **Fix 2 — the revive path names an owner:** `updateTask`'s `retry` branch validates
+  the owner it is about to make dispatchable again and refuses with
+  `task t2 has no active owner ("frame" is not a member) — pass assignee to name one when
+  you retry this lane`. Without it the fix would have traded a loud refusal for a lane
+  nobody could ever claim.
+- **RED first:** four checks — `a completed task keeps its replaced owner without
+  blocking a replan batch`, `the batch tools a healthy team needs still work with a
+  replaced owner on history`, `a live lane whose owner is gone is still refused` and
+  `retrying a lane whose owner was removed demands a new owner`. The first run failed
+  exactly with the field's error, and the suite needed a new `attempt()` helper so an
+  expected-success call fails a check instead of aborting the run.
+- **Verification:** build exit 0; `verify.mjs` green (287 + 4 checks).
 
 ### S28 — hotfix + release 0.3.0: the phase board froze the web client (done)
 

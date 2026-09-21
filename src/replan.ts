@@ -450,6 +450,17 @@ function updateTask(
     // task cannot be revived here either.
     const transition = transitionError(task.status, 'pending')
     if (transition !== undefined) throw new Error(`${label}: ${transition}`)
+    // Φ1 feedback F1: a retry makes the task dispatchable again, so it needs an owner
+    // that exists. Without this the batch would revive a lane assigned to a replaced
+    // member — silently unclaimable instead of loudly refused.
+    const owner = task.assignee
+    if (owner !== undefined && owner !== '' && owner !== CAPTAIN_KEY
+      && !draft.members.some((member) => member.name === owner && member.status !== 'removed')) {
+      throw new Error(
+        `${label}: task ${task.id} has no active owner ("${owner}" is not a member)`
+        + ' — pass assignee to name one when you retry this lane',
+      )
+    }
     invalidateTaskAttempt(task, task.assignee, false)
     task.status = 'pending'
     changed = true

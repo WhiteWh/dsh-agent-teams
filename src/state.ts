@@ -1068,7 +1068,15 @@ export function validateTeamGraph(team: TeamState, requireRunnable: boolean): vo
   const taskIds = new Set(team.tasks.map((task) => task.id))
   for (const task of team.tasks) {
     if (task.subject.trim() === '') throw new Error(`task "${task.id}" must have a subject`)
-    if (task.assignee !== undefined && task.assignee !== CAPTAIN_KEY && !memberNames.has(task.assignee)) {
+    // Φ1 feedback F1: an owner is only a live constraint while the task can still be
+    // dispatched. A member session that had to be replaced (remove_member + add_member)
+    // leaves its name on everything it finished, and checking those made every replan
+    // batch impossible in a healthy team — a completed lane cannot be reassigned and a
+    // removed name cannot be re-added, so the whole batch tool was lost for good.
+    // `failed` deliberately stays checked: `retry` can make it dispatchable again, and
+    // that path validates the owner it is about to revive (see `updateTask`).
+    const historical = task.status === 'completed' || task.status === 'cancelled' || task.status === 'superseded'
+    if (!historical && task.assignee !== undefined && task.assignee !== CAPTAIN_KEY && !memberNames.has(task.assignee)) {
       throw new Error(`task "${task.id}" assignee "${task.assignee}" is not an active member`)
     }
     for (const dependency of task.dependencies) {

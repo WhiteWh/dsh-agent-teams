@@ -2548,6 +2548,14 @@ console.log('6d/8 replan a live team (WP7/S17)')
       return String(error instanceof Error ? error.message : error)
     }
   }
+  /** Run something that is expected to succeed, and keep its error as a value. */
+  const attempt = (fn) => {
+    try {
+      return { value: fn() }
+    } catch (error) {
+      return { error: String(error instanceof Error ? error.message : error) }
+    }
+  }
 
   check(
     'an empty replan batch is refused',
@@ -2699,6 +2707,78 @@ console.log('6d/8 replan a live team (WP7/S17)')
         && createTaskBlock.includes('is closed and takes no new work')
         && createTaskBlock.includes('declare a new phase instead'),
       `create_task block is ${String(createTaskBlock.length)} characters`,
+    )
+  }
+
+  // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced
+  // (remove_member + add_member, the plugin's own route) left its name on the tasks it
+  // had already completed, and the whole-plan validation then refused *every* replan
+  // batch with `task "t5" assignee "frame" is not an active member`. The team lost
+  // cancel_task, move_phase, close_phase and every multi-task repair for good, because
+  // a terminal task cannot be reassigned and a removed name cannot be re-added.
+  {
+    const withRemovedOwner = () => ({
+      ...replanFixture(),
+      members: [{ id: 'sess-worker', name: 'worker', role: 'implementer', joinedAt: 1, status: 'idle', provider: 'p', model: 'm' }],
+      tasks: [
+        // History: a lane this removed member finished. It can never run again.
+        { id: 't1', subject: 'lane of a replaced session', status: 'completed', dependencies: [], attempt: 2, kind: 'work', assignee: 'frame', createdAt: 1, updatedAt: 9 },
+        { id: 't2', subject: 'live lane', status: 'pending', dependencies: ['t1'], attempt: 0, kind: 'work', assignee: 'worker', createdAt: 2, updatedAt: 2 },
+        { id: 't3', subject: 'pooled stale lane', status: 'superseded', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', createdAt: 3, updatedAt: 9 },
+      ],
+      taskSeq: 3,
+    })
+    const repaired = attempt(() => replanTeam(withRemovedOwner(), [
+      { action: 'update_task', task_id: 't2', dependencies: [] },
+    ], { reason: 'unblock the live lane' }))
+    check(
+      'a completed task keeps its replaced owner without blocking a replan batch',
+      repaired.error === undefined
+        && repaired.value?.team.tasks[0]?.assignee === 'frame'
+        && repaired.value?.team.tasks[0]?.status === 'completed'
+        && repaired.value?.team.tasks[1]?.dependencies.join(',') === '',
+      repaired.error ?? `status=${String(repaired.value?.team.tasks[0]?.status)}`,
+    )
+    const cancelledOrphanLane = attempt(() => replanTeam(withRemovedOwner(), [{ action: 'cancel_task', task_id: 't2' }], { reason: 'cut it' }))
+    check(
+      'the batch tools a healthy team needs still work with a replaced owner on history',
+      cancelledOrphanLane.error === undefined && cancelledOrphanLane.value?.team.tasks[1]?.status === 'cancelled',
+      cancelledOrphanLane.error ?? '',
+    )
+    // The rule still bites where it must: a live lane has no owner.
+    check(
+      'a live lane whose owner is gone is still refused',
+      /task "t4" assignee "frame" is not an active member/.test(failureOf(() => replanTeam({
+        ...withRemovedOwner(),
+        tasks: [
+          ...withRemovedOwner().tasks,
+          { id: 't4', subject: 'dispatchable but orphaned', status: 'pending', dependencies: [], attempt: 0, kind: 'work', assignee: 'frame', createdAt: 4, updatedAt: 4 },
+        ],
+        taskSeq: 4,
+      }, [{ action: 'update_task', task_id: 't2', dependencies: [] }], { reason: 'x' }))),
+    )
+    // A failed lane can be retried, and a retry makes it dispatchable again — so the
+    // retry has to name an owner instead of writing a task nobody can claim.
+    const failedOrphan = () => ({
+      ...withRemovedOwner(),
+      tasks: [
+        withRemovedOwner().tasks[0],
+        { id: 't2', subject: 'red lane of a replaced session', status: 'failed', dependencies: [], attempt: 1, kind: 'work', assignee: 'frame', createdAt: 2, updatedAt: 5 },
+      ],
+    })
+    const retriedOrphan = attempt(() => replanTeam(failedOrphan(), [
+      { action: 'update_task', task_id: 't2', retry: true },
+    ], { reason: 'repair and retry' }))
+    const retriedWithOwner = attempt(() => replanTeam(failedOrphan(), [
+      { action: 'update_task', task_id: 't2', retry: true, assignee: 'worker' },
+    ], { reason: 'repair and retry' }))
+    check(
+      'retrying a lane whose owner was removed demands a new owner',
+      retriedOrphan.error !== undefined
+        && /has no active owner/.test(retriedOrphan.error)
+        && retriedWithOwner.value?.team.tasks[1]?.status === 'pending'
+        && retriedWithOwner.value?.team.tasks[1]?.assignee === 'worker',
+      retriedOrphan.error ?? 'the retry was accepted without an owner',
     )
   }
 
