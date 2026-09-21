@@ -97,6 +97,7 @@ the pre-step count, and FAIL must stay 0.
 | S28 | hotfix + release 0.3.0 | done | | memoised chain walk (48 tasks/12 layers: 7 477 ms → 0.4 ms; 56/14: 130 230 ms → 0.4 ms) + `PanelErrorBoundary`; verify 287 PASS/0 FAIL; full `pnpm verify` exit 0; artifact 2 319 106 B / SHA256 `F8C2BA3E…F43F` installed and the bundle re-enabled in the web profile; tag v0.3.0 |
 | S29 | Φ1/F1: replaced session no longer disables replan | done | | validation skips terminal tasks (settled = history, `failed` included) + the retry path demands an owner; four RED-first checks; verify 291 PASS/0 FAIL; `fc8a6b9` |
 | S30 | Φ1/F3: a removal requeues only live work | done | | `requeueMemberTasks` + `requeueableOnRemoval` (pending/claimed/in_progress/awaiting_scope_review); RED showed the old filter requeueing `t1,t2,t3,t4,t6,t7,t8` (failed, cancelled, superseded); verify 293 PASS/0 FAIL; `a49e306` |
+| S31 | Φ1/F6: bounded status report | done | | pure `src/status.ts` (`selectStatusTasks`): default view = 13 of 183 tasks, settled history counted but not printed, history outputs dropped; tool gained `live`/`task_id`/`since`/`include_output`; rendered text 64 432 → 1 518 chars on the run's shape; verify 297 PASS/0 FAIL; `8e4a337` |
 
 ## Release tags (owner instruction, 2026-09-20)
 
@@ -313,6 +314,35 @@ for while looking at 0.2.2 — then **0.3.0** after S26+S27 (state and tool beha
 change, with an upgrade note for the new `closed` field).
 
 ## Step log
+
+### S31 — Φ1/F6: the status report is bounded by default (done)
+
+The dx9 run reached 183 tasks and `agent_teams_status` echoed **every** one with its
+output text. The session crashed on it twice; the captain stopped asking the plugin
+questions and grepped the harness spill file instead — "a poor substitute for asking the
+plugin a question".
+
+- **Measured on the run's shape** (183 tasks, 170 settled, 300-character outputs):
+  the rendered report was **64 432 characters**; it is **1 518** now, and the omitted
+  history is stated in the report rather than silently truncated.
+- **Selection is a pure module** (`src/status.ts`, `selectStatusTasks`), so the
+  structured payload and the text report cannot disagree about what was shown — the
+  payload carries `tasks_total`, `tasks_hidden`, `tasks_outputs_dropped` and an echo of
+  the filter. Default view: the work that still needs attention (`pending`, `claimed`,
+  `in_progress`, `awaiting_scope_review`, **`failed`** — a red lane is exactly what a
+  captain opens a report for), 13 of 183 on this fixture; settled history
+  (`completed`/`cancelled`/`superseded`) is counted, not printed, and its output text is
+  dropped.
+- **Nothing became unreachable:** `live=false` lists all 183, `include_output=true`
+  restores the history's outputs, `task_id` reports one task in full (its output
+  included), and `since` answers "what changed since my last call" (4 tasks for
+  `since: 180`). The four parameters are described on the tool and asserted by a check.
+- **Checks:** `the status report shows the work that needs attention, not the settled
+  history`, `a status call can still reach every task, one task, or what changed`,
+  `the rendered status stays bounded and says what it left out` (which measures both the
+  bounded and the unbounded render of the same fixture, so the flood cannot come back
+  unnoticed) and `the status tool exposes the filters that make a bounded report usable`.
+- **Verification:** build exit 0; `verify.mjs` 297 PASS / 0 FAIL.
 
 ### S30 — Φ1/F3: a member removal requeues only the work that still needs an owner (done)
 
