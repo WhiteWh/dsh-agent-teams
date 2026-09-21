@@ -223,6 +223,12 @@ export interface TeamTask {
   /** Brief title for the task. */
   subject: string
   /**
+   * The plan's own human id for this lane (`L.2`, `G.4`, `P4.3`), Φ1 feedback F7.2.
+   * The plugin's `t147` is the only vocabulary the graph used to show, while every
+   * handback, contract and the owner speak the brief's letters; this field carries both.
+   */
+  label?: string
+  /**
    * Round 3: which stretch of the plan's life created this task. `plan` is the
    * approved plan (and the meaning of an absent value, so older state files keep
    * working), `added` is work the captain put in while the plan was still running,

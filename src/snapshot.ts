@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { memberActivity } from './members.ts'
 import { planProgress } from './progress.ts'
 import type { PlanProgress } from './progress.ts'
+import { verifiedTaskIds } from './quality-gates.ts'
 import {
   CAPTAIN_KEY, listArchivedTeamIds, planOf, readArchivedTeam, readUnreadMailbox, readTeam,
   taskDepthsById, taskVisualState, waivedResultCount,
@@ -63,6 +64,10 @@ export interface TeamActivityTask {
   readonly waived?: number
   /** The task that replaced this one, for the checklist's `→ tN` link (WP3). */
   readonly supersededBy?: string
+  /** Φ1/F7.2: the plan's own human id for this lane (`L.2`, `G.4`, `P4.3`). */
+  readonly label?: string
+  /** Φ1/F7.4: a passing review or verification judged this lane, not just completion. */
+  readonly verified?: boolean
 }
 
 /** One captain-inbox preview row. */
@@ -152,6 +157,9 @@ export async function assembleTeamSnapshot(
   const tasks = state.tasks
   const depths = taskDepthsById(tasks)
   const plan = planOf(state)
+  // Φ1/F7.4: the brief separates `landed` from `verified`; the panel marks the lanes a
+  // passing review or verification actually judged.
+  const verified = verifiedTaskIds(tasks)
   const roster = options.includeRemoved === true
     ? state.members
     : state.members.filter((member) => member.status !== 'removed')
@@ -225,6 +233,10 @@ export async function assembleTeamSnapshot(
       ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
       ...waivedResultCount(task) === 0 ? {} : { waived: waivedResultCount(task) },
       ...task.supersededBy === undefined ? {} : { supersededBy: task.supersededBy },
+      // Φ1/F7.2 and F7.4: the plan's own id for the lane, and whether a passing gate
+      // judged it (the brief's `verified`, as opposed to merely reported).
+      ...task.label === undefined ? {} : { label: task.label },
+      ...verified.has(task.id) ? { verified: true } : {},
     })),
     progress: planProgress(tasks, {
       ...state.profile?.progressWeights === undefined ? {} : { weights: state.profile.progressWeights },
@@ -236,6 +248,7 @@ export async function assembleTeamSnapshot(
           id: phase.id,
           ...phase.title === undefined ? {} : { title: phase.title },
           taskIds: phase.taskIds,
+          ...phase.closed === true ? { closed: true } : {},
         })) },
     }),
     plan: {

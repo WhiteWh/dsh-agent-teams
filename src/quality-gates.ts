@@ -644,6 +644,30 @@ export function unconfirmedWaivers(team: TeamState): string[] {
     .map((task) => task.id)
 }
 
+/**
+ * The ids of the tasks that were **verified**, not merely reported (Φ1 feedback F7.4).
+ *
+ * The brief's vocabulary has `landed` and `verified` as different states; the plugin
+ * showed only `completed`, so a reader of the plan could not tell which of the run's 209
+ * tasks had actually been checked. A task counts as verified when it is `completed` and
+ * a `review` or `verification` task that judged it — by `reviewedTaskId` for a quality
+ * gate, or by `sourceTaskId` for a repair that closed a finding — reached `completed`
+ * with `verdict=pass`. The task itself counts when it is that passing gate.
+ *
+ * @param tasks - every task of the team.
+ * @returns the verified task ids.
+ */
+export function verifiedTaskIds(tasks: readonly TeamTask[]): ReadonlySet<string> {
+  const verified = new Set<string>()
+  for (const task of tasks) {
+    if (task.status !== 'completed') continue
+    if (task.verdict === 'pass') verified.add(task.id)
+    const judged = task.reviewedTaskId ?? task.sourceTaskId
+    if (judged !== undefined && judged !== '' && task.verdict === 'pass') verified.add(judged)
+  }
+  return verified
+}
+
 export function evaluateQualityCompletion(
   task: TeamTask,
   update: QualityCompletionUpdate,

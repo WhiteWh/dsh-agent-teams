@@ -1181,6 +1181,7 @@ export function isTeamTask(value: unknown): value is TeamTask {  if (!isRecord(v
     && isOptionalString(value['handoffId'])
     && isOptionalString(value['handoffFromMemberId'])
     && isOptionalString(value['supersededBy'])
+    && isOptionalString(value['label'])
     && (value['origin'] === undefined
       || value['origin'] === 'plan'
       || value['origin'] === 'added'

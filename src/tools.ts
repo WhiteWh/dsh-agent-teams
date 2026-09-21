@@ -18,6 +18,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { join } from 'node:path'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
+import { verifiedTaskIds } from './quality-gates.ts'
 import {
   amendTaskContract,
   acknowledgeMailbox,
@@ -1328,6 +1329,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
               enum: ['add_task', 'update_task', 'supersede_task', 'cancel_task', 'accept_paths', 'amend_task', 'move_phase', 'close_phase'],
             },
             task_id: { type: 'string', description: 'Target task for every action except add_task and close_phase.' },
+            label: { type: 'string', description: "add_task: the plan's own human id for the lane (G.4, P4.3, …)." },
             subject: { type: 'string', description: 'add_task: the new task title. update_task: replacement title. supersede_task: the replacement title when the replacement is created inline.' },
             description: { type: 'string', description: 'Optional description (an empty value clears it on update_task/amend_task).' },
             assignee: { type: 'string', description: 'Active member name; an empty string moves the task to the shared pool.' },
@@ -1602,6 +1604,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       sourceTaskId: { type: 'string', description: 'Source implementation/artifact. Required for kind=repair.' },
       sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids this repair must close.' },
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
+      label: { type: 'string', description: "The plan's own human id for this lane (L.2, G.4, P4.3, …). It is shown next to the plugin's tN wherever the panel or the report names the task." },
       phase: { type: 'string', description: 'Phase id to place this task in. On a running team an unknown id declares the phase on first use (give it a phase_title), so lanes can be grouped from the first one; on a staged plan the id must already be declared. A closed phase is refused: declare a new one instead.' },
       phase_title: { type: 'string', description: 'Title for a phase this call declares (Φ2 — light, Recon, …). Ignored for a phase that already exists.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
@@ -1700,6 +1703,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const task: TeamTask = {
           id: `t${fresh.taskSeq + 1}`,
           subject: args.subject,
+          ...args.label === undefined || args.label.trim() === '' ? {} : { label: args.label.trim() },
           description: args.description,
           status: 'pending',
           assignee: args.assignee,
@@ -2956,6 +2960,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // reader sees that a task is working against a revised brief.
         ...(task.revisions ?? []).length === 0 ? {} : { revisions: (task.revisions ?? []).length },
         ...task.profileSeedId === undefined ? {} : { seed_id: task.profileSeedId },
+        // Φ1/F7.2 and F7.4: the plan's own id and whether a passing gate judged it.
+        ...task.label === undefined || task.label === '' ? {} : { label: task.label },
+        ...verifiedTaskIds(team.tasks).has(task.id) ? { verified: true } : {},
         ...task.output !== undefined ? { output: task.output } : {},
       }))
       const mailboxWarnings: string[] = []
@@ -3024,6 +3031,30 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         viewer: identity.name,
         members,
         tasks,
+        // Φ1/F7.3: what the owner asked to see — «Φ2: 12 lanes, 4 verified, 1 failed» —
+        // as data, so the text report and the panel read the same per-phase roll-up.
+        phases: (team.plan?.phases ?? []).length === 0 ? [] : planProgress(team.tasks, {
+          ...team.profile?.progressWeights === undefined ? {} : { weights: team.profile.progressWeights },
+          phases: (team.plan?.phases ?? []).map((phase) => ({
+            id: phase.id,
+            ...phase.title === undefined ? {} : { title: phase.title },
+            taskIds: phase.taskIds,
+            ...phase.closed === true ? { closed: true } : {},
+          })),
+        }).byPhase.map((row) => ({
+          phase_id: row.phaseId,
+          title: row.title ?? '',
+          completed: row.completed,
+          total: row.total,
+          running: row.running,
+          blocked: row.blocked,
+          failed: row.failed,
+          cancelled: row.cancelled,
+          superseded: row.superseded,
+          waived: row.waived,
+          verified: row.verified,
+          closed: row.closed === true,
+        })),
         // Φ1 feedback F6: the report states what it left out instead of silently
         // truncating, so "183 tasks" is still visible as a fact.
         tasks_total: team.tasks.length,
@@ -3572,11 +3603,12 @@ export function renderStatus(value: JsonValue): string {
       activity: string
       spawn_error?: string
     }[]
-    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
+    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; label?: string; verified?: boolean; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; waived?: number; waivers_unconfirmed?: boolean; revisions?: number }[]
     tasks_total?: number
     tasks_hidden?: number
     tasks_outputs_dropped?: number
     tasks_filter?: { live: boolean; task_id?: string; since?: number; include_output: boolean }
+    phases?: { phase_id: string; title: string; completed: number; total: number; running: number; blocked: number; failed: number; cancelled: number; superseded: number; waived: number; verified: number; closed: boolean }[]
     progress?: { percent: number; mode: string; percent_by_kind: number; percent_equal: number; completed: number; total: number; running: number; blocked: number; failed: number; waived: number; superseded: number; cancelled: number }
     slots?: { working: { member: string; task: string }[]; queued: number; team_workers: number; max_workers_per_team: number }
     limits?: { max_teams_per_workspace: number; max_teams_per_session: number; max_workers_per_team: number; max_concurrent_workers_global: number }
@@ -3637,6 +3669,27 @@ export function renderStatus(value: JsonValue): string {
       + ` running ${String(team.progress.running)}, blocked ${String(team.progress.blocked)},`
       + ` failed ${String(team.progress.failed)}, waived ${String(team.progress.waived)})`,
     ],
+    // Φ1/F7.3: the per-phase roll-up the owner asked for in chat — «Φ2: 12 lanes, 4
+    // verified, 1 failed» — printed before the task list so a reader sees the groups
+    // first and the lanes only if he wants them.
+    ...(team.phases ?? []).length === 0 ? [] : [
+      `Phases (${String((team.phases ?? []).length)}):`,
+      ...(team.phases ?? []).map((phase) => {
+        const parts = [
+          `${String(phase.completed)}/${String(phase.total)} done`,
+          ...phase.verified === 0 ? [] : [`${String(phase.verified)} verified`],
+          ...phase.running === 0 ? [] : [`${String(phase.running)} running`],
+          ...phase.blocked === 0 ? [] : [`${String(phase.blocked)} queued`],
+          ...phase.failed === 0 ? [] : [`${String(phase.failed)} failed`],
+          ...phase.waived === 0 ? [] : [`${String(phase.waived)} waived`],
+          ...phase.cancelled + phase.superseded === 0
+            ? []
+            : [`${String(phase.cancelled + phase.superseded)} dropped`],
+        ]
+        return `  - ${phase.phase_id}${phase.title === '' ? '' : ` ${phase.title}`}`
+          + `${phase.closed ? ' [closed]' : ''}: ${parts.join(' · ')}`
+      }),
+    ],
     `Tasks (${String(team.tasks.length)}${tasksHidden === 0 ? '' : ` shown of ${String(tasksTotal)}`}):`,
     ...team.tasks.map((task) => {
       const deps = task.dependencies.length > 0 ? ` (deps: ${task.dependencies.join(',')})` : ''
@@ -3652,7 +3705,11 @@ export function renderStatus(value: JsonValue): string {
       // WP2/S08: how many times the captain has amended this contract. A task
       // working against a revised brief must be visible as such.
       const revised = task.revisions === undefined || task.revisions === 0 ? '' : ` revised ×${task.revisions}`
-      return `  - ${taskCheckGlyph(task.status)} ${task.id} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}`
+      // Φ1/F7.2 and F7.4: the plan's own id for the lane, and whether a passing review
+      // judged it rather than the work merely reporting itself done.
+      const label = task.label === undefined || task.label === '' ? '' : ` · ${task.label}`
+      const verified = task.verified === true ? ' · verified' : ''
+      return `  - ${taskCheckGlyph(task.status)} ${task.id}${label} [${task.status}]${kind}${round}${verdict}${waived}${revised} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${verified}${output}`
     }),
     ...tasksHidden === 0 ? [] : [
       `  … ${String(tasksHidden)} settled task(s) hidden`

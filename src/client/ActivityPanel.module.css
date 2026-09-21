@@ -1860,7 +1860,14 @@
   background: #f2b8b5;
 }
 
-.dagNode[data-state='cancelled'] .dagNodeHead {
+.dagNode[data-state='cancelled'] /* Φ1/F7.4: a lane a passing review or verification judged, not merely reported. */
+.dagNodeVerified {
+  margin-left: 3px;
+  color: var(--dsw-alias-state-success-primary);
+  font-weight: 700;
+}
+
+.dagNodeHead {
   color: color-mix(in srgb, #f2b8b5 68%, var(--dsw-alias-label-primary));
 }
 

@@ -38,6 +38,10 @@ export interface ActivityTask {
   readonly waived?: number
   /** The task that replaced this one (WP3, shown as `→ tN` in the checklist). */
   readonly supersededBy?: string
+  /** Φ1/F7.2: the plan's own human id for this lane (`L.2`, `G.4`, `P4.3`). */
+  readonly label?: string
+  /** Φ1/F7.4: a passing review or verification judged this lane, not just completion. */
+  readonly verified?: boolean
 }
 
 /** One captain-inbox preview row. */
@@ -54,6 +58,15 @@ export interface ActivityProgressPhase {
   readonly total: number
   readonly percentByKind: number
   readonly percentEqual: number
+  /** Φ1/F7.3: the roll-up a column header prints. */
+  readonly running?: number
+  readonly blocked?: number
+  readonly failed?: number
+  readonly cancelled?: number
+  readonly superseded?: number
+  readonly waived?: number
+  readonly verified?: number
+  readonly closed?: boolean
 }
 
 /** Plan progress of one team, as the host computes it (WP8). */
@@ -91,6 +104,17 @@ export interface ActivityPlan {
   readonly updatedAt: number
   readonly goal?: string
   readonly phases: readonly ActivityPlanPhase[]
+}
+
+/** Φ1/F7.3: the per-phase roll-up a column header prints instead of a bare task count. */
+export interface ActivityPhaseRollup {
+  readonly phase_id: string
+  readonly completed: number
+  readonly total: number
+  readonly running: number
+  readonly failed: number
+  readonly verified: number
+  readonly closed: boolean
 }
 
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */

@@ -64,6 +64,7 @@ import {
   subscribeActivitySnapshots,
   type ActivityMember,
   type ActivityTask,
+  type ActivityProgressPhase,
   type ActivityTeam,
 } from './activity-monitor.ts'
 
@@ -551,8 +552,14 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
     >
       {/* The node head stays text: a 12px role mark next to a 9.5px id was the
           least readable spot in the panel (owner report), and the assignment is
-          already named in the task detail line below the board. */}
-      <span className={css.dagNodeHead}><span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />{task.id}</span>
+          already named in the task detail line below the board. Φ1/F7.2: the plan's
+          own id rides next to the plugin's `tN`, so the graph and the brief agree. */}
+      <span className={css.dagNodeHead}>
+        <span className={css.dagNodeDot} style={{ background: agentColor(task.assignee) }} />
+        {task.id}
+        {task.label === undefined || task.label === '' ? null : <span className={css.dagNodeLabel}>{` · ${task.label}`}</span>}
+        {task.verified === true ? <span className={css.dagNodeVerified} title={t('task.verified')}>✓</span> : null}
+      </span>
       <span className={css.dagNodeLabel}>
         {task.state === 'running' && shortModel !== '' ? shortModel : compactTaskLabel(task.subject)}
       </span>
@@ -566,7 +573,7 @@ function TaskNode({ task, members, t, style, parallel = false, discarded = false
 }
 
 /** Phase board: one column per phase, stretched to the longest chain it holds. */
-function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin, manualPhases = [] }: {
+function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin, manualPhases = [], rollups = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
@@ -575,6 +582,8 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
   readonly onPin?: (id: string) => void
   /** Declared phases (WP7): they win over the derived DAG levels. */
   readonly manualPhases?: readonly ManualPhase[]
+  /** Φ1/F7.3: per-phase counts, so a column header answers «how far is Φ2». */
+  readonly rollups?: readonly ActivityProgressPhase[]
 }) {
   const layout = useMemo(() => phaseBoardLayout(tasks, manualPhases), [tasks, manualPhases])
   if (tasks.length === 0) return null
@@ -589,6 +598,7 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
             // A column owns its phase's tasks; the count cannot be derived from
             // x any more, because a chain spreads across the column's width.
             const count = column.taskIds.length
+            const rollup = rollups.find((row) => row.phaseId === column.phaseId)
             const title = column.title ?? (column.phaseId === 'unphased'
               ? t('phase.unphased')
               : t('phase.column', { order: column.order + 1 }))
@@ -601,7 +611,14 @@ function PhaseBoard({ tasks, members, t, discarded = false, pinnedTaskId, onPin,
                 data-closed={column.closed === true}
               >
                 <span className={css.phaseColumnHead} title={title}>{title}</span>
-                <span className={css.phaseColumnCount}>{t('phase.count', { count })}</span>
+                <span className={css.phaseColumnCount}>{rollup === undefined
+                  ? t('phase.count', { count })
+                  // Φ1/F7.3: «4/12 done · 1 failed · 1 verified» instead of a bare count.
+                  : [
+                    t('phase.progress', { done: rollup.completed, total: rollup.total }),
+                    ...rollup.failed === 0 ? [] : [t('phase.failedCount', { count: rollup.failed })],
+                    ...rollup.verified === 0 ? [] : [t('phase.verifiedCount', { count: rollup.verified })],
+                  ].join(' · ')}</span>
                 {column.closed === true && <span className={css.phaseClosedMark}>{t('phase.closed')}</span>}
               </div>
             )
@@ -996,13 +1013,15 @@ function RunningPlanEditor({ team, t }: {
  * checklist already had: a reader scrolling to the list underneath folds the graph
  * away instead of dragging past it, and the header names how many columns it holds.
  */
-function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: {
+function TaskViews({ tasks, members, t, discarded = false, manualPhases = [], rollups = [] }: {
   readonly tasks: readonly ActivityTask[]
   readonly members: readonly ActivityMember[]
   readonly t: AgentTeamsTranslate
   readonly discarded?: boolean
   /** Declared phases from the plan (WP7); they drive the columns and the order. */
   readonly manualPhases?: readonly ManualPhase[]
+  /** Φ1/F7.3: the host's per-phase roll-up, printed in the column headers. */
+  readonly rollups?: readonly ActivityProgressPhase[]
 }) {
   const [pinnedTaskId, setPinnedTaskId] = useState<string | null>(null)
   const [phasesOpen, setPhasesOpen] = useState(true)
@@ -1031,6 +1050,7 @@ function TaskViews({ tasks, members, t, discarded = false, manualPhases = [] }: 
             pinnedTaskId={pinnedTaskId}
             onPin={pin}
             manualPhases={manualPhases}
+            rollups={rollups}
           />
         )}
       </section>
@@ -1381,7 +1401,14 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
         </div>}
       </section>
 
-      <TaskViews tasks={team.tasks} members={team.members} t={t} discarded={discarded} manualPhases={declaredPhasesOf(team)} />
+      <TaskViews
+        tasks={team.tasks}
+        members={team.members}
+        t={t}
+        discarded={discarded}
+        manualPhases={declaredPhasesOf(team)}
+        rollups={team.progress?.byPhase ?? []}
+      />
       {!historic && !discarded && <RunningPlanEditor team={team} t={t} />}
       </section>
       <Modal

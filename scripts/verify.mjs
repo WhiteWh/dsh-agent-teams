@@ -103,6 +103,7 @@ import {
 import { openAgentTeamMember } from '../lib/client/session-navigation.js'
 import { renderStatus, steerCaptainReport } from '../lib/tools.js'
 import { selectStatusTasks } from '../lib/status.js'
+import { verifiedTaskIds } from '../lib/quality-gates.js'
 import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt, resolveProfileSharedInScope, resolveProfileTaskPlanning } from '../lib/profiles.js'
 import { memberPersona, memberWelcome } from '../lib/members.js'
 import { assignmentPrompt, collectCompletedDependencyOutputs, formatDependencyOutputs, workingMemberNames } from '../lib/scheduler.js'
@@ -2914,6 +2915,58 @@ console.log('6d/8 replan a live team (WP7/S17)')
         && createTaskSource.includes("existing === undefined && fresh.phase === 'staged'")
         && createTaskSource.includes('phase_created: createdPhase')
         && createTaskSource.includes('phase_title: { type:'),
+    )
+  }
+  // Φ1/F7.2–F7.4: three vocabularies for one plan. The graph showed only the plugin's
+  // `t147`; the brief, every handback and the owner speak `G.4`/`P4.3`; and the brief's
+  // `verified` is not the plugin's `completed`. The lane label and the verified marker
+  // carry both, and a phase rolls up its own counts.
+  {
+    const labelled = {
+      members: [{ name: 'worker', status: 'idle' }],
+      tasks: [
+        { id: 't1', subject: 'lane G.1', status: 'completed', dependencies: [], label: 'G.1', kind: 'work' },
+        { id: 't2', subject: 'lane G.2', status: 'completed', dependencies: [], label: 'G.2', kind: 'implementation' },
+        { id: 't3', subject: 'review of G.2', status: 'completed', dependencies: [], kind: 'review', reviewedTaskId: 't2', verdict: 'pass' },
+        { id: 't4', subject: 'verification of G.1', status: 'in_progress', dependencies: [], kind: 'verification', reviewedTaskId: 't1' },
+        { id: 't5', subject: 'lane G.5', status: 'failed', dependencies: [], label: 'G.5', kind: 'work' },
+      ],
+    }
+    check(
+      'a lane can carry the plan\'s own human id beside the plugin id',
+      isTeamTask({ ...labelled.tasks[0], assignee: 'worker', attempt: 0, createdAt: 1, updatedAt: 1 })
+        && !isTeamTask({ ...labelled.tasks[0], label: 7, assignee: 'worker', attempt: 0, createdAt: 1, updatedAt: 1 }),
+    )
+    const verified = verifiedTaskIds(labelled.tasks)
+    check(
+      'a passing review or verification makes a lane verified, not merely completed',
+      verified.has('t2') && verified.has('t3') && !verified.has('t1') && !verified.has('t4') && !verified.has('t5'),
+      [...verified].join(','),
+    )
+    const rollup = planProgress(labelled.tasks, {
+      phases: [{ id: 'Φ2', title: 'Φ2 — light', taskIds: ['t1', 't2', 't3', 't4', 't5'] }],
+    }).byPhase[0]
+    check(
+      'a phase rolls up its own counts for the column header and the report',
+      rollup?.phaseId === 'Φ2'
+        && rollup.title === 'Φ2 — light'
+        && rollup.total === 5
+        && rollup.completed === 3
+        && rollup.running === 1
+        && rollup.failed === 1
+        && rollup.verified === 2,
+      JSON.stringify(rollup),
+    )
+    check(
+      'the report and the panel show the second id, the verified mark and the roll-up',
+      toolsSource.includes('· ${task.label}') && toolsSource.includes("' · verified'")
+        && toolsSource.includes('Phases (${String((team.phases ?? []).length)}):')
+        && activityPanelSource.includes('css.dagNodeVerified')
+        && activityPanelSource.includes("t('phase.progress', { done: rollup.completed, total: rollup.total })")
+        && activityPanelCss.includes('.dagNodeVerified')
+        && ['phase.progress', 'phase.failedCount', 'phase.verifiedCount', 'task.verified']
+          .every((key) => localesSource.includes(`'${key}'`))
+        && toolsSource.includes("label: { type: 'string', description: \"The plan's own human id"),
     )
   }
   // Φ1 feedback F1 (dx9 run, 183 tasks): a member session that had to be replaced

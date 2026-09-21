@@ -64,6 +64,8 @@ export interface ReplanOperation {
   readonly task_id?: string
   /** `add_task`: subject; `update_task`: replacement subject. */
   readonly subject?: string
+  /** `add_task`: the plan's own human id for the lane (`G.4`, `P4.3`, …). */
+  readonly label?: string
   readonly description?: string
   readonly assignee?: string
   readonly dependencies?: readonly string[]
@@ -358,6 +360,7 @@ function appendTask(draft: TeamState, operation: ReplanOperation, now: number): 
   const task: TeamTask = {
     id: `t${String(draft.taskSeq)}`,
     subject,
+    ...operation.label === undefined || operation.label.trim() === '' ? {} : { label: operation.label.trim() },
     ...operation.description === undefined ? {} : { description: operation.description },
     status: 'pending',
     ...operation.assignee === undefined || operation.assignee === '' ? {} : { assignee: operation.assignee },

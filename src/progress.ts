@@ -14,7 +14,7 @@
  * inventing 100.
  */
 import type { TaskOrigin, TeamTask } from './types.ts'
-import { hasFollowUpRepair } from './quality-gates.ts'
+import { hasFollowUpRepair, verifiedTaskIds } from './quality-gates.ts'
 import { taskDepthsById, unsatisfiedDependencies } from './state.ts'
 
 /** The default weight of every task kind (`taskPlanning.weights` overrides it). */
@@ -47,9 +47,18 @@ export interface ProgressPhaseGroup {
   readonly title?: string
   /** Tasks of this phase; tasks missing from every group fall into `unphased`. */
   readonly taskIds: readonly string[]
+  /** Set once the captain closed the phase (round 3); it takes no new work. */
+  readonly closed?: boolean
 }
 
-/** Progress of one phase row. */
+/**
+ * Progress and status of one phase row.
+ *
+ * Φ1 feedback F7.3: the owner asked to see «Φ2: 12 lanes, 4 verified, 1 failed, 2 pins»
+ * without asking the captain in chat. The counts below are that answer for one phase;
+ * `verified` is the brief's word for work a passing review or verification judged, and
+ * `pinned` counts the known deltas (pins) registered for the team.
+ */
 export interface PlanProgressPhase {
   readonly phaseId: string
   readonly title?: string
@@ -57,6 +66,15 @@ export interface PlanProgressPhase {
   readonly total: number
   readonly percentByKind: number
   readonly percentEqual: number
+  readonly running: number
+  readonly blocked: number
+  readonly failed: number
+  readonly cancelled: number
+  readonly superseded: number
+  readonly waived: number
+  /** Completed lanes a passing review/verification judged. */
+  readonly verified: number
+  readonly closed?: boolean
 }
 
 /** The plan progress of one team. */
@@ -250,11 +268,29 @@ export function planProgress(
     return full !== undefined && hasFollowUpRepair(tasks, full)
   }
   const overall = bucketOf(tasks, table, retired)
+  const verifiedIds = verifiedTaskIds(tasks)
   const byPhase = phaseGroupsOf(tasks, options.phases ?? []).map((group) => {
     const members = group.taskIds
       .map((taskId) => tasks.find((task) => task.id === taskId))
       .filter((task): task is TeamTask => task !== undefined)
     const bucket = bucketOf(members, table, retired)
+    let phaseRunning = 0
+    let phaseBlocked = 0
+    let phaseFailed = 0
+    let phaseCancelled = 0
+    let phaseSuperseded = 0
+    let phaseWaived = 0
+    let phaseVerified = 0
+    for (const task of members) {
+      if (verifiedIds.has(task.id)) phaseVerified += 1
+      if (task.hasWaivers === true) phaseWaived += 1
+      if (task.status === 'completed') continue
+      if (task.status === 'failed') phaseFailed += 1
+      else if (task.status === 'cancelled') phaseCancelled += 1
+      else if (task.status === 'superseded') phaseSuperseded += 1
+      else if (RUNNING_STATUSES.has(task.status)) phaseRunning += 1
+      else phaseBlocked += 1
+    }
     return {
       phaseId: group.id,
       ...group.title === undefined ? {} : { title: group.title },
@@ -262,6 +298,14 @@ export function planProgress(
       total: bucket.total,
       percentByKind: bucket.percentByKind,
       percentEqual: bucket.percentEqual,
+      running: phaseRunning,
+      blocked: phaseBlocked,
+      failed: phaseFailed,
+      cancelled: phaseCancelled,
+      superseded: phaseSuperseded,
+      waived: phaseWaived,
+      verified: phaseVerified,
+      ...group.closed === true ? { closed: true } : {},
     }
   })
   let running = 0
